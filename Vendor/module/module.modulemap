@@ -1,0 +1,4 @@
+module CImageCodecs {
+    header "shim.h"
+    export *
+}

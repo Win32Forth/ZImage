@@ -1,25 +1,14 @@
 import SwiftUI
-import Playgrounds
-
-@main struct MyApp: App {
-    var body: some Scene {
-        WindowGroup {
-            ContentView()
-        }
-    }
-}
 
 struct ContentView: View {
+    @Bindable var model: EditorModel
+
     var body: some View {
-        Text("Hello, world!")
-            .padding()
+        Chrome(model: model)
     }
 }
 
 #Preview {
-    ContentView()
-}
-
-#Playground {
-    _ = 1 + 2
+    ContentView(model: EditorModel())
+        .frame(width: 1100, height: 700)
 }

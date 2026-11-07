@@ -1,0 +1,5 @@
+.DS_Store
+xcuserdata/
+DerivedData/
+Helper/zimage-helper
+*.xcuserstate

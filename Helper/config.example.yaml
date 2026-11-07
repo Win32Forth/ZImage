@@ -1,0 +1,23 @@
+# DSM Task Scheduler runs zimage-helper at boot as a non-admin user, not root.
+# The binary lives on the data volume because a DSM update can clear /usr/local:
+#   PhotoVideoAudio/.zimage/bin/zimage-helper
+# Task environment: GOMEMLIMIT=160MiB
+# The task's command passes -config pointing at this file on the NAS.
+#
+# Cross-compile on the Mac, then copy the binary over SMB. Do not open catalog.db
+# from the Mac.
+#   cd Helper && GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o zimage-helper ./cmd/zimage-helper
+#
+# On btrfs, turn copy-on-write off for the catalog directory before catalog.db
+# exists. The helper does not run chattr.
+#   mkdir -p /volume1/BackupData/PhotoVideoAudio/.zimage/catalog
+#   chattr +C /volume1/BackupData/PhotoVideoAudio/.zimage/catalog
+#
+# v1 listens on IPv4 only. Leave allow_loopback unset. Loopback is not an RFC 1918
+# source. Tests turn it on in code.
+
+listen: "0.0.0.0:8742"   # tcp4 only
+library_root_local: "/volume1/BackupData/PhotoVideoAudio"
+scope_relative: "Photos"
+cache_operating_bytes: 200000000000
+cache_hard_bytes: 1000000000000
