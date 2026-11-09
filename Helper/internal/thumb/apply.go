@@ -5,6 +5,7 @@ import (
 	"errors"
 	"image/jpeg"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"zimage/helper/internal/cacheledger"
@@ -17,11 +18,16 @@ import (
 // Rows are taken in id order, 32 at a time, so the first grid page is not
 // blocked behind a query of the whole library.
 func Apply(root string, catalog *db.Catalog, pause func() bool) error {
+	return ApplyStep(root, catalog, pause, nil)
+}
+
+// ApplyStep is Apply. step runs once per finished preview and does no catalog work.
+func ApplyStep(root string, catalog *db.Catalog, pause func() bool, step func()) error {
 	for {
 		if pause != nil && pause() {
 			return nil
 		}
-		n, err := ApplyNext(root, catalog, pause, 32)
+		n, err := ApplyNextStep(root, catalog, pause, 32, step)
 		if err != nil || n == 0 {
 			return err
 		}
@@ -32,6 +38,32 @@ func Apply(root string, catalog *db.Catalog, pause func() bool) error {
 // The count is rows finished in this call. A file that cannot be opened stays
 // discovered and is left for a later pass, so one failure does not stall the batch.
 func ApplyNext(root string, catalog *db.Catalog, pause func() bool, limit int) (int, error) {
+	return ApplyNextStep(root, catalog, pause, limit, nil)
+}
+
+// ApplyNextStep is ApplyNext. step runs once per finished preview.
+func ApplyNextStep(root string, catalog *db.Catalog, pause func() bool, limit int, step func()) (int, error) {
+	return applyNext(root, catalog, pause, limit, "", step)
+}
+
+// ApplyNextUnder writes at most limit previews for files at under or inside it.
+// under is a Photos path prefix. An empty under writes nothing.
+// step runs once per finished preview and does no catalog work.
+func ApplyNextUnder(root string, catalog *db.Catalog, pause func() bool, limit int, under string, step func()) (int, error) {
+	if under == "" {
+		return 0, nil
+	}
+	return applyNext(root, catalog, pause, limit, under, step)
+}
+
+// PathLike is the SQL LIKE pattern for a child of prefix.
+// Backslash, percent, and underscore in the prefix are escaped for ESCAPE '\'.
+func PathLike(prefix string) string {
+	escaped := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(prefix)
+	return escaped + "/%"
+}
+
+func applyNext(root string, catalog *db.Catalog, pause func() bool, limit int, under string, step func()) (int, error) {
 	if limit <= 0 {
 		return 0, nil
 	}
@@ -41,7 +73,7 @@ func ApplyNext(root string, catalog *db.Catalog, pause func() bool, limit int) (
 	// A needs_mac JPEG, PNG, GIF, or BMP at or under the pixel ceiling is tried
 	// again. decode_support stays unknown until that attempt finishes, so a
 	// failure can be marked failed and is not selected on the next pass.
-	rows, err := catalog.Read.Query(`
+	query := `
 		SELECT id, uid, rel_path FROM assets
 		WHERE phase = 'discovered' AND thumb_rel IS NULL
 		AND media_class IN ('image', 'raw')
@@ -54,9 +86,18 @@ func ApplyNext(root string, catalog *db.Catalog, pause func() bool, limit int) (
 				AND native_pixels <= ?
 				AND lower(ext) IN ('jpg', 'jpeg', 'png', 'gif', 'bmp')
 			)
-		)
+		)`
+	args := []any{maxPixels}
+	if under != "" {
+		query += `
+		AND (rel_path = ? OR rel_path LIKE ? ESCAPE '\')`
+		args = append(args, under, PathLike(under))
+	}
+	query += `
 		ORDER BY id
-		LIMIT ?`, maxPixels, limit)
+		LIMIT ?`
+	args = append(args, limit)
+	rows, err := catalog.Read.Query(query, args...)
 	if err != nil {
 		return 0, err
 	}
@@ -104,6 +145,9 @@ func ApplyNext(root string, catalog *db.Catalog, pause func() bool, limit int) (
 				return finished, err
 			}
 			finished++
+			if step != nil {
+				step()
+			}
 			continue
 		}
 		rel := thumbRel(one.uid)
@@ -127,6 +171,9 @@ func ApplyNext(root string, catalog *db.Catalog, pause func() bool, limit int) (
 			return finished, err
 		}
 		finished++
+		if step != nil {
+			step()
+		}
 	}
 	return finished, nil
 }
@@ -175,7 +222,7 @@ func pixels(width, height int) any {
 	return int64(width) * int64(height)
 }
 
-// LongEdgeIsBounded reports whether a JPEG's long edge is at most 512.
+// LongEdgeIsBounded reports whether a JPEG's long edge is at most 256.
 func LongEdgeIsBounded(jpegBytes []byte) bool {
 	cfg, err := jpeg.DecodeConfig(bytes.NewReader(jpegBytes))
 	if err != nil {

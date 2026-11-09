@@ -19,7 +19,15 @@ import (
 // Non-user events are deleted only after asset.event_id is cleared.
 // Year-only files stay out of the hour-gap splitter.
 func Apply(root string, catalog *db.Catalog, pause func()) error {
-	items, err := loadItems(root, catalog, pause)
+	return ApplyProgress(root, catalog, pause, nil)
+}
+
+// ApplyProgress is Apply. progress reports files looked at while GPS is read.
+func ApplyProgress(root string, catalog *db.Catalog, pause func(), progress func(done, total int)) error {
+	if progress != nil {
+		progress(0, 0)
+	}
+	items, err := loadItems(root, catalog, pause, progress)
 	if err != nil {
 		return err
 	}
@@ -85,7 +93,7 @@ func Apply(root string, catalog *db.Catalog, pause func()) error {
 	return tx.Commit()
 }
 
-func loadItems(root string, catalog *db.Catalog, pause func()) ([]Item, error) {
+func loadItems(root string, catalog *db.Catalog, pause func(), progress func(done, total int)) ([]Item, error) {
 	rows, err := catalog.Read.Query(`
 		SELECT a.id, a.rel_path, COALESCE(a.capture_time, ''), a.capture_confidence, a.dhash,
 			COALESCE(e.id, 0), COALESCE(e.name, ''), COALESCE(e.name_source, ''), COALESCE(e.slug, '')
@@ -118,9 +126,15 @@ func loadItems(root string, catalog *db.Catalog, pause func()) ([]Item, error) {
 	rows.Close()
 
 	var items []Item
+	if progress != nil {
+		progress(0, len(list))
+	}
 	for i, one := range list {
 		when, full, yearOnly, year := dhashindex.ParseCapture(one.capture)
 		if one.conf < 0.70 || (!full && !yearOnly) {
+			if progress != nil {
+				progress(i+1, len(list))
+			}
 			continue
 		}
 		item := one.item
@@ -140,6 +154,9 @@ func loadItems(root string, catalog *db.Catalog, pause func()) ([]Item, error) {
 			}
 		}
 		items = append(items, item)
+		if progress != nil {
+			progress(i+1, len(list))
+		}
 		if pause != nil && (i+1)%50 == 0 {
 			pause()
 		}

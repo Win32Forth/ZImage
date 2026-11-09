@@ -30,6 +30,14 @@ type member struct {
 // at Hamming distance <= 5 with known dimensions and aspect within 2%.
 // A file with no neighbor stays ungrouped. The saturated tail is whatever Lookup omitted.
 func Group(catalog *db.Catalog, note func(string)) error {
+	return GroupProgress(catalog, note, nil)
+}
+
+// GroupProgress is Group with a phase callback. phase is "comparing" or "saving". progress may be nil.
+func GroupProgress(catalog *db.Catalog, note func(string), progress func(phase string, done, total int)) error {
+	if progress != nil {
+		progress("comparing", 0, 0)
+	}
 	rows, err := catalog.Read.Query(`
 		SELECT id, uid, rel_path, ext, dhash, blake3, width, height, detail_score, native_pixels, byte_size, placement
 		FROM assets
@@ -66,6 +74,9 @@ func Group(catalog *db.Catalog, note func(string)) error {
 	}
 	rows.Close()
 
+	if progress != nil {
+		progress("comparing", 0, len(list))
+	}
 	parent := map[int64]int64{}
 	var find func(int64) int64
 	find = func(id int64) int64 {
@@ -91,7 +102,7 @@ func Group(catalog *db.Catalog, note func(string)) error {
 			note("dhash_band_saturated " + column + "=" + formatUint(value))
 		}
 	}
-	for _, item := range list {
+	for i, item := range list {
 		if len(item.blake) > 0 {
 			matches, err := catalog.Read.Query(`SELECT id FROM assets WHERE blake3 = ? AND id != ?`, item.blake, item.id)
 			if err != nil {
@@ -112,6 +123,9 @@ func Group(catalog *db.Catalog, note func(string)) error {
 			matches.Close()
 		}
 		if !item.hasHash {
+			if progress != nil {
+				progress("comparing", i+1, len(list))
+			}
 			continue
 		}
 		neighbors, err := Lookup(catalog.Read, item.id, item.hash, GroupDistance, ScanLimit, log)
@@ -124,6 +138,9 @@ func Group(catalog *db.Catalog, note func(string)) error {
 			}
 			join(item.id, neighbor.ID)
 		}
+		if progress != nil {
+			progress("comparing", i+1, len(list))
+		}
 	}
 
 	comps := map[int64][]member{}
@@ -134,6 +151,9 @@ func Group(catalog *db.Catalog, note func(string)) error {
 		}
 	}
 
+	if progress != nil {
+		progress("saving", len(list), len(list))
+	}
 	tx, err := catalog.Write.Begin()
 	if err != nil {
 		return err

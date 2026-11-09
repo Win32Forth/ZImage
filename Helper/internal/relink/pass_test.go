@@ -247,6 +247,77 @@ func TestYieldsWhileCopying(t *testing.T) {
 	}
 }
 
+func TestStagesReportTheCatalogUpdateAndTheSecondWalk(t *testing.T) {
+	root := t.TempDir()
+	catalog := openRelink(t, root)
+	for i := 1; i <= 3; i++ {
+		rel := "Photos/1999/p" + string(rune('0'+i)) + ".jpg"
+		path := filepath.Join(root, filepath.FromSlash(rel))
+		body := []byte("stage-photo")
+		writePhoto(t, path, body)
+		insertAsset(t, catalog, "uid-"+string(rune('0'+i)), rel, int64(len(body)), mustFP(t, path), nil)
+	}
+	insertAsset(t, catalog, "uid-gone", "Photos/1999/gone.jpg", 12, []byte("missing-fp"), nil)
+	var stages []string
+	err := relink.Pass(root, catalog, relink.Options{
+		UpdateBatch: 1,
+		Stage: func(name string, done, total int) {
+			stages = append(stages, name+" "+itoa(done)+" "+itoa(total))
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"presence 0 0",
+		"presence 0 4",
+		"presence 1 4",
+		"presence 2 4",
+		"presence 3 4",
+		"presence 4 4",
+		"match 0 3",
+		"match 1 3",
+		"match 2 3",
+		"match 3 3",
+	}
+	if len(stages) != len(want) {
+		t.Fatalf("stages %v", stages)
+	}
+	for i := range want {
+		if stages[i] != want[i] {
+			t.Fatalf("stage %d got %q want %q", i, stages[i], want[i])
+		}
+	}
+	var missing int
+	if err := catalog.Read.QueryRow(`SELECT missing FROM assets WHERE uid = 'uid-gone'`).Scan(&missing); err != nil {
+		t.Fatal(err)
+	}
+	if missing != 1 {
+		t.Fatalf("gone missing %d", missing)
+	}
+	if err := catalog.Read.QueryRow(`SELECT missing FROM assets WHERE uid = 'uid-1'`).Scan(&missing); err != nil {
+		t.Fatal(err)
+	}
+	if missing != 0 {
+		t.Fatalf("present missing %d", missing)
+	}
+}
+
+func itoa(value int) string {
+	if value == 0 {
+		return "0"
+	}
+	var digits [8]byte
+	i := len(digits)
+	n := value
+	for n > 0 {
+		i--
+		digits[i] = byte('0' + n%10)
+		n /= 10
+	}
+	return string(digits[i:])
+}
+
 func TestInventoryStoresFastFingerprint(t *testing.T) {
 	root := t.TempDir()
 	catalog := openRelink(t, root)

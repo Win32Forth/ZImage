@@ -13,14 +13,22 @@ import (
 
 // IndexThumbs writes a dHash for each stored NAS thumbnail. Files without one wait.
 func IndexThumbs(root string, catalog *db.Catalog, pause func()) error {
+	return IndexThumbsProgress(root, catalog, pause, nil)
+}
+
+// IndexThumbsProgress is IndexThumbs with a done/total callback. progress may be nil.
+func IndexThumbsProgress(root string, catalog *db.Catalog, pause func(), progress func(done, total int)) error {
+	if progress != nil {
+		progress(0, 0)
+	}
 	rows, err := catalog.Read.Query(`SELECT id, uid, thumb_rel FROM assets WHERE thumb_rel IS NOT NULL AND dhash IS NULL`)
 	if err != nil {
 		return err
 	}
 	type item struct {
-		id   int64
-		uid  string
-		rel  string
+		id  int64
+		uid string
+		rel string
 	}
 	var list []item
 	for rows.Next() {
@@ -37,23 +45,37 @@ func IndexThumbs(root string, catalog *db.Catalog, pause func()) error {
 	}
 	rows.Close()
 
+	if progress != nil {
+		progress(0, len(list))
+	}
 	tx, err := catalog.Write.Begin()
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
 	pending := 0
-	for _, one := range list {
+	for i, one := range list {
+		advanced := false
+		advance := func() {
+			if advanced || progress == nil {
+				return
+			}
+			advanced = true
+			progress(i+1, len(list))
+		}
 		if err := pathsafe.Jail(root, one.rel); err != nil {
+			advance()
 			continue
 		}
 		file, err := os.Open(filepath.Join(root, filepath.FromSlash(one.rel)))
 		if err != nil {
+			advance()
 			continue
 		}
 		img, err := jpeg.Decode(file)
 		file.Close()
 		if err != nil {
+			advance()
 			continue
 		}
 		hash := HashImage(img)
@@ -80,6 +102,7 @@ func IndexThumbs(root string, catalog *db.Catalog, pause func()) error {
 			}
 			pending = 0
 		}
+		advance()
 	}
 	if pending == 0 {
 		return nil

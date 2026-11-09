@@ -106,7 +106,11 @@ func run(cfg config.Config) error {
 		}
 		// The port opens before this walk. Existing previews are recorded, not rewritten.
 		go func() {
-			if err := cacheledger.Reconcile(cfg.LibraryRoot, catalog, cacheledger.Limits{}); err != nil {
+			defer srv.ClearPass()
+			srv.SetPass("cache", 0, 0)
+			if err := cacheledger.ReconcileProgress(cfg.LibraryRoot, catalog, cacheledger.Limits{}, func(done int) {
+				srv.SetPass("cache", done, 0)
+			}); err != nil {
 				srv.Note("cache_reconcile")
 			}
 			catalogPass(cfg.LibraryRoot, catalog, srv)
@@ -120,45 +124,201 @@ func run(cfg config.Config) error {
 }
 
 func catalogPass(root string, catalog *db.Catalog, srv *httpapi.Server) {
-	// The grid's first page is the oldest rows. Write those previews before the
-	// rest of the walk, or a large library stays blank until the last file.
-	if n, err := thumb.ApplyNext(root, catalog, srv.Shedding, 200); err != nil {
-		srv.Note("thumb_failed")
-	} else if n > 0 {
+	// The folder on screen is previewed before the oldest catalog rows.
+	// With no folder set, the first pages stay oldest-id, 200 of them, then the walk.
+	previewDone := 0
+	previewTotal := countPreviewsLeft(catalog)
+	step := func() {
+		previewDone++
+		srv.SetPass("previews", previewDone, previewTotal)
+	}
+	idleFocus := ""
+	folderPrefix := ""
+	folderDone := 0
+	serveFocus := func(limit int) int {
+		prefix := srv.Focus()
+		if prefix == "" || prefix == idleFocus || limit <= 0 {
+			return 0
+		}
+		if prefix != folderPrefix {
+			folderPrefix = prefix
+			folderDone = 0
+		}
+		left := countPreviewsUnder(catalog, prefix)
+		if left == 0 {
+			idleFocus = prefix
+			return 0
+		}
+		total := folderDone + left
+		srv.SetPass("folder", folderDone, total)
+		n, err := thumb.ApplyNextUnder(root, catalog, srv.Shedding, limit, prefix, func() {
+			folderDone++
+			srv.SetPass("folder", folderDone, total)
+		})
+		if err != nil {
+			srv.Note("thumb_failed")
+			return n
+		}
+		// A short batch that finished nothing, or a folder with nothing left, can wait.
+		// A short batch that finished some files is tried again, so one unreadable file
+		// does not hide the rest of the folder.
+		if n < limit && !srv.Shedding() && (n == 0 || countPreviewsUnder(catalog, prefix) == 0) {
+			idleFocus = prefix
+		}
+		return n
+	}
+	if previewTotal > 0 {
+		srv.SetPass("previews", 0, previewTotal)
+	}
+	globalLeft := 200
+	batched := false
+	for globalLeft > 0 {
+		if srv.Shedding() {
+			break
+		}
+		if serveFocus(8) > 0 {
+			continue
+		}
+		chunk := 8
+		if chunk > globalLeft {
+			chunk = globalLeft
+		}
+		n, err := thumb.ApplyNextStep(root, catalog, srv.Shedding, chunk, step)
+		if err != nil {
+			srv.Note("thumb_failed")
+			break
+		}
+		if n == 0 {
+			break
+		}
+		batched = true
+		globalLeft -= n
+	}
+	if batched {
 		srv.Note("thumb_batch")
 	}
-	if err := relink.Pass(root, catalog, relink.Options{Copying: func() bool {
-		var n int
-		if err := catalog.Read.QueryRow(`SELECT COUNT(*) FROM journal WHERE state = 'copying'`).Scan(&n); err != nil {
-			return false
-		}
-		return n > 0
-	}}); err != nil {
+	known := countAssets(catalog)
+	srv.SetPass("relink", 0, known)
+	if err := relink.Pass(root, catalog, relink.Options{
+		Copying: func() bool {
+			var n int
+			if err := catalog.Read.QueryRow(`SELECT COUNT(*) FROM journal WHERE state = 'copying'`).Scan(&n); err != nil {
+				return false
+			}
+			return n > 0
+		},
+		Progress: func(done int) {
+			srv.SetPass("relink", done, known)
+			if done%10 == 0 {
+				serveFocus(4)
+			}
+		},
+		Stage: func(name string, done, total int) {
+			srv.SetPass(name, done, total)
+			if name == "presence" || done%10 == 0 {
+				serveFocus(4)
+			}
+		},
+	}); err != nil {
 		srv.Note("relink_failed")
 	}
-	_, err := inventory.Run(root, catalog, inventory.Options{AfterCommit: func() {
-		time.Sleep(200 * time.Millisecond)
-		srv.Note("inventory_commit")
-		if _, err := thumb.ApplyNext(root, catalog, srv.Shedding, 8); err != nil {
-			srv.Note("thumb_failed")
-		}
-	}})
+	_, err := inventory.Run(root, catalog, inventory.Options{
+		Progress: func(done, total int) {
+			srv.SetPass("inventory", done, total)
+		},
+		Interrupt: srv.Focus,
+		Needs: func(prefix string) bool {
+			if prefix == "" || prefix == idleFocus {
+				return false
+			}
+			return countPreviewsUnder(catalog, prefix) > 0
+		},
+		Serve: func(_ string) {
+			idleFocus = ""
+			serveFocus(8)
+		},
+		AfterCommit: func() {
+			idleFocus = ""
+			time.Sleep(200 * time.Millisecond)
+			srv.Note("inventory_commit")
+			if serveFocus(8) > 0 {
+				return
+			}
+			if _, err := thumb.ApplyNextStep(root, catalog, srv.Shedding, 8, step); err != nil {
+				srv.Note("thumb_failed")
+			}
+		},
+	})
 	if err != nil {
 		srv.Note("inventory_failed")
 		return
 	}
-	if err := thumb.Apply(root, catalog, srv.Shedding); err != nil {
-		srv.Note("thumb_failed")
+	left := countPreviewsLeft(catalog)
+	if left > 0 || previewDone > 0 {
+		previewTotal = previewDone + left
+		srv.SetPass("previews", previewDone, previewTotal)
+	}
+	for {
+		if srv.Shedding() {
+			break
+		}
+		if serveFocus(16) > 0 {
+			continue
+		}
+		n, err := thumb.ApplyNextStep(root, catalog, srv.Shedding, 16, step)
+		if err != nil {
+			srv.Note("thumb_failed")
+			break
+		}
+		if n == 0 {
+			break
+		}
 	}
 	// Dates, groups, and planned paths. This pass does not move or delete library files.
-	if err := organize.Pass(root, catalog, func() {
+	if err := organize.PassProgress(root, catalog, func() {
 		for srv.Shedding() {
 			time.Sleep(200 * time.Millisecond)
 		}
 		time.Sleep(200 * time.Millisecond)
-	}, srv.Note); err != nil {
+	}, srv.Note, func(phase string, done, total int) {
+		srv.SetPass(phase, done, total)
+	}); err != nil {
 		srv.Note("dating_failed")
 	}
+}
+
+func countAssets(catalog *db.Catalog) int {
+	var n int
+	if err := catalog.Read.QueryRow(`SELECT COUNT(*) FROM assets`).Scan(&n); err != nil {
+		return 0
+	}
+	return n
+}
+
+func countPreviewsLeft(catalog *db.Catalog) int {
+	var n int
+	err := catalog.Read.QueryRow(`
+		SELECT COUNT(*) FROM assets
+		WHERE phase = 'discovered' AND thumb_rel IS NULL
+		AND media_class IN ('image', 'raw')`).Scan(&n)
+	if err != nil {
+		return 0
+	}
+	return n
+}
+
+func countPreviewsUnder(catalog *db.Catalog, prefix string) int {
+	var n int
+	err := catalog.Read.QueryRow(`
+		SELECT COUNT(*) FROM assets
+		WHERE phase = 'discovered' AND thumb_rel IS NULL
+		AND media_class IN ('image', 'raw')
+		AND (rel_path = ? OR rel_path LIKE ? ESCAPE '\')`,
+		prefix, thumb.PathLike(prefix)).Scan(&n)
+	if err != nil {
+		return 0
+	}
+	return n
 }
 
 func layout(root string) error {

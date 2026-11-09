@@ -4,10 +4,10 @@
 | --- | --- |
 | Product | ZImage |
 | Author | Thomas Zimmer |
-| Date | 2026-11-07 |
-| Status | In progress |
+| Date | 2026-11-09 |
+| Status | ZImager 1.5.0 |
 | Platform | Native macOS app, Apple Silicon, deployment target macOS 27.0. The build machine is an M5. The catalog and the reorganization state live on a Synology DS423. |
-| Repository | `ZImage/` editor, `ZImageLibrary/` catalog window, `Helper/` Go source. `README.md` says how to build. |
+| Repository | `ZImager/` is the app to run. `ZImage/` editor and `ZImageLibrary/` catalog window stay as they were. `Helper/` is the Go source. `README.md` says how to build and how to install the helper. |
 
 ## Overview
 
@@ -17,7 +17,11 @@ Pass 2 is the catalog for the personal library on that Synology share. Its helpe
 
 The edited-document format is a versioned container, extension `.zimg`, nicknamed ZImage RAW in the product language. It stores a parametric edit log, not a second copy of every original. The million originals stay in their camera formats. In Pass 2, SQLite is not opened over SMB. A small Go helper on the DS423 is the only database writer. The Mac talks to it with an authenticated LAN API. Interactive edits run on a display-sized GPU proxy. Full resolution is a tiled export path.
 
-As of 2026-11-07 the editor, the library app, and the helper source are in this tree. `ZImage/App/ZImageApp.swift` is the editor entry, and `ContentView` hosts the editor chrome. The sandbox is off. The deployment target is macOS 27.0. `STATUS.md` records what has landed. The paragraphs below keep the original plan, including choices that the code has since filled in.
+As of 2026-11-09 the app to run is ZImager 1.5.0 (`ZImager/`, bundle id `com.Win32Forth.ZImager`). Disk is the editor. Server is the library, in the same window. ZImage and ZImage Library remain in the tree and were not given this version. The sandbox is off. The deployment target is macOS 27.0. `STATUS.md` records what has landed. The paragraphs below keep the original plan, including choices that the code has since filled in.
+
+Reorganize, Review, and Duplicates do not work yet. Using them can lose photos. Leave those controls alone in 1.5.0. Do not press Start, Pause, Continue, Find duplicates, or Delete all duplicates.
+
+Server mode needs `zimage-helper` on the Synology. The Mac disk image does not include that program. Build the static ARM64 binary from `Helper/`, copy it to `PhotoVideoAudio/.zimage/bin/zimage-helper`, and start it from DSM Task Scheduler as a non-admin user with `GOMEMLIMIT=160MiB`. The steps are in `README.md`. Stop the task before replacing the binary. Do not open `catalog.db` from the Mac.
 
 ## Background and Motivation
 
@@ -592,7 +596,7 @@ The library app holds the catalog sidebar (Years, Events, Review, Duplicates) an
 
 Regions, by name: thumbnail grid, editor canvas, adjustment inspector, geometry controls, eyedropper tool, history list, editor zoom slider, and in the library app the reorg panel and the duplicates panel. Tone and Geometry sliders sit on the same line as their names. The names share one right edge, then the slider, then the readout. The sliders draw at 56% of the system control height. Double-clicking a knob returns that slider to the middle of its track. Temperature, Dehaze, k1, and k2 do not. Geometry includes a Sharpness slider from −1 to 1. The gaps between those rows are 5.6 points. Rotate, the corner-pin switch, the lens menu, the panel titles, and the Horizon button keep their normal size and font. Temperature and Tint sit in the Color panel, above White and Skin. That panel's title is Color. The eyedropper icon sits at the right end of the White and Skin row. Horizon sits at the right end of the Rotate row. Horizon and the eyedropper icon toggle, with a brown border while on and a thin black border while off. Each of Tone, Color, Geometry, Touchup, and History has a disclosure at the right of its title. A down chevron means the panel is open. An up chevron means it is collapsed to the title. Open Tone, Color, and Geometry are as tall as their controls, with no scrollbar of their own. History is as tall as its steps. The panels share one scrollbar at the right of the inspector. A short window scrolls the whole column. A tall window leaves the panels at that content height. Undo, Redo, and Push tone sit in the toolbar above the Tone panel. Copy settings and Paste settings sit to the right of Push tone. Copy keeps the Tone and Geometry settings. Paste applies them in one history step and leaves crop and object removal unchanged. On the Image view, Select, Crop, and Export sit at the right edge of the image area, to the right of Folder and Image. Select outlines the whole image. Dragging a corner, or the middle of a side, changes that edge. Clicking Select again leaves Select. Crop stays disabled until the rectangle is at least 2 pixels on each side. Crop is one history step named Crop. Filmstrip uses the same preview-size slider as the grids. It is not a second thumbnail size.
 
-**Pass 1 folder browser.** File → Open Folder uses `NSOpenPanel` with directories allowed. That folder is the root of a directory tree on the left. The next launch opens that same tree and selects the folder that was selected when the app quit. If that folder cannot be opened, the tree stays empty. The tree lists directories only, one level when a row opens. Sub-folder, written to the left of its checkbox and to the left of View, searches subfolders and shows the images and videos it finds in the Folder view. With Sub off, the Folder tab lists the still images ImageIO can identify and the video files in the selected folder, and does not list files inside subfolders. Sub's walk stays under the selected folder. The browser does not write SQLite. Double-clicking an image, or Edit Image on its right-click menu, opens it on the Image tab. Double-clicking a video opens it in QuickTime Player. That menu also has Show in Finder and Open In. Open In lists the applications that can open a still, with ZImage first. A video menu uses Open With, and that list is the video players, with QuickTime Player first. The last line is the file size in decimal megabytes. File → Open File opens one image from anywhere, including a mounted share, with the same editor. Previews for the grid are a single JPEG per file, long edge at most 250 px, JPEG quality 70%, written under `FileManager.temporaryDirectory/ZImage/folder-previews/` with an LRU cap of 200 MB. The files stay when the app quits and when another folder is opened. The three-bar menu to the left of Open File has Cache: Set Cache Size, View Cache, and Clear Cache. Export sits to the right of the Folder and Image selector and is shown only while Image is selected. The view scales that bitmap. There is no pyramid and no per-slider-position render.
+**Pass 1 folder browser.** File → Open Folder uses `NSOpenPanel` with directories allowed. That folder is the root of a directory tree on the left. The next launch opens that same tree and selects the folder that was selected when the app quit. If that folder cannot be opened, the tree stays empty. The tree lists directories only, one level when a row opens. Sub-folder, written to the left of its checkbox and to the left of View, searches subfolders and shows the images and videos it finds in the Folder view. With Sub off, the Folder tab lists the still images ImageIO can identify and the video files in the selected folder, and does not list files inside subfolders. Sub's walk stays under the selected folder. The browser does not write SQLite. Double-clicking an image, or Edit Image on its right-click menu, opens it on the Image tab. Double-clicking a video opens it in QuickTime Player. That menu also has Show in Finder and Open In. Open In lists the applications that can open a still, with ZImage first. A video menu uses Open With, and that list is the video players, with QuickTime Player first. The last line is the file size in decimal megabytes. File → Open File opens one image from anywhere, including a mounted share, with the same editor. Previews for the grid are a single JPEG per file, long edge at most 250 px, JPEG quality 70%, written under `FileManager.temporaryDirectory/ZImage/folder-previews/` with an LRU cap of 200 MB. The files stay when the app quits and when another folder is opened. Each finished preview appears in its cell as soon as it is written. The grid does not wait for the rest of the folder. The three-bar menu to the left of Open File has Cache: Set Cache Size, View Cache, and Clear Cache. Export sits to the right of the Folder and Image selector and is shown only while Image is selected. The view scales that bitmap. There is no pyramid and no per-slider-position render.
 
 **Preview-size slider.** Every grid uses one control, `PreviewSizeSlider`, in that grid's toolbar. Range 80 pt to 480 pt, default 160 pt, labeled "Preview size". It sets the cell's long edge. The editor folder bitmap stays ≤ 250 px. The library bitmap stays ≤ 512 px. This slider is not the editor zoom. Editor zoom stays on the canvas toolbar and is the 0.1×–4× control from the zoom section. Pass 2's library, review park, and duplicates store reuse the same slider and the same 512 px JPEG. They do not invent a second thumbnail size.
 
@@ -1177,13 +1181,17 @@ Rollback of code is git. Rollback of a move that already reached `done` is not a
 
 A DSM update can delete the Task Scheduler entry even when the binary on the data volume survives. The Mac offline banner names the recovery: open DSM Task Scheduler and confirm the boot task still runs `.zimage/bin/zimage-helper`. That is an operator step, not something the app can fix from the laptop.
 
-Install outline the helper PR carries in its description:
+Install outline. `README.md` has the same steps for someone who is not reading this plan. The 1.5.0 disk image does not contain the helper.
 
-1. Build the ARM64 binary on the Mac.
-2. Copy it to `PhotoVideoAudio/.zimage/bin/` over SMB.
-3. Set `library_root_local` in `config.yaml` on the NAS.
-4. Add the boot task in DSM as a non-admin user.
-5. Launch ZImage, let it claim `PAIRING-TOKEN`, confirm the lamp and the health RSS.
+1. On the Mac, from `Helper/`: `GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o zimage-helper ./cmd/zimage-helper`.
+2. Stop the DSM task if it is already running. Copy the binary to `PhotoVideoAudio/.zimage/bin/zimage-helper` over SMB and set mode 0700. Do not copy over a running binary.
+3. Copy `Helper/config.example.yaml` to `PhotoVideoAudio/.zimage/config.yaml`. Set `library_root_local` to the path DSM uses. On volume 1 that is often `/volume1/BackupData/PhotoVideoAudio`. Leave `scope_relative` as `Photos`.
+4. Before the first `catalog.db` on btrfs: `mkdir -p <library_root_local>/.zimage/catalog` and `chattr +C` on that directory. The helper does not run `chattr`.
+5. In DSM Control Panel, Task Scheduler, create a triggered task, user-defined script, event Boot-up. Run it as a user who can read and write the shared folder. Do not run it as root. The script is `export GOMEMLIMIT=160MiB` and then `<library_root_local>/.zimage/bin/zimage-helper -config <library_root_local>/.zimage/config.yaml`.
+6. Run the task. A second start exits while `.zimage/helper.lock` is held. The helper listens on IPv4 port 8742.
+7. In ZImager, choose Server and Pair with Helper. The helper writes `PAIRING-TOKEN` once. The Mac reads it over the share and claims it.
+
+A DSM update can remove the task while the binary on the data volume remains. Open Task Scheduler and confirm the boot task still runs that command.
 
 `chattr +C` on the catalog directory is in that same description, before the first database create.
 

@@ -3,6 +3,7 @@ package thumb
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"zimage/helper/internal/db"
@@ -128,6 +129,51 @@ func TestApplyRetriesNeedsMacWithinTheCeiling(t *testing.T) {
 	n, err = ApplyNext(root, catalog, nil, 10)
 	if err != nil || n != 0 {
 		t.Fatalf("second pass n=%d err=%v", n, err)
+	}
+}
+
+func TestApplyNextUnderThumbsOnlyThatFolder(t *testing.T) {
+	root := t.TempDir()
+	catalog := openThumbCatalog(t, root)
+	for _, rel := range []string{
+		"Photos/Keep/a.jpg",
+		"Photos/Keep/nested/b.jpg",
+		"Photos/Other/c.jpg",
+		"Photos/A_B/one.jpg",
+		"Photos/AXB/two.jpg",
+	} {
+		path := filepath.Join(root, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, solidJPEG(t, 32, 16), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		insertDiscovered(t, catalog, strings.ReplaceAll(rel, "/", "-"), rel)
+	}
+	if PathLike("Photos/A_B") != `Photos/A\_B/%` {
+		t.Fatalf("pattern %q", PathLike("Photos/A_B"))
+	}
+	n, err := ApplyNextUnder(root, catalog, nil, 10, "Photos/Keep", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 || thumbedCount(t, catalog) != 2 {
+		t.Fatalf("keep n=%d thumbs=%d", n, thumbedCount(t, catalog))
+	}
+	n, err = ApplyNextUnder(root, catalog, nil, 10, "Photos/A_B", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 || thumbedCount(t, catalog) != 3 {
+		t.Fatalf("underscore n=%d thumbs=%d", n, thumbedCount(t, catalog))
+	}
+	var other string
+	if err := catalog.Read.QueryRow(`SELECT COALESCE(thumb_rel, '') FROM assets WHERE rel_path = 'Photos/AXB/two.jpg'`).Scan(&other); err != nil {
+		t.Fatal(err)
+	}
+	if other != "" {
+		t.Fatalf("wildcard match stored %q", other)
 	}
 }
 

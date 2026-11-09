@@ -14,10 +14,12 @@ import (
 const batchSize = 50
 
 // Options paces a pass. Pause runs after each batch of 50 files.
+// Progress reports files looked at. It does no extra catalog work.
 type Options struct {
-	Now   time.Time
-	Pause func()
-	Note  func(string)
+	Now      time.Time
+	Pause    func()
+	Note     func(string)
+	Progress func(done, total int)
 }
 
 func (o Options) now() time.Time {
@@ -51,6 +53,9 @@ type row struct {
 // Assign writes capture fields from EXIF, the path, the year folder, and mtime.
 // A user date is left at confidence 1. Files are opened read-only.
 func Assign(root string, catalog *db.Catalog, opts Options) error {
+	if opts.Progress != nil {
+		opts.Progress(0, 0)
+	}
 	rows, err := catalog.Read.Query(`
 		SELECT id, rel_path, reorg_policy, COALESCE(capture_source, ''), mtime_ns, capture_confidence
 		FROM assets
@@ -84,6 +89,12 @@ func Assign(root string, catalog *db.Catalog, opts Options) error {
 	chgCount := map[string]int{}
 	videoCount := map[string]int{}
 	mtCount := map[string]int{}
+	advance := func(done int) {
+		if opts.Progress != nil {
+			opts.Progress(done, len(list))
+		}
+	}
+	advance(0)
 	for i, item := range list {
 		read[i].row = item
 		if item.mtime.Valid {
@@ -91,6 +102,7 @@ func Assign(root string, catalog *db.Catalog, opts Options) error {
 		}
 		facts, ok := factsFor(root, item.rel)
 		if !ok {
+			advance(i + 1)
 			continue
 		}
 		read[i].facts = facts
@@ -107,6 +119,7 @@ func Assign(root string, catalog *db.Catalog, opts Options) error {
 		if facts.Video != nil {
 			videoCount[dirKey(item.rel)+"|"+facts.Video.Time.Format(time.RFC3339Nano)]++
 		}
+		advance(i + 1)
 	}
 
 	now := opts.now()

@@ -21,7 +21,7 @@ const (
 	// width times height. The file's byte size is not a limit.
 	maxPixels   = 32_000_000
 	maxPreview  = 4 << 20
-	longEdge    = 512
+	longEdge    = 256
 	jpegQuality = 70
 )
 
@@ -60,7 +60,7 @@ func Dimensions(path string) (int, int, bool) {
 	return w, h, ok && w > 0 && h > 0
 }
 
-// Build scales one file to a long edge of 512. A header above maxPixels returns NeedsMac.
+// Build scales one file to a long edge of 256. A header above maxPixels returns NeedsMac.
 func Build(path string) (Result, error) {
 	file, err := os.Open(path)
 	if err != nil {

@@ -31,8 +31,16 @@ var skipDirectories = map[string]bool{
 }
 
 // Options controls the low-priority pause between commits.
+// Progress reports files looked at. total is a catalog count taken once at the start, or 0 when that count fails.
+// Interrupt names a folder that should be served before the walk continues.
+// Needs reports whether that folder still has preview work. It may use the read connection while a batch is open.
+// Serve runs only after that batch is committed, while the write connection is free.
 type Options struct {
 	AfterCommit func()
+	Progress    func(done, total int)
+	Interrupt   func() string
+	Needs       func(prefix string) bool
+	Serve       func(prefix string)
 }
 
 // Summary is the result of one walk.
@@ -55,12 +63,20 @@ func Run(root string, catalog *db.Catalog, opts Options) (Summary, error) {
 	}
 	defer catalog.Write.Exec(`PRAGMA synchronous = FULL`)
 
+	var known int
+	if opts.Progress != nil {
+		_ = catalog.Read.QueryRow(`SELECT COUNT(*) FROM assets`).Scan(&known)
+		opts.Progress(0, known)
+	}
+
 	tx, err := catalog.Write.Begin()
 	if err != nil {
 		return summary, err
 	}
 	pending := 0
-	commit := func() error {
+	// focusPrefix is empty for a normal batch. A focused folder is served after
+	// the commit and before the next transaction, because Write has one connection.
+	commit := func(focusPrefix string) error {
 		if pending == 0 {
 			return nil
 		}
@@ -69,7 +85,11 @@ func Run(root string, catalog *db.Catalog, opts Options) (Summary, error) {
 		}
 		summary.Commits++
 		pending = 0
-		if opts.AfterCommit != nil {
+		if focusPrefix != "" {
+			if opts.Serve != nil {
+				opts.Serve(focusPrefix)
+			}
+		} else if opts.AfterCommit != nil {
 			opts.AfterCommit()
 		}
 		tx, err = catalog.Write.Begin()
@@ -105,15 +125,26 @@ func Run(root string, catalog *db.Catalog, opts Options) (Summary, error) {
 		}
 		summary.Inserted++
 		pending++
-		if pending >= batchSize {
-			return commit()
+		if opts.Progress != nil {
+			opts.Progress(summary.Inserted, known)
+		}
+		focusPrefix := ""
+		if opts.Interrupt != nil && opts.Needs != nil {
+			if prefix := opts.Interrupt(); prefix != "" && opts.Needs(prefix) {
+				focusPrefix = prefix
+			}
+		}
+		if focusPrefix != "" || pending >= batchSize {
+			if err := commit(focusPrefix); err != nil {
+				return err
+			}
 		}
 		return nil
 	})
 	if err != nil {
 		return summary, err
 	}
-	if err := commit(); err != nil {
+	if err := commit(""); err != nil {
 		return summary, err
 	}
 	return summary, nil

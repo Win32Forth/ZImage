@@ -56,6 +56,51 @@ type Server struct {
 	planPark    int
 	planLeave   int
 	planSeen    int
+
+	scanMu     sync.Mutex
+	scanRun    string
+	scanPhase  string
+	scanDone   int
+	scanTotal  int
+	scanGroups int
+
+	// Startup progress. Writes are three fields. The status query reads them and does not open the catalog.
+	passPhase string
+	passDone  int
+	passTotal int
+
+	// Folder the app is showing. The startup walk reads this and does not store it in the catalog.
+	focusMu     sync.Mutex
+	focusPrefix string
+}
+
+// SetPass stores the startup task. The call does no catalog work.
+func (s *Server) SetPass(phase string, done, total int) {
+	s.scanMu.Lock()
+	s.passPhase = phase
+	s.passDone = done
+	s.passTotal = total
+	s.scanMu.Unlock()
+}
+
+// ClearPass empties the startup task when the pass finishes.
+func (s *Server) ClearPass() {
+	s.SetPass("", 0, 0)
+}
+
+// SetFocus stores the folder the app is showing. An empty prefix clears it.
+// The call does no catalog work.
+func (s *Server) SetFocus(prefix string) {
+	s.focusMu.Lock()
+	s.focusPrefix = prefix
+	s.focusMu.Unlock()
+}
+
+// Focus is the folder stored by SetFocus.
+func (s *Server) Focus() string {
+	s.focusMu.Lock()
+	defer s.focusMu.Unlock()
+	return s.focusPrefix
 }
 
 // UseRunner shares the process mover with boot recovery and the reorg routes.
@@ -163,6 +208,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/v1/assets/{uid}/pin", s.guard(true, s.pinAsset))
 	mux.HandleFunc("/v1/assets/{uid}/purge", s.guard(true, s.purgeAsset))
 	mux.HandleFunc("/v1/duplicates/purge-all", s.guard(true, s.purgeAll))
+	mux.HandleFunc("/v1/duplicates/scan", s.guard(true, s.duplicateScan))
+	mux.HandleFunc("/v1/focus", s.guard(true, s.focus))
 	mux.HandleFunc("/v1/duplicates", s.guard(true, s.duplicates))
 	mux.HandleFunc("/v1/assets/{uid}/thumbnail", s.guard(true, s.assetThumbnail))
 	mux.HandleFunc("/v1/assets/{uid}/facts", s.guard(true, s.assetFacts))

@@ -59,7 +59,7 @@ func TestPortraitSizedJPEGIsPreviewed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.NeedsMac || result.Width != 1920 || result.Height != 2560 || !LongEdgeIsBounded(result.JPEG) {
+	if result.NeedsMac || result.Width != 1920 || result.Height != 2560 || jpegLong(t, result.JPEG) != 256 {
 		t.Fatalf("result %+v fileBytes %d", result, info.Size())
 	}
 }
@@ -77,12 +77,12 @@ func TestThirtyMegapixelJPEGIsPreviewed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.NeedsMac || result.DecodeSupport != "full" || result.Width != 6000 || result.Height != 5000 || !LongEdgeIsBounded(result.JPEG) {
+	if result.NeedsMac || result.DecodeSupport != "full" || result.Width != 6000 || result.Height != 5000 || jpegLong(t, result.JPEG) != 256 {
 		t.Fatalf("result %+v fileBytes %d", result, info.Size())
 	}
 }
 
-func TestSmallJPEGLongEdgeStaysAtMost512(t *testing.T) {
+func TestSmallJPEGLongEdgeStaysAtMost256(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "wide.jpg")
 	if err := os.WriteFile(path, solidJPEG(t, 800, 20), 0o644); err != nil {
 		t.Fatal(err)
@@ -91,9 +91,21 @@ func TestSmallJPEGLongEdgeStaysAtMost512(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.NeedsMac || !LongEdgeIsBounded(result.JPEG) {
+	if result.NeedsMac || jpegLong(t, result.JPEG) != 256 {
 		t.Fatalf("result %+v len %d", result.NeedsMac, len(result.JPEG))
 	}
+}
+
+func jpegLong(t *testing.T, jpegBytes []byte) int {
+	t.Helper()
+	cfg, err := jpeg.DecodeConfig(bytes.NewReader(jpegBytes))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Height > cfg.Width {
+		return cfg.Height
+	}
+	return cfg.Width
 }
 
 func jpegSOF(width, height int) []byte {

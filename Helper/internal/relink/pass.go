@@ -13,9 +13,15 @@ import (
 )
 
 // Options controls the yield while a mover is copying.
+// Progress reports files looked at on the first listing. It does no extra catalog work.
+// Stage reports the catalog update and the second listing. It does no extra catalog work.
+// UpdateBatch is how many catalog rows each update writes. Zero uses 10,000.
 type Options struct {
-	Copying func() bool
-	Sleep   func(time.Duration)
+	Copying     func() bool
+	Sleep       func(time.Duration)
+	Progress    func(done int)
+	Stage       func(name string, done, total int)
+	UpdateBatch int
 }
 
 // Pass walks Photos, marks disappeared non-purged rows missing, and relinks a unique match.
@@ -58,6 +64,9 @@ func Pass(root string, catalog *db.Catalog, opts Options) error {
 	// require missing = 1, so the relink walk follows that update.
 	err = walkPhotos(root, photos, func(rel, abs string) error {
 		seen++
+		if opts.Progress != nil {
+			opts.Progress(seen)
+		}
 		batch = append(batch, rel)
 		if seen%50 == 0 {
 			if err := flush(); err != nil {
@@ -73,13 +82,9 @@ func Pass(root string, catalog *db.Catalog, opts Options) error {
 	if err := flush(); err != nil {
 		return err
 	}
+	listed := seen
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	if _, err := catalog.Write.Exec(`
-		UPDATE assets
-		SET missing = CASE WHEN rel_path IN (SELECT rel_path FROM relink_seen) THEN 0 ELSE 1 END,
-			updated_at = ?
-		WHERE placement != 'purged'
-		AND (rel_path = 'Photos' OR rel_path LIKE 'Photos/%')`, now); err != nil {
+	if err := markPresent(catalog, now, opts); err != nil {
 		return err
 	}
 	var candidates int
@@ -90,6 +95,9 @@ func Pass(root string, catalog *db.Catalog, opts Options) error {
 	}
 	if candidates == 0 {
 		return nil
+	}
+	if listed > 0 && opts.Stage != nil {
+		opts.Stage("match", 0, listed)
 	}
 	seen = 0
 	return walkPhotos(root, photos, func(rel, abs string) error {
@@ -103,11 +111,95 @@ func Pass(root string, catalog *db.Catalog, opts Options) error {
 				return err
 			}
 		}
+		if opts.Stage != nil {
+			total := listed
+			if seen > total {
+				total = seen
+			}
+			opts.Stage("match", seen, total)
+		}
 		if seen%50 == 0 {
 			yield(opts)
 		}
 		return nil
 	})
+}
+
+// markPresent records which catalog rows were in the listing.
+// Each batch reports presence so the status moves during the update.
+func markPresent(catalog *db.Catalog, now string, opts Options) error {
+	if opts.Stage != nil {
+		opts.Stage("presence", 0, 0)
+	}
+	var total int
+	if err := catalog.Read.QueryRow(`
+		SELECT COUNT(*) FROM assets
+		WHERE placement != 'purged'
+		AND (rel_path = 'Photos' OR rel_path LIKE 'Photos/%')`).Scan(&total); err != nil {
+		return err
+	}
+	report := func(done int) {
+		if opts.Stage != nil {
+			opts.Stage("presence", done, total)
+		}
+	}
+	report(0)
+	if total == 0 {
+		return nil
+	}
+	batch := opts.UpdateBatch
+	if batch <= 0 {
+		batch = 10000
+	}
+	last := int64(0)
+	done := 0
+	for {
+		hi, n, err := presenceIDs(catalog, last, batch)
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			return nil
+		}
+		if _, err := catalog.Write.Exec(`
+			UPDATE assets
+			SET missing = CASE WHEN rel_path IN (SELECT rel_path FROM relink_seen) THEN 0 ELSE 1 END,
+				updated_at = ?
+			WHERE id > ? AND id <= ?
+			AND placement != 'purged'
+			AND (rel_path = 'Photos' OR rel_path LIKE 'Photos/%')`, now, last, hi); err != nil {
+			return err
+		}
+		last = hi
+		done += n
+		report(done)
+		if n < batch {
+			return nil
+		}
+	}
+}
+
+func presenceIDs(catalog *db.Catalog, last int64, batch int) (int64, int, error) {
+	rows, err := catalog.Read.Query(`
+		SELECT id FROM assets
+		WHERE id > ?
+		AND placement != 'purged'
+		AND (rel_path = 'Photos' OR rel_path LIKE 'Photos/%')
+		ORDER BY id
+		LIMIT ?`, last, batch)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer rows.Close()
+	var hi int64
+	n := 0
+	for rows.Next() {
+		if err := rows.Scan(&hi); err != nil {
+			return 0, 0, err
+		}
+		n++
+	}
+	return hi, n, rows.Err()
 }
 
 func yield(opts Options) {

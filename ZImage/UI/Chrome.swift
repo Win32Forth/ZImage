@@ -1015,20 +1015,19 @@ final class EditorModel {
         }
     }
 
+    /// Builds one preview at a time and shows it as soon as that file is ready.
     private func preparePreviews(for entries: [FolderEntry], generation: Int) {
         let images = entries.filter { !$0.isDirectory }.map(\.url)
         Task {
-            let built = await Task.detached { () -> [(String, URL)] in
-                var pairs: [(String, URL)] = []
-                for imageURL in images {
-                    guard let jpeg = try? FolderPreviewCache.ensureJPEG(for: imageURL) else { continue }
-                    pairs.append((FolderEntry.cacheKey(for: imageURL), jpeg))
+            for imageURL in images {
+                let key = FolderEntry.cacheKey(for: imageURL)
+                let jpeg = await Task.detached { () -> URL? in
+                    try? FolderPreviewCache.ensureJPEG(for: imageURL)
+                }.value
+                guard generation == self.folderGeneration else { return }
+                if let jpeg {
+                    self.previewJPEGByPath[key] = jpeg
                 }
-                return pairs
-            }.value
-            guard generation == self.folderGeneration else { return }
-            for (path, jpeg) in built {
-                self.previewJPEGByPath[path] = jpeg
             }
         }
     }

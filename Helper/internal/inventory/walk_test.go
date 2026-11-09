@@ -133,6 +133,49 @@ func TestCommitsEveryFiftyFiles(t *testing.T) {
 	}
 }
 
+func TestWalkServesTheFocusedFolderAfterCommit(t *testing.T) {
+	root := t.TempDir()
+	for i := 1; i <= 3; i++ {
+		writeJPEG(t, filepath.Join(root, "Photos", "Keep", "img"+itoa(i)+".jpg"))
+	}
+	catalog := openCatalog(t, root)
+	served := 0
+	summary, err := Run(root, catalog, Options{
+		Interrupt: func() string { return "Photos/Keep" },
+		Needs: func(prefix string) bool {
+			if prefix != "Photos/Keep" {
+				return false
+			}
+			var n int
+			if err := catalog.Read.QueryRow(`SELECT COUNT(*) FROM assets`).Scan(&n); err != nil {
+				t.Errorf("read %v", err)
+				return false
+			}
+			return true
+		},
+		Serve: func(prefix string) {
+			if prefix != "Photos/Keep" {
+				t.Errorf("prefix %s", prefix)
+			}
+			served++
+			var n int
+			if err := catalog.Write.QueryRow(`SELECT COUNT(*) FROM assets`).Scan(&n); err != nil {
+				t.Errorf("write %v", err)
+				return
+			}
+			if n < served {
+				t.Errorf("visible %d after serve %d", n, served)
+			}
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.Inserted != 3 || served != 3 || summary.Commits != 3 {
+		t.Fatalf("inserted %d served %d commits %d", summary.Inserted, served, summary.Commits)
+	}
+}
+
 func openCatalog(t *testing.T, root string) *db.Catalog {
 	t.Helper()
 	catalog, err := db.Open(filepath.Join(root, ".zimage", "catalog", "catalog.db"))

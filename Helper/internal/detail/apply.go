@@ -17,6 +17,14 @@ import (
 // ScoreFiles scores JPEG, PNG, GIF, and BMP at or under 4 megapixels.
 // A larger header, a RAW file, and HEIC stay detail_score NULL and detail_source needs_mac.
 func ScoreFiles(root string, catalog *db.Catalog, note func(string), pause func()) error {
+	return ScoreFilesProgress(root, catalog, note, pause, nil)
+}
+
+// ScoreFilesProgress is ScoreFiles. progress reports files looked at.
+func ScoreFilesProgress(root string, catalog *db.Catalog, note func(string), pause func(), progress func(done, total int)) error {
+	if progress != nil {
+		progress(0, 0)
+	}
 	rows, err := catalog.Read.Query(`
 		SELECT id, uid, rel_path, ext, width, height, native_pixels
 		FROM assets
@@ -49,9 +57,15 @@ func ScoreFiles(root string, catalog *db.Catalog, note func(string), pause func(
 	}
 	rows.Close()
 
+	if progress != nil {
+		progress(0, len(list))
+	}
 	for i, one := range list {
 		if err := scoreOne(root, catalog, one.id, one.uid, one.rel, one.ext, one.width, one.height, one.pixels, note); err != nil {
 			return err
+		}
+		if progress != nil {
+			progress(i+1, len(list))
 		}
 		if pause != nil && (i+1)%50 == 0 {
 			pause()

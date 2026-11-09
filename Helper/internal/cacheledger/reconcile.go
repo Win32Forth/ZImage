@@ -16,7 +16,19 @@ import (
 // when they fit, and deletes unreferenced cache/scratch. It does not delete
 // catalog/ or move-backup/.
 func Reconcile(root string, catalog *db.Catalog, limits Limits) error {
-	if err := dropMissingLedger(root, catalog); err != nil {
+	return ReconcileProgress(root, catalog, limits, nil)
+}
+
+// ReconcileProgress is Reconcile. progress reports files looked at and does no extra catalog work.
+func ReconcileProgress(root string, catalog *db.Catalog, limits Limits, progress func(done int)) error {
+	seen := 0
+	tick := func() {
+		seen++
+		if progress != nil {
+			progress(seen)
+		}
+	}
+	if err := dropMissingLedger(root, catalog, tick); err != nil {
 		return err
 	}
 	cacheRoot := filepath.Join(root, ".zimage", "cache")
@@ -45,6 +57,7 @@ func Reconcile(root string, catalog *db.Catalog, limits Limits) error {
 		if !underCache(rel) {
 			return nil
 		}
+		tick()
 		switch {
 		case strings.HasPrefix(rel, ".zimage/cache/scratch/"):
 			return dropScratch(root, catalog, rel, abs)
@@ -56,7 +69,7 @@ func Reconcile(root string, catalog *db.Catalog, limits Limits) error {
 	})
 }
 
-func dropMissingLedger(root string, catalog *db.Catalog) error {
+func dropMissingLedger(root string, catalog *db.Catalog, tick func()) error {
 	rows, err := catalog.Read.Query(`SELECT rel_path FROM cache_objects`)
 	if err != nil {
 		return err
@@ -67,6 +80,9 @@ func dropMissingLedger(root string, catalog *db.Catalog) error {
 		var rel string
 		if err := rows.Scan(&rel); err != nil {
 			return err
+		}
+		if tick != nil {
+			tick()
 		}
 		if !underCache(rel) {
 			drop = append(drop, rel)

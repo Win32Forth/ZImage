@@ -14,6 +14,18 @@ Each entry uses this shape:
 - Scope: design section or PR name
 - Notes: facts, decisions, and the next step
 
+## 2026-11-09 — ZImager 1.5.0
+
+- Status: done
+- Scope: ZImager 1.5.0. ZImage and ZImage Library stay at 1.0.
+- Notes: ZImager is the app to run. Disk is the editor and Server is the library, in one window. Source Disk/Server sits on the top bar. Disk shows Open File and Open Folder. Server shows Choose Library Base Folder and Pair with Helper. Folder and Image sit in the center. Rotate left and Rotate right sit beside those tabs in both views. Paste settings sits only in Folder view, and it stays off until Copy settings has been used. Shift-click selects a range of stills. Rotate and paste save each selected photo and rebuild those previews. Videos are skipped. An edit on the open photo rebuilds that photo's folder preview. Server Photos lists stills and videos together. The Videos sidebar entry is gone. A video opens in QuickTime Player. Server Image mode shows Undo, Redo, Copy settings, and Paste settings. The date panel is on the right of a Server folder. Events and Reorganize replace that panel while they are on. The helper status line sits to the right of Server and refreshes about every 10 seconds. The helper source prefers the folder on screen, writes 256 px previews, and reports the cache check, the file listing, and the catalog match while it walks. Reorganize, Review, and Duplicates do not work yet. Using them can lose photos. Leave them alone. Do not press Start, Pause, Continue, Find duplicates, or Delete all duplicates. Server mode needs the helper. `README.md` says how to build the ARM64 binary, copy it to `PhotoVideoAudio/.zimage/bin/zimage-helper`, and start it from DSM Task Scheduler with `GOMEMLIMIT=160MiB`. The disk image does not include the helper. Stop the task before replacing the binary. Do not open `catalog.db` from the Mac.
+
+## 2026-11-07 — Folder previews appear as they are built
+
+- Status: done
+- Scope: ZImage editor Folder view.
+- Notes: Choosing a folder still lists every file at once. Each preview JPEG is shown in its cell as soon as that file is written. The grid no longer waits until the whole folder is done. The helper was not changed.
+
 ## 2026-11-07 — Docs match the tree
 
 - Status: done

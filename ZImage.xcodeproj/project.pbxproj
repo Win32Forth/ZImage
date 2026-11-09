@@ -25,6 +25,7 @@
 		000000000000000000000120 /* ZImage.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ZImage.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		A10000000000000000000002 /* ZImageTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ZImageTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		C10000000000000000000002 /* ZImageLibrary.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ZImageLibrary.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		D10000000000000000000002 /* ZImager.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ZImager.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		FAB46EEE309B9A3D00245D7E /* DESIGN.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = DESIGN.md; sourceTree = "<group>"; };
 		FAB46EEF309B9A3D00245D7E /* STATUS.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = STATUS.md; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -71,6 +72,11 @@
 			path = ZImageLibrary;
 			sourceTree = "<group>";
 		};
+		D10000000000000000000001 /* ZImager */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = ZImager;
+			sourceTree = "<group>";
+		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -89,6 +95,11 @@
 			files = (
 			);
 		};
+		D10000000000000000000005 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			files = (
+			);
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -100,6 +111,7 @@
 				000000000000000000000010 /* ZImage */,
 				A10000000000000000000001 /* ZImageTests */,
 				C10000000000000000000001 /* ZImageLibrary */,
+				D10000000000000000000001 /* ZImager */,
 				000000000000000000000020 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -109,6 +121,7 @@
 			children = (
 				000000000000000000000120 /* ZImage.app */,
 				C10000000000000000000002 /* ZImageLibrary.app */,
+				D10000000000000000000002 /* ZImager.app */,
 				A10000000000000000000002 /* ZImageTests.xctest */,
 			);
 			name = Products;
@@ -175,6 +188,25 @@
 			productReference = C10000000000000000000002 /* ZImageLibrary.app */;
 			productType = "com.apple.product-type.application";
 		};
+		D10000000000000000000003 /* ZImager */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = D10000000000000000000009 /* Build configuration list for PBXNativeTarget "ZImager" */;
+			buildPhases = (
+				D10000000000000000000004 /* Sources */,
+				D10000000000000000000005 /* Frameworks */,
+				D10000000000000000000006 /* Resources */,
+				D20000000000000000000001 /* Embed libjxl */,
+			);
+			buildRules = (
+			);
+			fileSystemSynchronizedGroups = (
+				D10000000000000000000001 /* ZImager */,
+			);
+			name = ZImager;
+			productName = ZImager;
+			productReference = D10000000000000000000002 /* ZImager.app */;
+			productType = "com.apple.product-type.application";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -193,6 +225,9 @@
 						TestTargetID = 000000000000000100000000;
 					};
 					C10000000000000000000003 = {
+						CreatedOnToolsVersion = 26.3;
+					};
+					D10000000000000000000003 = {
 						CreatedOnToolsVersion = 26.3;
 					};
 				};
@@ -214,6 +249,7 @@
 				000000000000000100000000 /* ZImage */,
 				A10000000000000000000003 /* ZImageTests */,
 				C10000000000000000000003 /* ZImageLibrary */,
+				D10000000000000000000003 /* ZImager */,
 			);
 		};
 /* End PBXProject section */
@@ -236,10 +272,25 @@
 			files = (
 			);
 		};
+		D10000000000000000000006 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			files = (
+			);
+		};
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXShellScriptBuildPhase section */
 		B20000000000000000000001 /* Embed libjxl */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			name = "Embed libjxl";
+			shellPath = /bin/bash;
+			shellScript = (
+				"bash \"${SRCROOT}/Vendor/embed-libjxl.sh\"",
+				"",
+			);
+		};
+		D20000000000000000000001 /* Embed libjxl */ = {
 			isa = PBXShellScriptBuildPhase;
 			alwaysOutOfDate = 1;
 			name = "Embed libjxl";
@@ -263,6 +314,11 @@
 			);
 		};
 		C10000000000000000000004 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			files = (
+			);
+		};
+		D10000000000000000000004 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			files = (
 			);
@@ -648,6 +704,100 @@
 			};
 			name = Release;
 		};
+		D10000000000000000000007 /* Debug configuration for PBXNativeTarget "ZImager" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = ZImager.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = X5YCJL3LJ8;
+				ENABLE_APP_SANDBOX = NO;
+				ENABLE_PREVIEWS = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				GENERATE_INFOPLIST_FILE = YES;
+				HEADER_SEARCH_PATHS = (
+					"$(PROJECT_DIR)/Vendor/libwebp/include",
+					"$(PROJECT_DIR)/Vendor/libjxl/include",
+				);
+				INFOPLIST_FILE = "ZImager-Info.plist";
+				INFOPLIST_KEY_CFBundleDisplayName = ZImager;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.photography";
+				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks";
+				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = "@executable_path/../Frameworks";
+				LIBRARY_SEARCH_PATHS = (
+					"$(PROJECT_DIR)/Vendor/libwebp/lib",
+					"$(PROJECT_DIR)/Vendor/libjxl/lib",
+				);
+				MARKETING_VERSION = 1.5.0;
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-lwebp",
+					"-lsharpyuv",
+					"-ljxl",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.Win32Forth.ZImager;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				REGISTER_APP_GROUPS = YES;
+				SDKROOT = macosx;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SUPPORTED_PLATFORMS = macosx;
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_INCLUDE_PATHS = "$(PROJECT_DIR)/Vendor/module";
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		D10000000000000000000008 /* Release configuration for PBXNativeTarget "ZImager" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = ZImager.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = X5YCJL3LJ8;
+				ENABLE_APP_SANDBOX = NO;
+				ENABLE_PREVIEWS = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				GENERATE_INFOPLIST_FILE = YES;
+				HEADER_SEARCH_PATHS = (
+					"$(PROJECT_DIR)/Vendor/libwebp/include",
+					"$(PROJECT_DIR)/Vendor/libjxl/include",
+				);
+				INFOPLIST_FILE = "ZImager-Info.plist";
+				INFOPLIST_KEY_CFBundleDisplayName = ZImager;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.photography";
+				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks";
+				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = "@executable_path/../Frameworks";
+				LIBRARY_SEARCH_PATHS = (
+					"$(PROJECT_DIR)/Vendor/libwebp/lib",
+					"$(PROJECT_DIR)/Vendor/libjxl/lib",
+				);
+				MARKETING_VERSION = 1.5.0;
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-lwebp",
+					"-lsharpyuv",
+					"-ljxl",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.Win32Forth.ZImager;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				REGISTER_APP_GROUPS = YES;
+				SDKROOT = macosx;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SUPPORTED_PLATFORMS = macosx;
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_INCLUDE_PATHS = "$(PROJECT_DIR)/Vendor/module";
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -680,6 +830,14 @@
 			buildConfigurations = (
 				C10000000000000000000007 /* Debug configuration for PBXNativeTarget "ZImageLibrary" */,
 				C10000000000000000000008 /* Release configuration for PBXNativeTarget "ZImageLibrary" */,
+			);
+			defaultConfigurationName = Release;
+		};
+		D10000000000000000000009 /* Build configuration list for PBXNativeTarget "ZImager" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				D10000000000000000000007 /* Debug configuration for PBXNativeTarget "ZImager" */,
+				D10000000000000000000008 /* Release configuration for PBXNativeTarget "ZImager" */,
 			);
 			defaultConfigurationName = Release;
 		};

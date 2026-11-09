@@ -18,6 +18,9 @@ type hashRow struct {
 // InheritNeighbors copies a date across one dHash hop and applies the burst rule.
 // The neighbor set is the pre-update snapshot, so a second hop does not chain.
 func InheritNeighbors(catalog *db.Catalog, opts Options) error {
+	if opts.Progress != nil {
+		opts.Progress(0, 0)
+	}
 	rows, err := catalog.Read.Query(`
 		SELECT id, dhash, COALESCE(capture_time, ''), capture_confidence, COALESCE(capture_source, '')
 		FROM assets
@@ -43,7 +46,10 @@ func InheritNeighbors(catalog *db.Catalog, opts Options) error {
 	rows.Close()
 
 	updates := map[int64]Decision{}
-	for _, item := range list {
+	if opts.Progress != nil {
+		opts.Progress(0, len(list))
+	}
+	for i, item := range list {
 		base := decisionFromStored(item.capture, item.confidence, item.source)
 		neighbors, err := dhashindex.Lookup(catalog.Read, item.id, item.hash, dhashindex.DateDistance, dhashindex.ScanLimit, func(column string, value uint64) {
 			opts.note("dhash_band_saturated " + column + "=" + uitoa(value))
@@ -79,6 +85,9 @@ func InheritNeighbors(catalog *db.Catalog, opts Options) error {
 		}
 		if best.Source != base.Source || best.Confidence != base.Confidence || best.StoredTime() != base.StoredTime() {
 			updates[item.id] = best
+		}
+		if opts.Progress != nil {
+			opts.Progress(i+1, len(list))
 		}
 	}
 	if len(updates) == 0 {
