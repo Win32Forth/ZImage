@@ -3,7 +3,7 @@ import ImageIO
 import Security
 import UniformTypeIdentifiers
 import XCTest
-@testable import ZImage
+@testable import ZImager
 
 final class ProxyRendererTests: XCTestCase {
     func testJPEGFixtureUsesThumbnailAndStaysWithinLongEdge() throws {
@@ -87,7 +87,7 @@ final class ProxyRendererTests: XCTestCase {
     }
 
     func testBuiltAppIsNotSandboxed() throws {
-        let bundle = Bundle(identifier: "com.Win32Forth.ZImage") ?? Bundle.main
+        let bundle = Bundle(identifier: "com.Win32Forth.ZImager") ?? Bundle.main
         var code: SecStaticCode?
         let created = SecStaticCodeCreateWithPath(bundle.bundleURL as CFURL, [], &code)
         XCTAssertEqual(created, errSecSuccess)

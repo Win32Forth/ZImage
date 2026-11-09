@@ -5,9 +5,9 @@
 | Product | ZImage |
 | Author | Thomas Zimmer |
 | Date | 2026-11-09 |
-| Status | ZImager 1.6.0 |
-| Platform | Native macOS app, Apple Silicon, deployment target macOS 27.0. The build machine is an M5. The catalog and the reorganization state live on a Synology DS423. |
-| Repository | `ZImager/` is the app to run. `ZImage/` editor and `ZImageLibrary/` catalog window stay as they were. `Helper/` is the Go source. `README.md` says how to build and how to install the helper. |
+| Status | ZImager 1.7.0 |
+| Platform | Native macOS app, Apple Silicon, deployment target macOS 26.0. The build machine is an M5. The catalog and the reorganization state live on a Synology DS423. |
+| Repository | `ZImager/` is the only Mac app. `ZImageTests/` hosts on it. `Helper/` is the Go source. `README.md` says how to build and how to install the helper. |
 
 ## Overview
 
@@ -17,11 +17,11 @@ Pass 2 is the catalog for the personal library on that Synology share. Its helpe
 
 The edited-document format is a versioned container, extension `.zimg`, nicknamed ZImage RAW in the product language. It stores a parametric edit log, not a second copy of every original. The million originals stay in their camera formats. In Pass 2, SQLite is not opened over SMB. A small Go helper on the DS423 is the only database writer. The Mac talks to it with an authenticated LAN API. Interactive edits run on a display-sized GPU proxy. Full resolution is a tiled export path.
 
-As of 2026-11-09 the app to run is ZImager 1.6.0 (`ZImager/`, bundle id `com.Win32Forth.ZImager`). Disk is the editor. Server is the library, in the same window. ZImage and ZImage Library remain in the tree and were not given this version. The sandbox is off. The deployment target is macOS 27.0. `STATUS.md` records what has landed. The paragraphs below keep the original plan, including choices that the code has since filled in.
+As of 2026-11-09 the app is ZImager 1.7.0 (`ZImager/`, bundle id `com.Win32Forth.ZImager`). Disk is the editor. Server is the library, in the same window. The separate ZImage and ZImage Library targets, schemes, and source folders are removed. Tests host on ZImager. The keychain group stays `X5YCJL3LJ8.com.Win32Forth.ZImage`. Saved edit bookmarks stay in `com.Win32Forth.ZImage.editBookmarks`. The sandbox is off. The deployment target is macOS 26.0. `STATUS.md` records what has landed. The paragraphs below keep the original plan, including choices that the code has since filled in.
 
-1.6.0 adds Spectrum above Tone, Auto and Reset on the Tone title, folder Export and Print, Edit-menu Copy settings and Paste settings, View-menu Folder View and Edit View, and arrow keys between photos. Server Remove from library moves files into `Photos/_Removed`. Set date moves each selected file into its date folder through `POST /v1/assets/{uid}/place`. Clean folder, in the Server three-bar menu, calls `POST /v1/folders/clean` and drops catalog rows whose files are gone when another file in that folder has the same name and size. It does not delete a file.
+1.7.0 is that removal, and the app now runs on macOS 26. The vendored libjxl and libwebp binaries declare a minimum of macOS 26.0. 1.6.0 remains in the app: Spectrum above Tone, Auto and Reset on the Tone title, folder Export and Print, Edit-menu Copy settings and Paste settings, View-menu Folder View and Edit View, and arrow keys between photos. Server Remove from library moves files into `Photos/_Removed`. Set date moves each selected file into its date folder through `POST /v1/assets/{uid}/place`. Clean folder, in the Server three-bar menu, calls `POST /v1/folders/clean` and drops catalog rows whose files are gone when another file in that folder has the same name and size. It does not delete a file.
 
-Reorganize, Review, and Duplicates do not work yet. Using them can lose photos. Leave those controls alone in 1.6.0. Do not press Start, Pause, Continue, Find duplicates, or Delete all duplicates.
+Reorganize, Review, and Duplicates do not work yet. Using them can lose photos. Leave those controls alone in 1.7.0. Do not press Start, Pause, Continue, Find duplicates, or Delete all duplicates.
 
 Server mode needs `zimage-helper` on the Synology. The Mac disk image does not include that program. Build the static ARM64 binary from `Helper/`, copy it to `PhotoVideoAudio/.zimage/bin/zimage-helper`, and start it from DSM Task Scheduler as a non-admin user with `GOMEMLIMIT=160MiB`. The steps are in `README.md`. Stop the task before replacing the binary. Do not open `catalog.db` from the Mac.
 
@@ -203,23 +203,24 @@ flowchart LR
 
 Pass 1 is the editor. It reads a file the user picked, edits it, and writes a `.zimg` or an export through the save panel. Pass 2, as specified on 2026-11-04, is a background service plus a lightweight foreground app.
 
-The service is `zimage-helper` on the DS423. DSM Task Scheduler starts it at boot. It does the catalog work behind the scenes: inventory, thumbnails, dating, journaled moves, Trim, and the cache ledger. It keeps running while both Mac apps are quit. It is the only writer of `catalog.db`, of moves, and of sidecars under `.zimage`. The Mac never opens SQLite.
+The service is `zimage-helper` on the DS423. DSM Task Scheduler starts it at boot. It does the catalog work behind the scenes: inventory, thumbnails, dating, journaled moves, Trim, and the cache ledger. It keeps running while ZImager is quit. It is the only writer of `catalog.db`, of moves, and of sidecars under `.zimage`. The Mac never opens SQLite.
 
-The lightweight app is ZImage Library. Its window shows reduced images only. A cell is the helper JPEG, long edge at most 512, scaled by the preview-size slider from 80 pt to 480 pt. The library app does not decode a full original and does not run tone, geometry, object removal, or export. Choosing a still for a larger view hands that file to ZImage (`com.Win32Forth.ZImage`). ZImage opens the original over SMB and builds the 2560 proxy. The editor keeps Pass 1 Open File, Open Folder, Save, Save As, and Export. It does not grow the million-file grid. Catalog screens live in the library app: the year and event lists, review, duplicates, the reorg panel, and the trim panel. Save edits stays on the editor, because that is where the edit log is.
+ZImager is that editor and that library in one window. Disk opens a folder on this Mac. Server shows reduced images from the helper. A cell is the helper JPEG, long edge at most 512, scaled by the preview-size slider from 80 pt to 480 pt. Choosing a still edits it in this window. A video opens in QuickTime Player. The original plan was two apps, ZImage and ZImage Library. Those targets are no longer in the project.
 
 Pass 2 grids never read those originals. They ask the helper for metadata and for a thumbnail whose long edge is 512, then scale that bitmap to the preview-size slider.
 
 Repository layout:
 
-- `ZImage/App/ZImageApp.swift` — editor `@main`, window, bookmark. The editor keeps a helper client for Save edits. It does not present the library grid.
-- `ZImage/Editor/` — `EditState.swift`, `HistoryLog.swift`, `TonePipeline.swift`, `Geometry.swift`, `Eyedropper.swift`, `Inpaint.swift`, `ProxyRenderer.swift`, `ZoomController.swift`.
-- `ZImage/Document/` — `ZImgRaw.swift`, `VersionMigrator.swift`.
-- `ZImage/Export/` — one type per encoder, including `LinearDNGWriter.swift`.
-- `ZImage/Library/HelperClient.swift` — shared client, offline session, and the Open in ZImage handoff. PR 14 compiles it into the editor target so the tests have a host. The editor window does not show it. The library target compiles the same sources.
-- `ZImage/UI/` — editor chrome, folder browser, preview-size slider, canvas, inspector. `OfflineBanner.swift` is the library-app banner. It is not mounted on the editor window.
-- `ZImageLibrary/` — lightweight app target, added with the grid in PR 15. Bundle id `com.Win32Forth.ZImageLibrary`.
-- `Helper/` — separate Go module `zimage/helper`, not linked into either app.
-- `ZImageTests/` — macOS test target.
+- `ZImager/App/ZImageApp.swift` — `@main`, window, bookmark.
+- `ZImager/Editor/` — `EditState.swift`, `HistoryLog.swift`, `TonePipeline.swift`, `Geometry.swift`, `Eyedropper.swift`, `Inpaint.swift`, `ProxyRenderer.swift`, `ZoomController.swift`.
+- `ZImager/Document/` — `ZImgRaw.swift`, `VersionMigrator.swift`.
+- `ZImager/Export/` — one type per encoder, including `LinearDNGWriter.swift`.
+- `ZImager/Library/` — helper client and the catalog browser.
+- `ZImager/UI/` — chrome, folder browser, library grid, sidebar, canvas, inspector.
+- `Helper/` — separate Go module `zimage/helper`, not linked into the app.
+- `ZImageTests/` — macOS test target. It hosts on ZImager.
+
+The PR file lists later in this document name `ZImage/` and `ZImageLibrary/` as those folders were when the PRs landed. The app sources now live under `ZImager/`.
 
 ### What the app is today
 
@@ -227,8 +228,8 @@ There is no document model. PR 1 deletes the playground hello-world from the shi
 
 Entitlements once files and the helper exist:
 
-- No App Sandbox. Both apps read and write the files the logged-in user can read and write. Library mutations still go through the helper.
-- The keychain access group shared by ZImage and ZImage Library, so the helper pin and token survive a rebuild.
+- No App Sandbox. ZImager reads and writes the files the logged-in user can read and write. Library mutations still go through the helper.
+- The keychain access group `X5YCJL3LJ8.com.Win32Forth.ZImage`, so the helper pin and token survive a rebuild.
 - No network server socket on the Mac. Outgoing connections need no entitlement once the sandbox is off.
 
 ### Editor model
@@ -1183,7 +1184,7 @@ Rollback of code is git. Rollback of a move that already reached `done` is not a
 
 A DSM update can delete the Task Scheduler entry even when the binary on the data volume survives. The Mac offline banner names the recovery: open DSM Task Scheduler and confirm the boot task still runs `.zimage/bin/zimage-helper`. That is an operator step, not something the app can fix from the laptop.
 
-Install outline. `README.md` has the same steps for someone who is not reading this plan. The 1.6.0 disk image does not contain the helper. Set date's file move and Clean folder need this helper. Stop the DSM task before replacing the binary.
+Install outline. `README.md` has the same steps for someone who is not reading this plan. The 1.7.0 disk image does not contain the helper. Set date's file move and Clean folder need this helper. Stop the DSM task before replacing the binary.
 
 1. On the Mac, from `Helper/`: `GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o zimage-helper ./cmd/zimage-helper`.
 2. Stop the DSM task if it is already running. Copy the binary to `PhotoVideoAudio/.zimage/bin/zimage-helper` over SMB and set mode 0700. Do not copy over a running binary.

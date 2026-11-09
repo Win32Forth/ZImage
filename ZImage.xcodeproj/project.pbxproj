@@ -6,70 +6,27 @@
 	objectVersion = 90;
 	objects = {
 
-/* Begin PBXBuildFile section */
-		FAB46EF0309B9A3D00245D7E /* DESIGN.md in Resources */ = {isa = PBXBuildFile; fileRef = FAB46EEE309B9A3D00245D7E /* DESIGN.md */; };
-		FAB46EF1309B9A3D00245D7E /* STATUS.md in Resources */ = {isa = PBXBuildFile; fileRef = FAB46EEF309B9A3D00245D7E /* STATUS.md */; };
-/* End PBXBuildFile section */
-
 /* Begin PBXContainerItemProxy section */
 		A1000000000000000000000A /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = 000000000000000000000000 /* Project object */;
 			proxyType = 1;
-			remoteGlobalIDString = 000000000000000100000000;
-			remoteInfo = ZImage;
+			remoteGlobalIDString = D10000000000000000000003;
+			remoteInfo = ZImager;
 		};
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
-		000000000000000000000120 /* ZImage.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ZImage.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		A10000000000000000000002 /* ZImageTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ZImageTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
-		C10000000000000000000002 /* ZImageLibrary.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ZImageLibrary.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		D10000000000000000000002 /* ZImager.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ZImager.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		FAB46EEE309B9A3D00245D7E /* DESIGN.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = DESIGN.md; sourceTree = "<group>"; };
 		FAB46EEF309B9A3D00245D7E /* STATUS.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = STATUS.md; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
-/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
-		C1000000000000000000000A /* Exceptions for "ZImage" folder in "ZImageLibrary" target */ = {
-			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
-			membershipExceptions = (
-				Library/HelperClient.swift,
-				Library/LibraryBrowser.swift,
-				Library/LibraryFolderScan.swift,
-				Library/MacCheckpoint.swift,
-				Library/PinnedHelperSession.swift,
-				UI/ChromePalette.swift,
-				UI/DateInspector.swift,
-				UI/DuplicatesBrowser.swift,
-				UI/EventRename.swift,
-				UI/OfflineBanner.swift,
-				UI/PreviewSizeSlider.swift,
-				UI/ReorgPanel.swift,
-				UI/ReviewList.swift,
-				UI/TrimPanel.swift,
-			);
-			target = C10000000000000000000003 /* ZImageLibrary */;
-		};
-/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
-
 /* Begin PBXFileSystemSynchronizedRootGroup section */
-		000000000000000000000010 /* ZImage */ = {
-			isa = PBXFileSystemSynchronizedRootGroup;
-			exceptions = (
-				C1000000000000000000000A /* Exceptions for "ZImage" folder in "ZImageLibrary" target */,
-			);
-			path = ZImage;
-			sourceTree = "<group>";
-		};
 		A10000000000000000000001 /* ZImageTests */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			path = ZImageTests;
-			sourceTree = "<group>";
-		};
-		C10000000000000000000001 /* ZImageLibrary */ = {
-			isa = PBXFileSystemSynchronizedRootGroup;
-			path = ZImageLibrary;
 			sourceTree = "<group>";
 		};
 		D10000000000000000000001 /* ZImager */ = {
@@ -80,17 +37,7 @@
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
-		000000000000000130000000 /* Frameworks */ = {
-			isa = PBXFrameworksBuildPhase;
-			files = (
-			);
-		};
 		A10000000000000000000005 /* Frameworks */ = {
-			isa = PBXFrameworksBuildPhase;
-			files = (
-			);
-		};
-		C10000000000000000000005 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			files = (
 			);
@@ -108,10 +55,8 @@
 			children = (
 				FAB46EEE309B9A3D00245D7E /* DESIGN.md */,
 				FAB46EEF309B9A3D00245D7E /* STATUS.md */,
-				000000000000000000000010 /* ZImage */,
-				A10000000000000000000001 /* ZImageTests */,
-				C10000000000000000000001 /* ZImageLibrary */,
 				D10000000000000000000001 /* ZImager */,
+				A10000000000000000000001 /* ZImageTests */,
 				000000000000000000000020 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -119,8 +64,6 @@
 		000000000000000000000020 /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				000000000000000000000120 /* ZImage.app */,
-				C10000000000000000000002 /* ZImageLibrary.app */,
 				D10000000000000000000002 /* ZImager.app */,
 				A10000000000000000000002 /* ZImageTests.xctest */,
 			);
@@ -130,25 +73,6 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
-		000000000000000100000000 /* ZImage */ = {
-			isa = PBXNativeTarget;
-			buildConfigurationList = 000000000000000110000000 /* Build configuration list for PBXNativeTarget "ZImage" */;
-			buildPhases = (
-				000000000000000120000000 /* Sources */,
-				000000000000000130000000 /* Frameworks */,
-				000000000000000140000000 /* Resources */,
-				B20000000000000000000001 /* Embed libjxl */,
-			);
-			buildRules = (
-			);
-			fileSystemSynchronizedGroups = (
-				000000000000000000000010 /* ZImage */,
-			);
-			name = ZImage;
-			productName = MyApp;
-			productReference = 000000000000000000000120 /* ZImage.app */;
-			productType = "com.apple.product-type.application";
-		};
 		A10000000000000000000003 /* ZImageTests */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = A10000000000000000000009 /* Build configuration list for PBXNativeTarget "ZImageTests" */;
@@ -169,24 +93,6 @@
 			productName = ZImageTests;
 			productReference = A10000000000000000000002 /* ZImageTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
-		};
-		C10000000000000000000003 /* ZImageLibrary */ = {
-			isa = PBXNativeTarget;
-			buildConfigurationList = C10000000000000000000009 /* Build configuration list for PBXNativeTarget "ZImageLibrary" */;
-			buildPhases = (
-				C10000000000000000000004 /* Sources */,
-				C10000000000000000000005 /* Frameworks */,
-				C10000000000000000000006 /* Resources */,
-			);
-			buildRules = (
-			);
-			fileSystemSynchronizedGroups = (
-				C10000000000000000000001 /* ZImageLibrary */,
-			);
-			name = ZImageLibrary;
-			productName = ZImageLibrary;
-			productReference = C10000000000000000000002 /* ZImageLibrary.app */;
-			productType = "com.apple.product-type.application";
 		};
 		D10000000000000000000003 /* ZImager */ = {
 			isa = PBXNativeTarget;
@@ -217,15 +123,9 @@
 				LastSwiftUpdateCheck = 2630;
 				LastUpgradeCheck = 2700;
 				TargetAttributes = {
-					000000000000000100000000 = {
-						CreatedOnToolsVersion = 26.3;
-					};
 					A10000000000000000000003 = {
 						CreatedOnToolsVersion = 26.3;
-						TestTargetID = 000000000000000100000000;
-					};
-					C10000000000000000000003 = {
-						CreatedOnToolsVersion = 26.3;
+						TestTargetID = D10000000000000000000003;
 					};
 					D10000000000000000000003 = {
 						CreatedOnToolsVersion = 26.3;
@@ -246,28 +146,14 @@
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
-				000000000000000100000000 /* ZImage */,
-				A10000000000000000000003 /* ZImageTests */,
-				C10000000000000000000003 /* ZImageLibrary */,
 				D10000000000000000000003 /* ZImager */,
+				A10000000000000000000003 /* ZImageTests */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
-		000000000000000140000000 /* Resources */ = {
-			isa = PBXResourcesBuildPhase;
-			files = (
-				FAB46EF0309B9A3D00245D7E /* DESIGN.md in Resources */,
-				FAB46EF1309B9A3D00245D7E /* STATUS.md in Resources */,
-			);
-		};
 		A10000000000000000000006 /* Resources */ = {
-			isa = PBXResourcesBuildPhase;
-			files = (
-			);
-		};
-		C10000000000000000000006 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			files = (
 			);
@@ -280,16 +166,6 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXShellScriptBuildPhase section */
-		B20000000000000000000001 /* Embed libjxl */ = {
-			isa = PBXShellScriptBuildPhase;
-			alwaysOutOfDate = 1;
-			name = "Embed libjxl";
-			shellPath = /bin/bash;
-			shellScript = (
-				"bash \"${SRCROOT}/Vendor/embed-libjxl.sh\"",
-				"",
-			);
-		};
 		D20000000000000000000001 /* Embed libjxl */ = {
 			isa = PBXShellScriptBuildPhase;
 			alwaysOutOfDate = 1;
@@ -303,17 +179,7 @@
 /* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
-		000000000000000120000000 /* Sources */ = {
-			isa = PBXSourcesBuildPhase;
-			files = (
-			);
-		};
 		A10000000000000000000004 /* Sources */ = {
-			isa = PBXSourcesBuildPhase;
-			files = (
-			);
-		};
-		C10000000000000000000004 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			files = (
 			);
@@ -328,7 +194,7 @@
 /* Begin PBXTargetDependency section */
 		A1000000000000000000000B /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
-			target = 000000000000000100000000 /* ZImage */;
+			target = D10000000000000000000003 /* ZImager */;
 			targetProxy = A1000000000000000000000A /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
@@ -391,7 +257,7 @@
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 27.0;
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
-				MACOSX_DEPLOYMENT_TARGET = 27.0;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
@@ -455,7 +321,7 @@
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 27.0;
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
-				MACOSX_DEPLOYMENT_TARGET = 27.0;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				PROJECT_UNIQUE_VALUE = ISQLBHN1;
@@ -463,120 +329,6 @@
 				SWIFT_COMPILATION_MODE = wholemodule;
 				WATCHOS_DEPLOYMENT_TARGET = 27.0;
 				XROS_DEPLOYMENT_TARGET = 27.0;
-			};
-			name = Release;
-		};
-		000000000000000111000000 /* Debug configuration for PBXNativeTarget "ZImage" */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				CODE_SIGN_ENTITLEMENTS = ZImage.entitlements;
-				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = X5YCJL3LJ8;
-				ENABLE_APP_SANDBOX = NO;
-				ENABLE_PREVIEWS = YES;
-				ENABLE_USER_SCRIPT_SANDBOXING = NO;
-				GENERATE_INFOPLIST_FILE = YES;
-				HEADER_SEARCH_PATHS = (
-					"$(PROJECT_DIR)/Vendor/libwebp/include",
-					"$(PROJECT_DIR)/Vendor/libjxl/include",
-				);
-				INFOPLIST_FILE = "ZImage-Info.plist";
-				INFOPLIST_KEY_CFBundleDisplayName = ZImage;
-				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.photography";
-				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
-				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
-				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphoneos*]" = YES;
-				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphonesimulator*]" = YES;
-				"INFOPLIST_KEY_UILaunchScreen_Generation[sdk=iphoneos*]" = YES;
-				"INFOPLIST_KEY_UILaunchScreen_Generation[sdk=iphonesimulator*]" = YES;
-				"INFOPLIST_KEY_UIStatusBarStyle[sdk=iphoneos*]" = UIStatusBarStyleDefault;
-				"INFOPLIST_KEY_UIStatusBarStyle[sdk=iphonesimulator*]" = UIStatusBarStyleDefault;
-				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
-				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
-				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks";
-				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = "@executable_path/../Frameworks";
-				LIBRARY_SEARCH_PATHS = (
-					"$(PROJECT_DIR)/Vendor/libwebp/lib",
-					"$(PROJECT_DIR)/Vendor/libjxl/lib",
-				);
-				MARKETING_VERSION = 1.0;
-				OTHER_LDFLAGS = (
-					"$(inherited)",
-					"-lwebp",
-					"-lsharpyuv",
-					"-ljxl",
-				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.Win32Forth.ZImage;
-				PRODUCT_NAME = "$(TARGET_NAME)";
-				REGISTER_APP_GROUPS = YES;
-				SDKROOT = macosx;
-				STRING_CATALOG_GENERATE_SYMBOLS = YES;
-				SUPPORTED_PLATFORMS = macosx;
-				SUPPORTS_MACCATALYST = NO;
-				SWIFT_APPROACHABLE_CONCURRENCY = YES;
-				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
-				SWIFT_EMIT_LOC_STRINGS = YES;
-				SWIFT_INCLUDE_PATHS = "$(PROJECT_DIR)/Vendor/module";
-				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
-				SWIFT_VERSION = 5.0;
-			};
-			name = Debug;
-		};
-		000000000000000112000000 /* Release configuration for PBXNativeTarget "ZImage" */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				CODE_SIGN_ENTITLEMENTS = ZImage.entitlements;
-				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = X5YCJL3LJ8;
-				ENABLE_APP_SANDBOX = NO;
-				ENABLE_PREVIEWS = YES;
-				ENABLE_USER_SCRIPT_SANDBOXING = NO;
-				GENERATE_INFOPLIST_FILE = YES;
-				HEADER_SEARCH_PATHS = (
-					"$(PROJECT_DIR)/Vendor/libwebp/include",
-					"$(PROJECT_DIR)/Vendor/libjxl/include",
-				);
-				INFOPLIST_FILE = "ZImage-Info.plist";
-				INFOPLIST_KEY_CFBundleDisplayName = ZImage;
-				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.photography";
-				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
-				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
-				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphoneos*]" = YES;
-				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphonesimulator*]" = YES;
-				"INFOPLIST_KEY_UILaunchScreen_Generation[sdk=iphoneos*]" = YES;
-				"INFOPLIST_KEY_UILaunchScreen_Generation[sdk=iphonesimulator*]" = YES;
-				"INFOPLIST_KEY_UIStatusBarStyle[sdk=iphoneos*]" = UIStatusBarStyleDefault;
-				"INFOPLIST_KEY_UIStatusBarStyle[sdk=iphonesimulator*]" = UIStatusBarStyleDefault;
-				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
-				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
-				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks";
-				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = "@executable_path/../Frameworks";
-				LIBRARY_SEARCH_PATHS = (
-					"$(PROJECT_DIR)/Vendor/libwebp/lib",
-					"$(PROJECT_DIR)/Vendor/libjxl/lib",
-				);
-				MARKETING_VERSION = 1.0;
-				OTHER_LDFLAGS = (
-					"$(inherited)",
-					"-lwebp",
-					"-lsharpyuv",
-					"-ljxl",
-				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.Win32Forth.ZImage;
-				PRODUCT_NAME = "$(TARGET_NAME)";
-				REGISTER_APP_GROUPS = YES;
-				SDKROOT = macosx;
-				STRING_CATALOG_GENERATE_SYMBOLS = YES;
-				SUPPORTED_PLATFORMS = macosx;
-				SUPPORTS_MACCATALYST = NO;
-				SWIFT_APPROACHABLE_CONCURRENCY = YES;
-				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
-				SWIFT_EMIT_LOC_STRINGS = YES;
-				SWIFT_INCLUDE_PATHS = "$(PROJECT_DIR)/Vendor/module";
-				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
-				SWIFT_VERSION = 5.0;
 			};
 			name = Release;
 		};
@@ -597,7 +349,7 @@
 					"@executable_path/../Frameworks",
 					"@loader_path/../Frameworks",
 				);
-				MACOSX_DEPLOYMENT_TARGET = 27.0;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.Win32Forth.ZImageTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -607,7 +359,7 @@
 				SWIFT_INCLUDE_PATHS = "$(PROJECT_DIR)/Vendor/module";
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/ZImage.app/Contents/MacOS/ZImage";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/ZImager.app/Contents/MacOS/ZImager";
 			};
 			name = Debug;
 		};
@@ -628,7 +380,7 @@
 					"@executable_path/../Frameworks",
 					"@loader_path/../Frameworks",
 				);
-				MACOSX_DEPLOYMENT_TARGET = 27.0;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.Win32Forth.ZImageTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -638,69 +390,7 @@
 				SWIFT_INCLUDE_PATHS = "$(PROJECT_DIR)/Vendor/module";
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/ZImage.app/Contents/MacOS/ZImage";
-			};
-			name = Release;
-		};
-		C10000000000000000000007 /* Debug configuration for PBXNativeTarget "ZImageLibrary" */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				CODE_SIGN_ENTITLEMENTS = ZImageLibrary/ZImageLibrary.entitlements;
-				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = X5YCJL3LJ8;
-				ENABLE_APP_SANDBOX = NO;
-				ENABLE_PREVIEWS = YES;
-				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_FILE = "ZImageLibrary-Info.plist";
-				INFOPLIST_KEY_CFBundleDisplayName = "ZImage Library";
-				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.photography";
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/../Frameworks",
-				);
-				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.Win32Forth.ZImageLibrary;
-				PRODUCT_NAME = "$(TARGET_NAME)";
-				SDKROOT = macosx;
-				SUPPORTED_PLATFORMS = macosx;
-				SUPPORTS_MACCATALYST = NO;
-				SWIFT_APPROACHABLE_CONCURRENCY = YES;
-				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
-				SWIFT_EMIT_LOC_STRINGS = YES;
-				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
-				SWIFT_VERSION = 5.0;
-			};
-			name = Debug;
-		};
-		C10000000000000000000008 /* Release configuration for PBXNativeTarget "ZImageLibrary" */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				CODE_SIGN_ENTITLEMENTS = ZImageLibrary/ZImageLibrary.entitlements;
-				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = X5YCJL3LJ8;
-				ENABLE_APP_SANDBOX = NO;
-				ENABLE_PREVIEWS = YES;
-				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_FILE = "ZImageLibrary-Info.plist";
-				INFOPLIST_KEY_CFBundleDisplayName = "ZImage Library";
-				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.photography";
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/../Frameworks",
-				);
-				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.Win32Forth.ZImageLibrary;
-				PRODUCT_NAME = "$(TARGET_NAME)";
-				SDKROOT = macosx;
-				SUPPORTED_PLATFORMS = macosx;
-				SUPPORTS_MACCATALYST = NO;
-				SWIFT_APPROACHABLE_CONCURRENCY = YES;
-				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
-				SWIFT_EMIT_LOC_STRINGS = YES;
-				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
-				SWIFT_VERSION = 5.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/ZImager.app/Contents/MacOS/ZImager";
 			};
 			name = Release;
 		};
@@ -728,7 +418,8 @@
 					"$(PROJECT_DIR)/Vendor/libwebp/lib",
 					"$(PROJECT_DIR)/Vendor/libjxl/lib",
 				);
-				MARKETING_VERSION = 1.6.0;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				MARKETING_VERSION = 1.7.0;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-lwebp",
@@ -775,7 +466,8 @@
 					"$(PROJECT_DIR)/Vendor/libwebp/lib",
 					"$(PROJECT_DIR)/Vendor/libjxl/lib",
 				);
-				MARKETING_VERSION = 1.6.0;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				MARKETING_VERSION = 1.7.0;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-lwebp",
@@ -809,27 +501,11 @@
 			);
 			defaultConfigurationName = Release;
 		};
-		000000000000000110000000 /* Build configuration list for PBXNativeTarget "ZImage" */ = {
-			isa = XCConfigurationList;
-			buildConfigurations = (
-				000000000000000111000000 /* Debug configuration for PBXNativeTarget "ZImage" */,
-				000000000000000112000000 /* Release configuration for PBXNativeTarget "ZImage" */,
-			);
-			defaultConfigurationName = Release;
-		};
 		A10000000000000000000009 /* Build configuration list for PBXNativeTarget "ZImageTests" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				A10000000000000000000007 /* Debug configuration for PBXNativeTarget "ZImageTests" */,
 				A10000000000000000000008 /* Release configuration for PBXNativeTarget "ZImageTests" */,
-			);
-			defaultConfigurationName = Release;
-		};
-		C10000000000000000000009 /* Build configuration list for PBXNativeTarget "ZImageLibrary" */ = {
-			isa = XCConfigurationList;
-			buildConfigurations = (
-				C10000000000000000000007 /* Debug configuration for PBXNativeTarget "ZImageLibrary" */,
-				C10000000000000000000008 /* Release configuration for PBXNativeTarget "ZImageLibrary" */,
 			);
 			defaultConfigurationName = Release;
 		};

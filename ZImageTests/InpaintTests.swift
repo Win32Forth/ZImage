@@ -2,7 +2,7 @@ import CoreGraphics
 import CoreImage
 import CoreML
 import XCTest
-@testable import ZImage
+@testable import ZImager
 
 final class InpaintTests: XCTestCase {
     private let context = TonePipeline.makeContext()

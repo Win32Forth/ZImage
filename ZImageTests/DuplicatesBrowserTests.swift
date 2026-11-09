@@ -1,5 +1,5 @@
 import XCTest
-@testable import ZImage
+@testable import ZImager
 
 @MainActor
 final class DuplicatesBrowserTests: XCTestCase {
@@ -43,7 +43,7 @@ final class DuplicatesBrowserTests: XCTestCase {
         browser.deleteKey()
         XCTAssertEqual(fake.paths.count, 3)
         XCTAssertEqual(browser.duplicateGroups[0].members.map(\.uid), ["copy-1", "copy-2", "copy-3"])
-        _ = DuplicatesBrowser(browser: browser)
+        _ = DuplicatesBrowser(browser: browser, model: EditorModel())
     }
 
     func testWrongDeletePhraseDoesNotCallPurgeAll() async throws {
@@ -80,7 +80,7 @@ final class DuplicatesBrowserTests: XCTestCase {
         XCTAssertEqual(browser.duplicateNotice, "Restored and pinned.")
         XCTAssertEqual(fake.paths, ["/v1/duplicates", "/v1/assets/copy-1/restore", "/v1/duplicates"])
         XCTAssertEqual(fake.methods[1], "POST")
-        XCTAssertEqual(LibrarySidebar.items, ["Photos", "Videos", "Review", "Duplicates"])
+        XCTAssertEqual(LibrarySidebar.items, ["Photos", "Review", "Duplicates"])
         XCTAssertFalse(LibrarySidebar.items.contains("_Duplicates"))
     }
 

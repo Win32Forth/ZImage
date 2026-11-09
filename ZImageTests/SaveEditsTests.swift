@@ -1,5 +1,5 @@
 import XCTest
-@testable import ZImage
+@testable import ZImager
 
 @MainActor
 final class SaveEditsTests: XCTestCase {

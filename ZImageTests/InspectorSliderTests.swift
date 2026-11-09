@@ -1,5 +1,5 @@
 import XCTest
-@testable import ZImage
+@testable import ZImager
 
 final class InspectorSliderTests: XCTestCase {
     func testDoubleClickReturnsTheKnobToTheMiddleExceptTemperatureAndLens() {

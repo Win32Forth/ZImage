@@ -2,7 +2,7 @@ import CoreGraphics
 import ImageIO
 import UniformTypeIdentifiers
 import XCTest
-@testable import ZImage
+@testable import ZImager
 
 final class FolderBrowserTests: XCTestCase {
     override func setUp() {

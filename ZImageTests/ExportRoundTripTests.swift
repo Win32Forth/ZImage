@@ -3,7 +3,7 @@ import CoreImage
 import ImageIO
 import PDFKit
 import XCTest
-@testable import ZImage
+@testable import ZImager
 
 final class ExportRoundTripTests: XCTestCase {
     private let context = TonePipeline.makeContext()

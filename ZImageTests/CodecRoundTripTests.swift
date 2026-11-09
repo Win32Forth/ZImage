@@ -1,5 +1,5 @@
 import XCTest
-@testable import ZImage
+@testable import ZImager
 
 final class CodecRoundTripTests: XCTestCase {
     func testWebPLossyRoundTripsDimensions() throws {

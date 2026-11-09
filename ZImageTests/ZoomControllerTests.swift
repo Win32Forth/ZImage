@@ -3,7 +3,7 @@ import Foundation
 import ImageIO
 import UniformTypeIdentifiers
 import XCTest
-@testable import ZImage
+@testable import ZImager
 
 final class ZoomControllerTests: XCTestCase {
     func testClampHoldsTheSliderRange() {

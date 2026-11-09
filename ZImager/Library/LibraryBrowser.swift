@@ -1479,7 +1479,7 @@ final class LibraryBrowser {
         openInEditor(asset)
     }
 
-    /// A still opens in ZImage. A video opens in QuickTime Player.
+    /// A still opens in ZImager. A video opens in QuickTime Player.
     func openPrimary(_ asset: LibraryAsset) {
         if isVideo(asset) {
             openInQuickTime(asset)
@@ -1521,7 +1521,7 @@ final class LibraryBrowser {
         NSWorkspace.shared.activateFileViewerSelecting([url])
     }
 
-    /// Applications that can open this file. ZImage is first for a still. QuickTime Player is first for a video.
+    /// Applications that can open this file. ZImager is first for a still. QuickTime Player is first for a video.
     func openWithTargets(for asset: LibraryAsset) -> [LibraryOpenTarget] {
         let others = fileURL(for: asset).map { NSWorkspace.shared.urlsForApplications(toOpen: $0) } ?? []
         let zimage = NSWorkspace.shared.urlForApplication(withBundleIdentifier: EditorHandoff.editorBundleID)

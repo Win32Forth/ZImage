@@ -590,13 +590,13 @@ struct FeatureFlags: Sendable {
 }
 
 enum EditorHandoff {
-    static let editorBundleID = "com.Win32Forth.ZImage"
+    static let editorBundleID = "com.Win32Forth.ZImager"
 
     static func openFile(_ url: URL, with open: (URL, String) -> Void) {
         open(url, Self.editorBundleID)
     }
 
-    /// A running editor wins over whichever ZImage.app Launch Services has registered.
+    /// A running editor wins over whichever ZImager.app Launch Services has registered.
     static func applicationURL(running: [URL], registered: URL?) -> URL? {
         running.first ?? registered
     }

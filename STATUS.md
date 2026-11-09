@@ -14,6 +14,18 @@ Each entry uses this shape:
 - Scope: design section or PR name
 - Notes: facts, decisions, and the next step
 
+## 2026-11-09 — ZImager 1.7.0
+
+- Status: done
+- Scope: ZImager 1.7.0. The ZImage editor and ZImage Library are removed from the project. The helper is unchanged.
+- Notes: The only Mac app target is ZImager, bundle id `com.Win32Forth.ZImager`, scheme `ZImager`. The old targets, schemes, Info plists, entitlements, and source folders `ZImage/` and `ZImageLibrary/` are gone. `ZImageTests` hosts on `ZImager.app` and imports `ZImager`. A still opens in this app. The deployment target is macOS 26.0. The vendored libjxl and libwebp binaries declare that same minimum. The keychain group stays `X5YCJL3LJ8.com.Win32Forth.ZImage`. Saved edit bookmarks stay in `com.Win32Forth.ZImage.editBookmarks`. The preference import still reads the old ZImage Library container for the helper host and the library folder. The Xcode project file remains `ZImage.xcodeproj`. Reorganize, Review, and Duplicates still do not work and can lose photos. Leave them alone. The disk image is `Releases/ZImager-1.7.0-macOS.dmg` and it does not include the helper. Stop the DSM task before replacing the helper. Do not open `catalog.db` from the Mac.
+
+## 2026-11-09 — ZImage and ZImage Library leave the project
+
+- Status: done
+- Scope: ZImager is the only Mac app target. ZImageTests hosts on it.
+- Notes: The ZImage and ZImage Library targets, schemes, Info plists, entitlements, and source folders are removed. The scheme to run is `ZImager`. Tests import `ZImager` and the test host is `ZImager.app`. The sidebar items are Photos, Review, and Duplicates. A still opens with bundle id `com.Win32Forth.ZImager`. The keychain group stays `X5YCJL3LJ8.com.Win32Forth.ZImage`. Saved edit bookmarks stay in the suite `com.Win32Forth.ZImage.editBookmarks`. The preference import still reads the old ZImage Library container. Reorganize, Review, and Duplicates still do not work and can lose photos. Leave them alone.
+
 ## 2026-11-09 — ZImager 1.6.0
 
 - Status: done

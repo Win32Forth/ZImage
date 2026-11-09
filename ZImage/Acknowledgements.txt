@@ -1,4 +1,0 @@
-This product includes DNG technology under license by Adobe.
-
-libwebp 1.6.0 is BSD-3-Clause. libjxl 0.12.0 is BSD-3-Clause.
-highway 1.4.0, brotli 1.2, and little-cms2 2.19 are linked with libjxl.

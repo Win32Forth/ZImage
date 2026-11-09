@@ -1,6 +1,6 @@
 import CoreImage
 import XCTest
-@testable import ZImage
+@testable import ZImager
 
 final class TouchupTests: XCTestCase {
     func testDustLiftsASpeckAndLeavesTheCorner() {

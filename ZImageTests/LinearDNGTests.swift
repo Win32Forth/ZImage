@@ -1,7 +1,7 @@
 import CoreImage
 import ImageIO
 import XCTest
-@testable import ZImage
+@testable import ZImager
 
 final class LinearDNGTests: XCTestCase {
     private let context = TonePipeline.makeContext()

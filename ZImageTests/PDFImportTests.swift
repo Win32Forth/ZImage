@@ -2,7 +2,7 @@ import CoreGraphics
 import Foundation
 import PDFKit
 import XCTest
-@testable import ZImage
+@testable import ZImager
 
 @MainActor
 final class PDFImportTests: XCTestCase {

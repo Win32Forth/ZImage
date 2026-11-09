@@ -1,7 +1,7 @@
 import AppKit
 import PDFKit
 import XCTest
-@testable import ZImage
+@testable import ZImager
 
 @MainActor
 final class LibraryGridTests: XCTestCase {
@@ -62,7 +62,7 @@ final class LibraryGridTests: XCTestCase {
         browser.selectedUID = "pdf-1"
         browser.openSelected()
         XCTAssertEqual(opened.count, 1)
-        XCTAssertEqual(opened[0].1, "com.Win32Forth.ZImage")
+        XCTAssertEqual(opened[0].1, "com.Win32Forth.ZImager")
         XCTAssertEqual(opened[0].0.lastPathComponent, "doc.pdf")
         XCTAssertTrue(opened[0].0.isFileURL)
     }
@@ -131,7 +131,7 @@ final class LibraryGridTests: XCTestCase {
     }
 
     func testShareBookmarkRoundTripAndSidebarOmitsDuplicates() throws {
-        XCTAssertEqual(LibrarySidebar.items, ["Photos", "Videos", "Review", "Duplicates"])
+        XCTAssertEqual(LibrarySidebar.items, ["Photos", "Review", "Duplicates"])
         XCTAssertFalse(LibrarySidebar.items.contains("_Duplicates"))
         let suite = "com.Win32Forth.ZImageLibrary.tests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
@@ -444,8 +444,8 @@ final class LibraryGridTests: XCTestCase {
         XCTAssertEqual(DisplayFolder.needle("Photos/2026"), "Photos/2026/")
         XCTAssertNil(DisplayFolder.needle("Audio"))
         XCTAssertNil(DisplayFolder.needle("Photos/../Audio"))
-        XCTAssertEqual(LibrarySidebar.sectionAfterTreePick("Videos"), "Videos")
-        XCTAssertEqual(LibrarySidebar.media(for: "Videos"), "video")
+        XCTAssertEqual(LibrarySidebar.sectionAfterTreePick("Videos"), "Photos")
+        XCTAssertEqual(LibrarySidebar.media(for: "Videos"), "photo")
         XCTAssertEqual(LibrarySidebar.sectionAfterTreePick("Photos"), "Photos")
         XCTAssertEqual(LibrarySidebar.sectionAfterTreePick("Review"), "Photos")
         XCTAssertEqual(LibrarySidebar.sectionAfterTreePick("Duplicates"), "Photos")

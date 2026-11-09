@@ -1,6 +1,6 @@
 # ZImage
 
-ZImager 1.6.0 is the app to run. It is one window. Disk is the editor. Server is the library. ZImage and ZImage Library stay in this tree at version 1.0.
+ZImager 1.7.0 is the app. It is one window. Disk is the editor. Server is the library. The separate ZImage editor and ZImage Library are no longer in this project.
 
 `DESIGN.md` is the plan. `STATUS.md` is the iteration log, newest first.
 
@@ -9,6 +9,14 @@ ZImager 1.6.0 is the app to run. It is one window. Disk is the editor. Server is
 Reorganize, Review, and Duplicates do not work yet. Using them can lose photos. Leave those controls alone. Do not press Start, Pause, Continue, Find duplicates, or Delete all duplicates.
 
 Disk, and Server browsing of a folder, are the parts to use. Rotate, paste, export, print, and the image adjustments save the photo and rebuild its preview.
+
+## What 1.7.0 changes
+
+ZImager is the only Mac app. The old ZImage target and the old ZImage Library target, their schemes, and their source folders are removed. Run the `ZImager` scheme. `ZImageTests` hosts on `ZImager.app`. The deployment target is macOS 26.0, so this build runs on a Mac that has macOS 26.
+
+A still opens in ZImager, bundle id `com.Win32Forth.ZImager`. The helper token stays in the keychain group `X5YCJL3LJ8.com.Win32Forth.ZImage`. Saved edit bookmarks stay in the suite `com.Win32Forth.ZImage.editBookmarks`. The first Server launch can still read the old ZImage Library preference file for the helper host and the library folder.
+
+The helper is unchanged. 1.6.0 behavior below is still in this app.
 
 ## What 1.6.0 adds
 
@@ -24,7 +32,7 @@ Clean folder is in the Server three-bar menu. It removes catalog records in the 
 
 ## Install ZImager
 
-The disk image is `Releases/ZImager-1.6.0-macOS.dmg`. It contains `ZImager.app` and `README.txt`.
+The disk image is `Releases/ZImager-1.7.0-macOS.dmg`. It contains `ZImager.app` and `README.txt`.
 
 1. Open the disk image.
 2. Drag **ZImager.app** into Applications.
@@ -82,4 +90,4 @@ cd /path/to/ZImage
 xcodebuild -project ZImage.xcodeproj -scheme ZImager -destination 'platform=macOS,arch=arm64' build
 ```
 
-The editor scheme is `ZImage`. The library scheme is `ZImageLibrary`. `Helper/zimage-helper` is a local build product and is not in this repo.
+The scheme is `ZImager`. `ZImageTests` is the test target and it hosts on that app. `Helper/zimage-helper` is a local build product and is not in this repo.

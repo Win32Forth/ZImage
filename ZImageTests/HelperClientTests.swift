@@ -1,5 +1,5 @@
 import XCTest
-@testable import ZImage
+@testable import ZImager
 
 @MainActor
 final class HelperClientTests: XCTestCase {
@@ -15,7 +15,7 @@ final class HelperClientTests: XCTestCase {
         XCTAssertEqual(ReorgCopy.lamp(unsafe), "Not safe to reboot")
         XCTAssertEqual(ReorgCopy.cacheLine(status.cacheBytes), "Cache 0 bytes")
         XCTAssertEqual(ReorgCopy.cacheLine(4096), "Cache 4096 bytes")
-        XCTAssertEqual(LibrarySidebar.items, ["Photos", "Videos", "Review", "Duplicates"])
+        XCTAssertEqual(LibrarySidebar.items, ["Photos", "Review", "Duplicates"])
         let ready = ReorgActivity.readout(status: status, typedPrefix: "Photos", pending: nil)
         XCTAssertEqual(ready.activity, "Plan ready")
         XCTAssertEqual(ready.next, "Read Move, Already placed, Park, and Leave. Press Start to copy.")
@@ -106,7 +106,7 @@ final class HelperClientTests: XCTestCase {
         var unsafe = status
         unsafe.safeToReboot = false
         XCTAssertEqual(TrimCopy.lamp(unsafe), "Not safe to reboot")
-        XCTAssertEqual(LibrarySidebar.items, ["Photos", "Videos", "Review", "Duplicates"])
+        XCTAssertEqual(LibrarySidebar.items, ["Photos", "Review", "Duplicates"])
     }
 
     func testNothingAnswersShowsEmptyOffline() async {
@@ -252,7 +252,7 @@ final class HelperClientTests: XCTestCase {
     }
 
     func testEditorClaimsStillImagesWithoutBecomingTheDefault() throws {
-        let bundle = Bundle(identifier: "com.Win32Forth.ZImage") ?? Bundle.main
+        let bundle = Bundle(identifier: "com.Win32Forth.ZImager") ?? Bundle.main
         let types = try XCTUnwrap(bundle.infoDictionary?["CFBundleDocumentTypes"] as? [[String: Any]])
         let claimed = Set(types.flatMap { $0["LSItemContentTypes"] as? [String] ?? [] })
         for uti in ["public.jpeg", "public.png", "public.heic", "public.tiff", "public.camera-raw-image", "com.adobe.pdf"] {
@@ -283,7 +283,7 @@ final class HelperClientTests: XCTestCase {
             opened = (url, bundleID)
         }
         XCTAssertEqual(opened?.0, file)
-        XCTAssertEqual(opened?.1, "com.Win32Forth.ZImage")
+        XCTAssertEqual(opened?.1, "com.Win32Forth.ZImager")
         XCTAssertFalse(FeatureFlags().reorgExecution)
         XCTAssertFalse(FeatureFlags().trimExecution)
 

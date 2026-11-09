@@ -1,5 +1,5 @@
 import XCTest
-@testable import ZImage
+@testable import ZImager
 
 private struct StepToV2: VersionMigrator {
     var fromSchema: Int { 1 }

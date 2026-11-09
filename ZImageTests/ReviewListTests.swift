@@ -1,6 +1,6 @@
 import ImageIO
 import XCTest
-@testable import ZImage
+@testable import ZImager
 
 @MainActor
 final class ReviewListTests: XCTestCase {
@@ -13,7 +13,7 @@ final class ReviewListTests: XCTestCase {
         XCTAssertTrue(ReviewPark.contains(low))
         XCTAssertFalse(ReviewPark.contains(kept))
         XCTAssertTrue(ReviewPark.contains(parked))
-        XCTAssertEqual(LibrarySidebar.items, ["Photos", "Videos", "Review", "Duplicates"])
+        XCTAssertEqual(LibrarySidebar.items, ["Photos", "Review", "Duplicates"])
         XCTAssertFalse(LibrarySidebar.items.contains("_Duplicates"))
     }
 

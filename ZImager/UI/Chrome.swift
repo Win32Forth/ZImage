@@ -299,7 +299,7 @@ final class EditorModel {
         NSWorkspace.shared.open(entry.url)
     }
 
-    /// Applications that can open this still. ZImage is listed first.
+    /// Applications that can open this still. ZImager is listed first.
     func imageApplications(for entry: FolderEntry) -> [LibraryOpenTarget] {
         let others = NSWorkspace.shared.urlsForApplications(toOpen: entry.url)
         let editor = NSWorkspace.shared.urlForApplication(withBundleIdentifier: EditorHandoff.editorBundleID)
@@ -318,7 +318,7 @@ final class EditorModel {
         }
     }
 
-    /// Opens the still in another application. Choosing ZImage edits it in this window.
+    /// Opens the still in another application. Choosing ZImager edits it in this window.
     func open(_ entry: FolderEntry, with application: URL) {
         if EditorImageMenu.isEditor(application) {
             openListedEntry(entry)
