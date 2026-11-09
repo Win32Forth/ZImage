@@ -286,10 +286,10 @@ enum PathCapture {
     }()
 }
 
-/// Right-click actions for one library file. Open with ZImage is the first command for a still.
+/// Right-click actions for one library file. Edit Image is the first command for a still.
 /// A video leads with QuickTime Player.
 enum LibraryItemMenu {
-    static let openWithZImage = "Open with ZImage"
+    static let editImage = "Edit Image"
     static let openWithQuickTime = "Open with QuickTime Player"
     static let quickTimeBundleID = "com.apple.QuickTimePlayerX"
     static let showInFinder = "Show in Finder"
@@ -297,7 +297,7 @@ enum LibraryItemMenu {
     static let sizeUnavailable = "Size unavailable"
     static let noDate = "No date"
 
-    static let commandOrder = [openWithZImage, showInFinder, openWith]
+    static let commandOrder = [editImage, showInFinder, openWith]
     static let videoCommandOrder = [openWithQuickTime, showInFinder, openWith]
 
     static let videoExtensions: Set<String> = [
@@ -409,6 +409,23 @@ enum LibraryItemMenu {
     }
 }
 
+func cleanFolderNotice(removed: Int, kept: Int) -> String {
+    switch (removed, kept) {
+    case (0, 0):
+        return "This folder has no leftover records."
+    case (_, 0):
+        return removed == 1 ? "Removed 1 leftover record." : "Removed \(removed) leftover records."
+    case (0, 1):
+        return "1 record was left in place."
+    case (0, _):
+        return "\(kept) records were left in place."
+    default:
+        let removedLine = removed == 1 ? "Removed 1 leftover record." : "Removed \(removed) leftover records."
+        let keptLine = kept == 1 ? "1 record was left in place." : "\(kept) records were left in place."
+        return removedLine + " " + keptLine
+    }
+}
+
 /// The folder shown on the Photos tab. The share root is refused.
 enum DisplayFolder {
     static let root = "Photos"
@@ -445,6 +462,12 @@ final class LibraryBrowser {
     private var client: HelperClient
     let session: LibrarySession
     var notice: String?
+    /// True while Remove from library is moving the current batch.
+    private(set) var removalBusy = false
+    /// True while Set date is writing the date and moving the current batch.
+    private(set) var dateBusy = false
+    /// True while Clean folder is dropping leftover catalog rows.
+    private(set) var cleanBusy = false
     private(set) var rows: [LibraryAsset] = []
     private(set) var reviewRows: [LibraryAsset] = []
     private(set) var events: [LibraryEvent] = []
@@ -452,6 +475,8 @@ final class LibraryBrowser {
     var reorgPrefix = "Photos"
     /// Relative folder shown in the Photos and Videos grids. Review and Duplicates ignore it.
     var displayFolder = DisplayFolder.root
+    /// Photos, Review, or Duplicates. Previous and Next walk this list.
+    var librarySection = "Photos"
     private(set) var reorgNotice: String?
     private(set) var reorgPending: ReorgPending?
     /// Seconds the panel has been counting, stepped every status check.
@@ -614,20 +639,84 @@ final class LibraryBrowser {
         }
     }
 
-    /// Posts one typed date. Confidence becomes 1.0. The file stays where it is.
+    /// Selected files that can take a typed date. Parked copies stay where they are.
+    func dateTargets() -> [LibraryAsset] {
+        let pool = sectionAssets()
+        var chosen = pool.filter { selectedUIDs.contains($0.uid) }
+        if chosen.isEmpty, let selectedUID, let one = pool.first(where: { $0.uid == selectedUID }) {
+            chosen = [one]
+        }
+        return chosen.filter { !parkedInLibrary($0) }
+    }
+
+    /// Writes the typed date on every selected file and moves each one into its date folder.
     func setCaptureDate(_ text: String) async {
-        guard let selectedUID else { return }
+        guard !dateBusy, !removalBusy, !cleanBusy else { return }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let wire = LibraryItemMenu.captureRequest(trimmed) else {
             notice = "The date was not saved. Use YYYY-MM-DD or a four-digit year."
             return
         }
-        do {
-            let updated = try await client.setCaptureDate(uid: selectedUID, captureTime: wire)
-            notice = "Confidence 1.0"
-            replace(updated)
-        } catch {
+        let assets = dateTargets()
+        guard !assets.isEmpty else {
             notice = "The date was not saved."
+            return
+        }
+        dateBusy = true
+        defer { dateBusy = false }
+        var moved = 0
+        var stayed = 0
+        let total = assets.count
+        for (index, asset) in assets.enumerated() {
+            notice = "Moving \(index + 1) of \(total) to its date folder."
+            await Task.yield()
+            do {
+                let reply = try await client.placeCaptureDate(uid: asset.uid, captureTime: wire)
+                if reply.error != nil {
+                    stayed += 1
+                } else {
+                    moved += 1
+                }
+            } catch {
+                stayed += total - moved - stayed
+                break
+            }
+        }
+        if stayed == 0 {
+            notice = moved == 1 ? "Moved to its date folder." : "Moved \(moved) files to their date folders."
+        } else if moved == 0 {
+            notice = total == 1 ? "The date was not saved." : "The dates were not saved."
+        } else {
+            notice = "\(moved) moved to their date folders. \(stayed) stayed."
+        }
+        await reload(media: "photo")
+    }
+
+    /// Drops leftover catalog rows in the open folder. A row goes only when its file is gone and another file here has the same name and size.
+    func cleanDisplayFolder() async {
+        guard !cleanBusy, !removalBusy, !dateBusy else { return }
+        cleanBusy = true
+        defer { cleanBusy = false }
+        notice = "Cleaning leftover records."
+        await Task.yield()
+        do {
+            let reply = try await client.cleanFolder(prefix: displayFolder)
+            if reply.error == "busy" {
+                notice = "Folder cleanup waits until the helper is idle."
+                return
+            }
+            if reply.error != nil {
+                notice = "Folder cleanup did not run."
+                return
+            }
+            let removed = reply.removed ?? 0
+            let kept = reply.kept ?? 0
+            notice = cleanFolderNotice(removed: removed, kept: kept)
+            if removed > 0 {
+                await reload(media: "photo")
+            }
+        } catch {
+            notice = "Folder cleanup did not run."
         }
     }
 
@@ -1069,6 +1158,60 @@ final class LibraryBrowser {
         }
     }
 
+    /// Files already parked, purged, or in the duplicates store stay where they are.
+    func parkedInLibrary(_ asset: LibraryAsset) -> Bool {
+        if asset.placement == "removed" || asset.placement == "purged" || asset.placement == "duplicates" {
+            return true
+        }
+        let path = asset.relPath ?? ""
+        return path == "Photos/_Removed" || path.hasPrefix("Photos/_Removed/")
+            || path == "Photos/_Duplicates" || path.hasPrefix("Photos/_Duplicates/")
+    }
+
+    /// The right-clicked cell is removed alone. A click inside the selection removes every selected row that can move.
+    func libraryRemovalTargets(clicked: LibraryAsset) -> [LibraryAsset] {
+        let chosen: [LibraryAsset]
+        if selectedUIDs.contains(clicked.uid) {
+            chosen = rows.filter { selectedUIDs.contains($0.uid) }
+        } else {
+            chosen = [clicked]
+        }
+        return chosen.filter { !parkedInLibrary($0) }
+    }
+
+    /// Journal-moves each file into Photos/_Removed, one at a time. A failure leaves that file in place.
+    func removeFromLibrary(_ assets: [LibraryAsset]) async {
+        guard !assets.isEmpty, !removalBusy, !dateBusy, !cleanBusy else { return }
+        removalBusy = true
+        defer { removalBusy = false }
+        var moved = 0
+        var stayed = 0
+        let total = assets.count
+        for (index, asset) in assets.enumerated() {
+            notice = "Moving \(index + 1) of \(total) to Photos/_Removed."
+            await Task.yield()
+            do {
+                let reply = try await client.removeFromLibrary(uid: asset.uid)
+                if reply.error != nil {
+                    stayed += 1
+                } else {
+                    moved += 1
+                }
+            } catch {
+                stayed += total - moved - stayed
+                break
+            }
+        }
+        if stayed == 0 {
+            notice = moved == 1 ? "Moved to Photos/_Removed." : "Moved \(moved) files to Photos/_Removed."
+        } else if moved == 0 {
+            notice = total == 1 ? "The file stayed in the library." : "The files stayed in the library."
+        } else {
+            notice = "\(moved) moved to Photos/_Removed. \(stayed) stayed in the library."
+        }
+        await reload(media: "photo")
+    }
+
     /// Journal-moves one active file into the store. The bytes are not unlinked in place.
     func moveToDuplicates(_ asset: LibraryAsset) async {
         do {
@@ -1244,8 +1387,15 @@ final class LibraryBrowser {
         editedJPEG[uid] ?? cells[uid]?.imageData
     }
 
-    func selectRow(_ uid: String, shift: Bool, order: [String]) {
-        let choice = GridSelection.choose(order: order, anchor: selectionAnchorUID, clicked: uid, shift: shift)
+    func selectRow(_ uid: String, shift: Bool, extend: Bool = false, order: [String]) {
+        let choice = GridSelection.choose(
+            order: order,
+            anchor: selectionAnchorUID,
+            clicked: uid,
+            shift: shift,
+            extend: extend,
+            existing: selectedUIDs
+        )
         selectedUIDs = choice.keys
         selectionAnchorUID = choice.anchor
         selectedUID = choice.primary
@@ -1261,6 +1411,44 @@ final class LibraryBrowser {
             selectedUIDs = []
             selectionAnchorUID = nil
         }
+    }
+
+    /// Photos, Review, or Duplicates, whichever section is on screen.
+    func sectionAssets() -> [LibraryAsset] {
+        switch librarySection {
+        case "Review":
+            return reviewRows
+        case "Duplicates":
+            return duplicateGroups.flatMap(\.members)
+        default:
+            return rows
+        }
+    }
+
+    /// The one selected still Copy settings can read.
+    func primarySettingsStill() -> LibraryAsset? {
+        guard let selectedUID,
+              let asset = sectionAssets().first(where: { $0.uid == selectedUID }),
+              isSettingsStill(asset) else { return nil }
+        return asset
+    }
+
+    func isSettingsStill(_ asset: LibraryAsset) -> Bool {
+        guard !isVideo(asset), fileURL(for: asset) != nil else { return false }
+        let media = asset.mediaClass?.lowercased() ?? ""
+        return media == "image" || media == "raw" || media.isEmpty
+    }
+
+    /// The clicked still, or every selected still when that click is inside the selection.
+    /// A nil click is the Edit menu and uses the whole selection.
+    func settingsPasteTargets(clicked: LibraryAsset?) -> [LibraryAsset] {
+        if let clicked {
+            if selectedUIDs.contains(clicked.uid) {
+                return rotatableStills(in: sectionAssets())
+            }
+            return isSettingsStill(clicked) ? [clicked] : []
+        }
+        return rotatableStills(in: sectionAssets())
     }
 
     func rotatableStills(in pool: [LibraryAsset]) -> [LibraryAsset] {
@@ -1368,6 +1556,41 @@ final class LibraryBrowser {
             return true
         }
         return application.standardizedFileURL.path == NSWorkspace.shared.urlForApplication(withBundleIdentifier: EditorHandoff.editorBundleID)?.standardizedFileURL.path
+    }
+
+    /// Stills in the section on screen, in the order the grid shows them.
+    func listedImages() -> [LibraryAsset] {
+        let pool: [LibraryAsset]
+        switch librarySection {
+        case "Review":
+            pool = reviewRows
+        case "Duplicates":
+            pool = duplicateGroups.flatMap(\.members)
+        default:
+            pool = rows
+        }
+        return pool.filter { canOpenInEditor($0) }
+    }
+
+    func canStepImage(by delta: Int, matching url: URL?) -> Bool {
+        guard let url, let index = listedImages().firstIndex(where: { sameFile($0, as: url) }) else { return false }
+        return listedImages().indices.contains(index + delta)
+    }
+
+    /// Opens the still delta places away and selects it in the grid.
+    func stepImage(by delta: Int, matching url: URL?) {
+        let images = listedImages()
+        guard let url, let index = images.firstIndex(where: { sameFile($0, as: url) }) else { return }
+        let next = index + delta
+        guard images.indices.contains(next) else { return }
+        let asset = images[next]
+        selectRow(asset.uid, shift: false, order: images.map(\.uid))
+        openInEditor(asset)
+    }
+
+    private func sameFile(_ asset: LibraryAsset, as url: URL) -> Bool {
+        guard let file = fileURL(for: asset) else { return false }
+        return FolderEntry.cacheKey(for: file) == FolderEntry.cacheKey(for: url)
     }
 
     func canOpenInEditor(_ asset: LibraryAsset) -> Bool {

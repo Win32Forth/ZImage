@@ -38,8 +38,117 @@ nonisolated struct ToneState: Codable, Equatable, Sendable {
     var temperature: Double = 6500
     var tint: Double = 0
     var skinGrade: SkinGrade? = nil
+    /// Spectrum handles, in display tone from black to white. Identity is 0, 0.5, and 1.
+    var spectrumLow: Double = 0
+    var spectrumMid: Double = 0.5
+    var spectrumHigh: Double = 1
 
     static let identity = ToneState()
+
+    init(
+        exposureEV: Double = 0,
+        brightness: Double = 0,
+        contrast: Double = 0,
+        highlights: Double = 0,
+        shadows: Double = 0,
+        whites: Double = 0,
+        blacks: Double = 0,
+        texture: Double = 0,
+        clarity: Double = 0,
+        dehaze: Double = 0,
+        vibrance: Double = 0,
+        saturation: Double = 0,
+        temperature: Double = 6500,
+        tint: Double = 0,
+        skinGrade: SkinGrade? = nil,
+        spectrumLow: Double = 0,
+        spectrumMid: Double = 0.5,
+        spectrumHigh: Double = 1
+    ) {
+        self.exposureEV = exposureEV
+        self.brightness = brightness
+        self.contrast = contrast
+        self.highlights = highlights
+        self.shadows = shadows
+        self.whites = whites
+        self.blacks = blacks
+        self.texture = texture
+        self.clarity = clarity
+        self.dehaze = dehaze
+        self.vibrance = vibrance
+        self.saturation = saturation
+        self.temperature = temperature
+        self.tint = tint
+        self.skinGrade = skinGrade
+        self.spectrumLow = spectrumLow
+        self.spectrumMid = spectrumMid
+        self.spectrumHigh = spectrumHigh
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case exposureEV
+        case brightness
+        case contrast
+        case highlights
+        case shadows
+        case whites
+        case blacks
+        case texture
+        case clarity
+        case dehaze
+        case vibrance
+        case saturation
+        case temperature
+        case tint
+        case skinGrade
+        case spectrumLow
+        case spectrumMid
+        case spectrumHigh
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        exposureEV = try container.decode(Double.self, forKey: .exposureEV)
+        brightness = try container.decode(Double.self, forKey: .brightness)
+        contrast = try container.decode(Double.self, forKey: .contrast)
+        highlights = try container.decode(Double.self, forKey: .highlights)
+        shadows = try container.decode(Double.self, forKey: .shadows)
+        whites = try container.decode(Double.self, forKey: .whites)
+        blacks = try container.decode(Double.self, forKey: .blacks)
+        texture = try container.decode(Double.self, forKey: .texture)
+        clarity = try container.decode(Double.self, forKey: .clarity)
+        dehaze = try container.decode(Double.self, forKey: .dehaze)
+        vibrance = try container.decode(Double.self, forKey: .vibrance)
+        saturation = try container.decode(Double.self, forKey: .saturation)
+        temperature = try container.decode(Double.self, forKey: .temperature)
+        tint = try container.decode(Double.self, forKey: .tint)
+        skinGrade = try container.decodeIfPresent(SkinGrade.self, forKey: .skinGrade)
+        spectrumLow = try container.decodeIfPresent(Double.self, forKey: .spectrumLow) ?? 0
+        spectrumMid = try container.decodeIfPresent(Double.self, forKey: .spectrumMid) ?? 0.5
+        spectrumHigh = try container.decodeIfPresent(Double.self, forKey: .spectrumHigh) ?? 1
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(exposureEV, forKey: .exposureEV)
+        try container.encode(brightness, forKey: .brightness)
+        try container.encode(contrast, forKey: .contrast)
+        try container.encode(highlights, forKey: .highlights)
+        try container.encode(shadows, forKey: .shadows)
+        try container.encode(whites, forKey: .whites)
+        try container.encode(blacks, forKey: .blacks)
+        try container.encode(texture, forKey: .texture)
+        try container.encode(clarity, forKey: .clarity)
+        try container.encode(dehaze, forKey: .dehaze)
+        try container.encode(vibrance, forKey: .vibrance)
+        try container.encode(saturation, forKey: .saturation)
+        try container.encode(temperature, forKey: .temperature)
+        try container.encode(tint, forKey: .tint)
+        try container.encodeIfPresent(skinGrade, forKey: .skinGrade)
+        try container.encode(spectrumLow, forKey: .spectrumLow)
+        try container.encode(spectrumMid, forKey: .spectrumMid)
+        try container.encode(spectrumHigh, forKey: .spectrumHigh)
+    }
 }
 
 nonisolated struct NormPoint: Codable, Equatable, Sendable {

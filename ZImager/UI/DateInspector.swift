@@ -39,7 +39,7 @@ struct DateInspector: View {
                 let typed = captureText
                 Task { await browser.setCaptureDate(typed) }
             }
-            .disabled(browser.selectedUID == nil)
+            .disabled(browser.dateTargets().isEmpty || browser.dateBusy || browser.removalBusy || browser.cleanBusy)
             if showsUserConfidence {
                 Text("Confidence 1.0")
                     .font(.system(size: 13))

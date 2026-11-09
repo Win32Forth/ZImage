@@ -5,7 +5,7 @@
 | Product | ZImage |
 | Author | Thomas Zimmer |
 | Date | 2026-11-09 |
-| Status | ZImager 1.5.0 |
+| Status | ZImager 1.6.0 |
 | Platform | Native macOS app, Apple Silicon, deployment target macOS 27.0. The build machine is an M5. The catalog and the reorganization state live on a Synology DS423. |
 | Repository | `ZImager/` is the app to run. `ZImage/` editor and `ZImageLibrary/` catalog window stay as they were. `Helper/` is the Go source. `README.md` says how to build and how to install the helper. |
 
@@ -17,9 +17,11 @@ Pass 2 is the catalog for the personal library on that Synology share. Its helpe
 
 The edited-document format is a versioned container, extension `.zimg`, nicknamed ZImage RAW in the product language. It stores a parametric edit log, not a second copy of every original. The million originals stay in their camera formats. In Pass 2, SQLite is not opened over SMB. A small Go helper on the DS423 is the only database writer. The Mac talks to it with an authenticated LAN API. Interactive edits run on a display-sized GPU proxy. Full resolution is a tiled export path.
 
-As of 2026-11-09 the app to run is ZImager 1.5.0 (`ZImager/`, bundle id `com.Win32Forth.ZImager`). Disk is the editor. Server is the library, in the same window. ZImage and ZImage Library remain in the tree and were not given this version. The sandbox is off. The deployment target is macOS 27.0. `STATUS.md` records what has landed. The paragraphs below keep the original plan, including choices that the code has since filled in.
+As of 2026-11-09 the app to run is ZImager 1.6.0 (`ZImager/`, bundle id `com.Win32Forth.ZImager`). Disk is the editor. Server is the library, in the same window. ZImage and ZImage Library remain in the tree and were not given this version. The sandbox is off. The deployment target is macOS 27.0. `STATUS.md` records what has landed. The paragraphs below keep the original plan, including choices that the code has since filled in.
 
-Reorganize, Review, and Duplicates do not work yet. Using them can lose photos. Leave those controls alone in 1.5.0. Do not press Start, Pause, Continue, Find duplicates, or Delete all duplicates.
+1.6.0 adds Spectrum above Tone, Auto and Reset on the Tone title, folder Export and Print, Edit-menu Copy settings and Paste settings, View-menu Folder View and Edit View, and arrow keys between photos. Server Remove from library moves files into `Photos/_Removed`. Set date moves each selected file into its date folder through `POST /v1/assets/{uid}/place`. Clean folder, in the Server three-bar menu, calls `POST /v1/folders/clean` and drops catalog rows whose files are gone when another file in that folder has the same name and size. It does not delete a file.
+
+Reorganize, Review, and Duplicates do not work yet. Using them can lose photos. Leave those controls alone in 1.6.0. Do not press Start, Pause, Continue, Find duplicates, or Delete all duplicates.
 
 Server mode needs `zimage-helper` on the Synology. The Mac disk image does not include that program. Build the static ARM64 binary from `Helper/`, copy it to `PhotoVideoAudio/.zimage/bin/zimage-helper`, and start it from DSM Task Scheduler as a non-admin user with `GOMEMLIMIT=160MiB`. The steps are in `README.md`. Stop the task before replacing the binary. Do not open `catalog.db` from the Mac.
 
@@ -1181,7 +1183,7 @@ Rollback of code is git. Rollback of a move that already reached `done` is not a
 
 A DSM update can delete the Task Scheduler entry even when the binary on the data volume survives. The Mac offline banner names the recovery: open DSM Task Scheduler and confirm the boot task still runs `.zimage/bin/zimage-helper`. That is an operator step, not something the app can fix from the laptop.
 
-Install outline. `README.md` has the same steps for someone who is not reading this plan. The 1.5.0 disk image does not contain the helper.
+Install outline. `README.md` has the same steps for someone who is not reading this plan. The 1.6.0 disk image does not contain the helper. Set date's file move and Clean folder need this helper. Stop the DSM task before replacing the binary.
 
 1. On the Mac, from `Helper/`: `GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o zimage-helper ./cmd/zimage-helper`.
 2. Stop the DSM task if it is already running. Copy the binary to `PhotoVideoAudio/.zimage/bin/zimage-helper` over SMB and set mode 0700. Do not copy over a running binary.

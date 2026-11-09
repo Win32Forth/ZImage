@@ -125,9 +125,11 @@ enum InspectorPanelSpan {
 }
 
 /// The title line of an inspector panel, with the disclosure at the right end.
-struct InspectorPanelHeader: View {
+/// An accessory, when there is one, sits immediately to the right of the title.
+struct InspectorPanelHeader<Accessory: View>: View {
     var title: String
     var collapsed: Bool
+    var accessory: Accessory
     var toggle: () -> Void
 
     var body: some View {
@@ -135,6 +137,7 @@ struct InspectorPanelHeader: View {
             Text(title)
                 .font(.system(size: 15, weight: .semibold))
                 .foregroundStyle(ChromePalette.ink)
+            accessory
             Spacer(minLength: 8)
             Button(action: toggle) {
                 Image(systemName: InspectorDisclosure.symbol(collapsed: collapsed))
@@ -148,6 +151,15 @@ struct InspectorPanelHeader: View {
             .accessibilityIdentifier("\(title) disclosure")
             .help(collapsed ? "Expands \(title)." : "Collapses \(title).")
         }
+    }
+}
+
+extension InspectorPanelHeader where Accessory == EmptyView {
+    init(title: String, collapsed: Bool, toggle: @escaping () -> Void) {
+        self.title = title
+        self.collapsed = collapsed
+        self.accessory = EmptyView()
+        self.toggle = toggle
     }
 }
 

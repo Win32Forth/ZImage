@@ -21,7 +21,7 @@ final class EditorModel {
     var folderEntries: [FolderEntry] = []
     /// The file chosen in the Disk folder grid. The details column reads this.
     var selectedFolderKey: String?
-    /// Shift-click fills this from the anchor through the clicked photo.
+    /// Shift-click fills this from the anchor. Control-click or Command-click toggles one photo.
     var selectedFolderKeys: Set<String> = []
     var folderSelectionAnchor: String?
     var folderRotateBusy = false
@@ -43,6 +43,9 @@ final class EditorModel {
     var editBase: EditBase?
     var showsPDFPicker = false
     var showsExportPanel = false
+    /// The format panel is writing the folder selection, not the one open photo.
+    private var folderExportSelection = false
+    private var folderExportFiles: [URL] = []
     private(set) var helperUp = false
     private(set) var catalogAssetUID: String?
     var pdfDocument: PDFDocument?
@@ -65,6 +68,17 @@ final class EditorModel {
     /// The library grid replaces its helper thumbnail when this runs.
     @ObservationIgnored
     var onEditedFolderPreview: ((URL, Data?) -> Void)?
+    /// Left and right arrows while Image is showing. Returns true when the key is consumed.
+    @ObservationIgnored
+    var imageStep: ((Int) -> Bool)?
+    /// The file the arrows step from. Set when an open starts, before its decode finishes.
+    private var pendingOpenURL: URL?
+    /// The file on the canvas, or the file an open has started.
+    var openedFileURL: URL? { pendingOpenURL ?? sourceFileURL }
+    /// A newer open ignores a decode that finished late.
+    private var openGeneration = 0
+    /// True while an arrow key is being handed to a slider or a text field.
+    private var forwardingArrow = false
     /// The newest save requested for each photo. An older save does not overwrite it.
     @ObservationIgnored
     private var editSaveToken: [String: Int] = [:]
@@ -86,6 +100,9 @@ final class EditorModel {
     /// Diameter of the Spot and Scratch circle, in preview pixels.
     var touchupBrushDiameter: Double = 48
     var touchupBusy = false
+    /// Display-tone histogram behind the Spectrum handles. Empty until a photograph is open.
+    var spectrumBins: [Int] = []
+    private var spectrumDragActive = false
     private var touchupGeneration = 0
     /// The generation that currently owns `touchupBusy`. A finished older job does not clear a newer one.
     private var touchupBusyGeneration = 0
@@ -239,6 +256,28 @@ final class EditorModel {
         openSecurityScopedFile(at: entry.url)
     }
 
+    /// Stills in the folder grid, in the order the grid shows them. Videos stay put.
+    private var listedFolderImages: [FolderEntry] {
+        folderEntries.filter { !$0.isDirectory && !$0.isVideo }
+    }
+
+    func canStepListedImage(by delta: Int) -> Bool {
+        guard proxy != nil, !showsPDFPicker, let openedFileURL else { return false }
+        let images = listedFolderImages
+        guard let index = images.firstIndex(where: { FolderEntry.cacheKey(for: $0.url) == FolderEntry.cacheKey(for: openedFileURL) }) else { return false }
+        return images.indices.contains(index + delta)
+    }
+
+    /// Opens the still delta places away in this folder and selects it in the grid.
+    func stepListedImage(by delta: Int) {
+        guard canStepListedImage(by: delta), let openedFileURL else { return }
+        let images = listedFolderImages
+        guard let index = images.firstIndex(where: { FolderEntry.cacheKey(for: $0.url) == FolderEntry.cacheKey(for: openedFileURL) }) else { return }
+        let entry = images[index + delta]
+        selectFolderEntry(entry, shift: false)
+        openListedEntry(entry)
+    }
+
     func showInFinder(_ entry: FolderEntry) {
         NSWorkspace.shared.activateFileViewerSelecting([entry.url])
     }
@@ -303,13 +342,15 @@ final class EditorModel {
         editedPreviewData[entry.id]
     }
 
-    func selectFolderEntry(_ entry: FolderEntry, shift: Bool) {
+    func selectFolderEntry(_ entry: FolderEntry, shift: Bool, extend: Bool = false) {
         let order = folderEntries.filter { !$0.isDirectory }.map(\.id)
         let choice = GridSelection.choose(
             order: order,
             anchor: folderSelectionAnchor,
             clicked: entry.id,
-            shift: shift
+            shift: shift,
+            extend: extend,
+            existing: selectedFolderKeys
         )
         selectedFolderKeys = choice.keys
         folderSelectionAnchor = choice.anchor
@@ -327,6 +368,32 @@ final class EditorModel {
             .filter { selectedFolderKeys.contains($0.id) && !$0.isDirectory && !$0.isVideo }
             .map(\.url)
         rotate(files: files, clockwise: clockwise, catalog: [:])
+    }
+
+    /// Selected stills in the Disk folder grid. Videos stay out of rotate, paste, and export.
+    func exportableFolderFiles() -> [URL] {
+        folderEntries
+            .filter { selectedFolderKeys.contains($0.id) && !$0.isDirectory && !$0.isVideo }
+            .map(\.url)
+    }
+
+    /// The clicked still, or every selected still when that click is inside the selection.
+    func folderPasteTargets(clicked: FolderEntry) -> [URL] {
+        if selectedFolderKeys.contains(clicked.id) {
+            return folderEntries
+                .filter { selectedFolderKeys.contains($0.id) && !$0.isDirectory && !$0.isVideo }
+                .map(\.url)
+        }
+        guard !clicked.isDirectory, !clicked.isVideo else { return [] }
+        return [clicked.url]
+    }
+
+    /// The still the details column is showing. Copy settings reads this one photo.
+    func primaryFolderStillURL() -> URL? {
+        guard let key = selectedFolderKey,
+              let entry = folderEntries.first(where: { $0.id == key }),
+              !entry.isDirectory, !entry.isVideo else { return nil }
+        return entry.url
     }
 
     /// Applies the copied Tone and Geometry to each selected still, then saves and rebuilds it.
@@ -388,6 +455,18 @@ final class EditorModel {
             await storeTurned(url, turned, catalog: catalog)
             return true
         }
+    }
+
+    func pasteLibraryStills(_ assets: [LibraryAsset], fileURL: (LibraryAsset) -> URL?) {
+        guard hasCopiedSettings else { return }
+        var files: [URL] = []
+        var catalog: [String: CatalogEditTarget] = [:]
+        for asset in assets {
+            guard let url = fileURL(asset), let relativePath = asset.relPath else { continue }
+            files.append(url)
+            catalog[FolderEntry.cacheKey(for: url)] = CatalogEditTarget(uid: asset.uid, relativePath: relativePath)
+        }
+        paste(files: files, catalog: catalog)
     }
 
     func paste(files: [URL], catalog: [String: CatalogEditTarget]) {
@@ -569,6 +648,8 @@ final class EditorModel {
 
     func openSecurityScopedFile(at url: URL, keepLoadedLog: Bool = false, switchToImageTab: Bool = true) {
         fileOpenStarted = true
+        openGeneration += 1
+        let generation = openGeneration
         if switchToImageTab {
             showsFolderGrid = false
         }
@@ -578,24 +659,25 @@ final class EditorModel {
             rememberCurrentEdits()
             clearDocumentLink()
         }
+        pendingOpenURL = url
         releaseFileScope()
         if url.startAccessingSecurityScopedResource() {
             fileScopeURL = url
         }
         let ext = url.pathExtension.lowercased()
         if ext == "zimg" {
-            openZimg(at: url)
+            openZimg(at: url, generation: generation)
             return
         }
         if ext == "x3f" {
-            openX3F(at: url)
+            openX3F(at: url, generation: generation)
             return
         }
         if ext == "pdf" {
             openPDF(at: url)
             return
         }
-        openProxy(at: url)
+        openProxy(at: url, generation: generation)
     }
 
     /// The `.zimg` for this photo in ZImage's own folder. The photo folder is not used.
@@ -743,6 +825,7 @@ final class EditorModel {
 
     /// Asks for a format, then writes a new file. The original path is refused.
     func showExportPanel() {
+        discardFolderExportRequest()
         guard baseCI != nil else {
             presentAlert("Open a photo before exporting.")
             return
@@ -759,8 +842,109 @@ final class EditorModel {
         showsExportPanel = true
     }
 
+    /// Prints the photograph on screen, including slider positions that have not been released yet.
+    func printOpenPhoto() {
+        guard !folderRotateBusy, proxy != nil, !showsPDFPicker, let baseCI else { return }
+        var state = log.state
+        state.tone = draftTone
+        state.geometry = draftGeometry
+        let image = FolderExportWorker.toned(base: baseCI, state: state, tokenPath: sourceFileURL?.path ?? "")
+        guard let page = FolderExportWorker.raster(image, context: toneContext) else {
+            folderRotateNote = "The photo could not be printed."
+            return
+        }
+        folderRotateNote = nil
+        _ = PhotoPrinter.run(images: [page], jobName: openedFileName ?? "Photo")
+    }
+
+    /// Prints each selected still. The open photo uses the picture on screen. Videos are already left out.
+    func printFolderFiles(_ files: [URL]) {
+        guard !folderRotateBusy, !files.isEmpty else { return }
+        folderRotateBusy = true
+        folderRotateNote = nil
+        let total = files.count
+        let openState: EditState? = {
+            guard baseCI != nil, files.contains(where: isOpenFile) else { return nil }
+            var state = log.state
+            state.tone = draftTone
+            state.geometry = draftGeometry
+            return state
+        }()
+        let openBase = openState == nil ? nil : baseCI
+        let openToken = sourceFileURL?.path ?? ""
+        var sessions: [String: HistoryLog] = [:]
+        for url in files {
+            if isOpenFile(url) { continue }
+            let key = sourceKey(url)
+            if let saved = editsBySource[key]?.log {
+                sessions[key] = saved
+            }
+        }
+        Task {
+            var pages: [CGImage] = []
+            var onlyName: String?
+            var failed = 0
+            for (index, url) in files.enumerated() {
+                self.folderRotateNote = "Preparing \(index + 1) of \(total) for printing."
+                await Task.yield()
+                let page: CGImage?
+                if self.isOpenFile(url), let openState, let openBase {
+                    let image = FolderExportWorker.toned(base: openBase, state: openState, tokenPath: openToken)
+                    page = FolderExportWorker.raster(image, context: self.toneContext)
+                } else {
+                    let session = sessions[self.sourceKey(url)]
+                    let raster = await Task.detached {
+                        FolderExportWorker.rendered(file: url, session: session)
+                    }.value
+                    page = raster?.image
+                }
+                if let page {
+                    if pages.isEmpty { onlyName = url.lastPathComponent }
+                    pages.append(page)
+                } else {
+                    failed += 1
+                }
+            }
+            self.folderRotateBusy = false
+            self.folderRotateNote = nil
+            guard !pages.isEmpty else {
+                self.folderRotateNote = total == 1
+                    ? "The photo could not be printed."
+                    : "The photos could not be printed."
+                return
+            }
+            let jobName = pages.count == 1 ? (onlyName ?? "Photo") : "\(pages.count) photos"
+            let printed = PhotoPrinter.run(images: pages, jobName: jobName)
+            if printed, failed > 0 {
+                self.folderRotateNote = failed == 1
+                    ? "One photo could not be printed."
+                    : "\(failed) photos could not be printed."
+            }
+        }
+    }
+
+    /// Folder view asks for a format, then a folder, and writes every selected still there.
+    func beginFolderExport(files: [URL]) {
+        guard !folderRotateBusy, !files.isEmpty else { return }
+        folderExportFiles = files
+        folderExportSelection = true
+        showsExportPanel = true
+    }
+
+    func discardFolderExportRequest() {
+        folderExportSelection = false
+        folderExportFiles = []
+    }
+
     func exportStill(_ request: ExportRequest) {
+        let exportingFolder = folderExportSelection
+        let folderFiles = folderExportFiles
+        discardFolderExportRequest()
         showsExportPanel = false
+        if exportingFolder {
+            writeFolderExport(folderFiles, request: request)
+            return
+        }
         let panel = NSSavePanel()
         if let type = UTType(filenameExtension: request.fileExtension) {
             panel.allowedContentTypes = [type]
@@ -773,6 +957,106 @@ final class EditorModel {
             guard panel.runModal() == .OK, let url = panel.url else { return }
             self.writeExport(request, to: url)
         }
+    }
+
+    /// Picks a folder, then writes one new file per still. The open photo uses the picture on screen.
+    private func writeFolderExport(_ files: [URL], request: ExportRequest) {
+        guard !folderRotateBusy, !files.isEmpty else { return }
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = true
+        panel.prompt = "Export"
+        panel.message = "Each selected photo is written into this folder. The original files are not changed."
+        panel.directoryURL = files.first?.deletingLastPathComponent()
+        DispatchQueue.main.async {
+            guard panel.runModal() == .OK, let folder = panel.url else { return }
+            self.runFolderExport(files, request: request, folder: folder)
+        }
+    }
+
+    private func runFolderExport(_ files: [URL], request: ExportRequest, folder: URL) {
+        guard !folderRotateBusy, !files.isEmpty else { return }
+        folderRotateBusy = true
+        folderRotateNote = nil
+        let total = files.count
+        let openKey = sourceFileURL.map(sourceKey)
+        let openState: EditState? = {
+            guard baseCI != nil, let openKey, files.contains(where: { sourceKey($0) == openKey }) else { return nil }
+            var state = log.state
+            state.tone = draftTone
+            state.geometry = draftGeometry
+            return state
+        }()
+        let openBase = openState == nil ? nil : baseCI
+        let openToken = sourceFileURL?.path ?? ""
+        var sessions: [String: HistoryLog] = [:]
+        for url in files {
+            let key = sourceKey(url)
+            if key == openKey { continue }
+            if let saved = editsBySource[key]?.log {
+                sessions[key] = saved
+            }
+        }
+        let started = folder.startAccessingSecurityScopedResource()
+        Task {
+            var failed = 0
+            for (index, url) in files.enumerated() {
+                self.folderRotateNote = "Exporting \(index + 1) of \(total)."
+                let key = self.sourceKey(url)
+                let wrote: Bool
+                if key == openKey, let openState, let openBase {
+                    wrote = self.writeOpenFolderExport(
+                        file: url,
+                        folder: folder,
+                        request: request,
+                        state: openState,
+                        base: openBase,
+                        tokenPath: openToken
+                    )
+                } else {
+                    let session = sessions[key]
+                    wrote = await Task.detached {
+                        FolderExportWorker.write(file: url, folder: folder, request: request, session: session)
+                    }.value
+                }
+                if !wrote { failed += 1 }
+            }
+            if started {
+                folder.stopAccessingSecurityScopedResource()
+            }
+            self.folderRotateBusy = false
+            if failed == 0 {
+                self.folderRotateNote = nil
+            } else if failed == 1 {
+                self.folderRotateNote = "One photo could not be exported."
+            } else {
+                self.folderRotateNote = "\(failed) photos could not be exported."
+            }
+        }
+    }
+
+    /// Same pixels as Export on the open photo. The file lands in the chosen folder, not on top of the original.
+    private func writeOpenFolderExport(
+        file: URL,
+        folder: URL,
+        request: ExportRequest,
+        state: EditState,
+        base: CIImage,
+        tokenPath: String
+    ) -> Bool {
+        guard let destination = FolderExportWorker.destination(for: file, folder: folder, ext: request.fileExtension) else {
+            return false
+        }
+        let image = FolderExportWorker.toned(base: base, state: state, tokenPath: tokenPath)
+        let started = destination.startAccessingSecurityScopedResource()
+        defer {
+            if started {
+                destination.stopAccessingSecurityScopedResource()
+            }
+        }
+        return FolderExportWorker.write(image: image, state: state, request: request, to: destination, context: toneContext)
     }
 
     func openSelectedPDFPage() {
@@ -820,6 +1104,7 @@ final class EditorModel {
             proxy = nil
             baseCI = nil
             preview = nil
+            spectrumBins = []
             invalidateTile()
             resetEditsForNewImage()
         } catch {
@@ -827,7 +1112,7 @@ final class EditorModel {
         }
     }
 
-    private func openX3F(at url: URL) {
+    private func openX3F(at url: URL, generation: Int) {
         let name = url.lastPathComponent
         Task {
             let outcome: Result<X3FOpened, X3FOpenError> = await Task.detached {
@@ -839,6 +1124,7 @@ final class EditorModel {
                     return .failure(.noPreview(name))
                 }
             }.value
+            guard generation == self.openGeneration else { return }
             switch outcome {
             case .success(let opened):
                 self.adopt(
@@ -855,7 +1141,7 @@ final class EditorModel {
         }
     }
 
-    private func openProxy(at url: URL) {
+    private func openProxy(at url: URL, generation: Int) {
         let name = url.lastPathComponent
         Task {
             let outcome: Result<ProxyImage, ProxyOpenError> = await Task.detached {
@@ -867,6 +1153,7 @@ final class EditorModel {
                     return .failure(.cannotRead(url.lastPathComponent))
                 }
             }.value
+            guard generation == self.openGeneration else { return }
             switch outcome {
             case .success(let proxy):
                 self.adopt(proxy: proxy, name: name, url: url, banner: nil, support: .full, editBase: nil)
@@ -922,6 +1209,7 @@ final class EditorModel {
         if let savedCanvas {
             preview = savedCanvas
             self.savedCanvas = nil
+            self.refreshSpectrumHistogram()
         } else {
             self.refreshPreview()
         }
@@ -938,6 +1226,7 @@ final class EditorModel {
         proxy = nil
         baseCI = nil
         preview = nil
+        spectrumBins = []
         openedFileName = name
         previewBanner = nil
         decodeSupport = .unsupported
@@ -947,6 +1236,7 @@ final class EditorModel {
         horizonClicks.removeAll()
         invalidateTile()
         clearDocumentLink()
+        pendingOpenURL = nil
         resetEditsForNewImage()
         releaseFileScope()
     }
@@ -978,7 +1268,7 @@ final class EditorModel {
         )
     }
 
-    private func openZimg(at url: URL) {
+    private func openZimg(at url: URL, generation: Int) {
         let zimgBookmark = try? url.bookmarkData(
             options: [.withSecurityScope],
             includingResourceValuesForKeys: nil,
@@ -993,6 +1283,7 @@ final class EditorModel {
                     return .failure(error)
                 }
             }.value
+            guard generation == self.openGeneration else { return }
             switch outcome {
             case .failure(let error):
                 self.failOpen(name: name, message: error.localizedDescription)
@@ -1406,12 +1697,46 @@ final class EditorModel {
     func installCanvasKeys() {
         guard keyMonitor == nil else { return }
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp]) { [weak self] event in
-            guard event.keyCode == 49 else { return event }
-            let held = event.type == .keyDown
-            MainActor.assumeIsolated {
-                self?.spaceDown = held
+            if event.keyCode == 49 {
+                let held = event.type == .keyDown
+                MainActor.assumeIsolated {
+                    self?.spaceDown = held
+                }
+                return event
             }
-            return event
+            guard event.type == .keyDown else { return event }
+            let blocked: NSEvent.ModifierFlags = [.command, .shift, .option, .control]
+            guard event.modifierFlags.intersection(blocked).isEmpty else { return event }
+            let delta: Int
+            switch event.keyCode {
+            case 123: delta = -1
+            case 124: delta = 1
+            default: return event
+            }
+            var forwarding = false
+            MainActor.assumeIsolated {
+                forwarding = self?.forwardingArrow ?? false
+            }
+            if forwarding { return event }
+            if let responder = NSApp.keyWindow?.firstResponder {
+                if let slider = responder as? NSSlider {
+                    MainActor.assumeIsolated { self?.forwardingArrow = true }
+                    slider.keyDown(with: event)
+                    MainActor.assumeIsolated { self?.forwardingArrow = false }
+                    return nil
+                }
+                if let text = responder as? NSTextView {
+                    MainActor.assumeIsolated { self?.forwardingArrow = true }
+                    text.keyDown(with: event)
+                    MainActor.assumeIsolated { self?.forwardingArrow = false }
+                    return nil
+                }
+            }
+            var handled = false
+            MainActor.assumeIsolated {
+                handled = self?.imageStep?(delta) ?? false
+            }
+            return handled ? nil : event
         }
     }
 
@@ -1509,6 +1834,27 @@ final class EditorModel {
         log.commit(command)
     }
 
+    /// True when the open photograph has an edit Redo can bring back, or a change that has not been released yet.
+    var canResetPhoto: Bool {
+        guard proxy != nil, !showsPDFPicker else { return false }
+        if log.canUndo { return true }
+        if draftTone != log.state.tone || draftGeometry != log.state.geometry { return true }
+        return cropSelection != nil
+    }
+
+    /// Returns the open photograph to the start. Each edit stays on the redo stack.
+    func resetPhoto() {
+        guard proxy != nil, !showsPDFPicker else { return }
+        touchupGeneration += 1
+        commitOpenDrafts()
+        guard log.canUndo || cropSelection != nil else { return }
+        log.resetToBeginning()
+        cropSelection = nil
+        syncDraftsFromLog()
+        refreshPreview()
+        publishOpenPreview()
+    }
+
     func undo() {
         touchupGeneration += 1
         cancelProvisionalEdits()
@@ -1550,13 +1896,48 @@ final class EditorModel {
     private(set) var hasCopiedSettings = false
     private var copiedTone = ToneState.identity
     private var copiedGeometry = GeometryState.identity
+    /// A later copy wins over a settings read that is still running.
+    private var copyGeneration = 0
 
-    /// Copies Tone and Geometry, including a slider that has not been released yet.
+    /// Copies Tone and Geometry from the open photo, including a slider that has not been released yet.
     func copySettings() {
+        copyGeneration += 1
         commitOpenDrafts()
-        copiedTone = draftTone
-        copiedGeometry = draftGeometry
+        adoptCopied(tone: draftTone, geometry: draftGeometry)
+    }
+
+    /// Copies Tone and Geometry from one still. The open photo keeps its unsaved slider positions.
+    func copySettings(from file: URL) {
+        if isOpenFile(file) {
+            copySettings()
+            return
+        }
+        copyGeneration += 1
+        let generation = copyGeneration
+        if let session = editsBySource[sourceKey(file)]?.log {
+            adoptCopied(tone: session.state.tone, geometry: session.state.geometry)
+            return
+        }
+        hasCopiedSettings = false
+        Task {
+            let found = await Task.detached {
+                FolderTurnWorker.adjustments(file: file)
+            }.value
+            guard generation == self.copyGeneration, let found else { return }
+            self.adoptCopied(tone: found.tone, geometry: found.geometry)
+        }
+    }
+
+    private func adoptCopied(tone: ToneState, geometry: GeometryState) {
+        copiedTone = tone
+        copiedGeometry = geometry
         hasCopiedSettings = true
+    }
+
+    private func isOpenFile(_ url: URL) -> Bool {
+        guard let sourceFileURL, proxy != nil else { return false }
+        return sourceKey(sourceFileURL) == sourceKey(url)
+            || FolderEntry.cacheKey(for: sourceFileURL) == FolderEntry.cacheKey(for: url)
     }
 
     /// One history step. Crop and object removal stay as they are.
@@ -2135,9 +2516,85 @@ final class EditorModel {
         toneIdle?.cancel()
     }
 
+    /// Starts a Spectrum drag. The histogram stays still until the handle is released.
+    func beginSpectrumDrag() {
+        spectrumDragActive = true
+        beginToneDrag()
+    }
+
+    /// Moves one Spectrum handle. One drag is one history step.
+    func setSpectrum(_ handle: SpectrumHandle, to value: Double) {
+        guard proxy != nil, spectrumDragActive else { return }
+        let next = SpectrumLevels.moving(
+            handle,
+            to: value,
+            low: draftTone.spectrumLow,
+            mid: draftTone.spectrumMid,
+            high: draftTone.spectrumHigh
+        )
+        applySpectrum(next, label: SpectrumLevels.label(handle))
+    }
+
+    /// Puts one Spectrum handle back. Low returns to black, high to white, and middle to the center.
+    func resetSpectrum(_ handle: SpectrumHandle) {
+        guard proxy != nil else { return }
+        let next = SpectrumLevels.reset(
+            handle,
+            low: draftTone.spectrumLow,
+            mid: draftTone.spectrumMid,
+            high: draftTone.spectrumHigh
+        )
+        beginSpectrumDrag()
+        applySpectrum(next, label: SpectrumLevels.label(handle))
+        endSpectrumDrag()
+    }
+
+    func endSpectrumDrag() {
+        spectrumDragActive = false
+        endToneDrag()
+    }
+
+    private func applySpectrum(_ next: (low: Double, mid: Double, high: Double), label: String) {
+        draftTone.spectrumLow = next.low
+        draftTone.spectrumMid = next.mid
+        draftTone.spectrumHigh = next.high
+        pendingToneLabel = label
+        refreshPreview()
+    }
+
+    /// One history step named Auto. The six basic sliders come from the photograph before the current tone, so pressing Auto again does not stack.
+    func autoAdjustTone() {
+        endToneDrag()
+        guard let shaped = stage3Image() else { return }
+        let extent = shaped.extent
+        let longSide = max(extent.width, extent.height)
+        guard longSide.isFinite, longSide > 1 else { return }
+        let scale = min(1, 160 / longSide)
+        let small = shaped.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+        let bounds = small.extent.integral
+        let width = Int(bounds.width)
+        let height = Int(bounds.height)
+        guard width >= 2, height >= 2 else { return }
+        var bytes = [UInt8](repeating: 0, count: width * height * 4)
+        toneContext.render(
+            small,
+            toBitmap: &bytes,
+            rowBytes: width * 4,
+            bounds: bounds,
+            format: .RGBA8,
+            colorSpace: CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
+        )
+        guard let levels = ToneAuto.levels(rgba: bytes) else { return }
+        draftTone = ToneAuto.applying(levels, to: draftTone)
+        pendingToneLabel = "Auto"
+        refreshPreview()
+        commitToneDraft()
+    }
+
     /// Mouse-up. One drag is one `setTone`.
     func endToneDrag() {
         toneDragActive = false
+        spectrumDragActive = false
         toneIdle?.cancel()
         commitToneDraft()
     }
@@ -2159,6 +2616,7 @@ final class EditorModel {
 
     private func cancelToneGesture() {
         toneDragActive = false
+        spectrumDragActive = false
         toneIdle?.cancel()
         toneIdle = nil
     }
@@ -2221,6 +2679,7 @@ final class EditorModel {
     private func refreshPreview() {
         guard let shaped = stage3Image() else {
             preview = nil
+            spectrumBins = []
             return
         }
         let longEdge = max(shaped.extent.width, shaped.extent.height)
@@ -2228,11 +2687,56 @@ final class EditorModel {
         let extent = toned.extent.integral
         guard extent.width >= 1, extent.height >= 1 else {
             preview = nil
+            spectrumBins = []
             return
         }
         let screen = NSScreen.main?.colorSpace?.cgColorSpace ?? CGColorSpace(name: CGColorSpace.sRGB)!
         preview = toneContext.createCGImage(toned, from: extent, format: .RGBA8, colorSpace: screen)
         proxyRenderCount += 1
+        refreshSpectrumHistogram()
+    }
+
+    /// Luminance of the photograph before the Spectrum handles, so the graph stays put while a handle moves.
+    private func refreshSpectrumHistogram() {
+        guard !spectrumDragActive else { return }
+        guard let shaped = stage3Image() else {
+            spectrumBins = []
+            return
+        }
+        let extent = shaped.extent
+        let longSide = max(extent.width, extent.height)
+        guard longSide.isFinite, longSide > 1 else {
+            spectrumBins = []
+            return
+        }
+        var tone = draftTone
+        tone.spectrumLow = 0
+        tone.spectrumMid = 0.5
+        tone.spectrumHigh = 1
+        let scale = min(1, 160 / longSide)
+        let small = shaped.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+        let toned = TonePipeline.apply(
+            base: small,
+            tone: tone,
+            longEdge: max(small.extent.width, small.extent.height)
+        )
+        let bounds = toned.extent.integral
+        let width = Int(bounds.width)
+        let height = Int(bounds.height)
+        guard width >= 2, height >= 2 else {
+            spectrumBins = []
+            return
+        }
+        var bytes = [UInt8](repeating: 0, count: width * height * 4)
+        toneContext.render(
+            toned,
+            toBitmap: &bytes,
+            rowBytes: width * 4,
+            bounds: bounds,
+            format: .RGBA8,
+            colorSpace: CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
+        )
+        spectrumBins = SpectrumLevels.bins(rgba: bytes)
     }
 }
 
@@ -2246,6 +2750,7 @@ struct Chrome: View {
     @AppStorage("ZImageLibrary.sidebarWidth") private var libraryTreeWidth = Double(LibrarySidebarSpan.initial)
     @AppStorage("ZImager.sourceMode") private var sourceMode = "disk"
     @AppStorage("ZImager.serverShowsFolder") private var serverShowsFolder = true
+    @AppStorage("ZImage.inspectorSpectrumCollapsed") private var spectrumCollapsed = false
     @AppStorage("ZImage.inspectorToneCollapsed") private var toneCollapsed = false
     @AppStorage("ZImage.inspectorGeometryCollapsed") private var geometryCollapsed = false
     @AppStorage("ZImage.inspectorColorCollapsed") private var colorCollapsed = false
@@ -2302,12 +2807,39 @@ struct Chrome: View {
             }
             FolderPreviewCache.loadStoredCap()
             model.restoreLastFolder()
+            browser.librarySection = librarySection ?? "Photos"
+            model.imageStep = { [model, browser] delta in
+                let server = UserDefaults.standard.string(forKey: "ZImager.sourceMode") == "server"
+                let folder: Bool
+                if server {
+                    if UserDefaults.standard.object(forKey: "ZImager.serverShowsFolder") == nil {
+                        folder = true
+                    } else {
+                        folder = UserDefaults.standard.bool(forKey: "ZImager.serverShowsFolder")
+                    }
+                } else {
+                    folder = model.showsFolderGrid
+                }
+                guard !folder, model.proxy != nil, !model.showsPDFPicker else { return false }
+                if server {
+                    browser.stepImage(by: delta, matching: model.openedFileURL)
+                } else {
+                    model.stepListedImage(by: delta)
+                }
+                return true
+            }
             model.installCanvasKeys()
             sectionChangesSelectFolder = true
         }
-        .onChange(of: librarySection) { _, _ in
+        .onChange(of: librarySection) { _, section in
+            browser.librarySection = section ?? "Photos"
             if sectionChangesSelectFolder {
                 serverShowsFolder = true
+            }
+        }
+        .onChange(of: sourceMode) { _, mode in
+            if mode == "server", model.canvasTool == .removeObject {
+                model.selectCanvasTool(.zoom)
             }
         }
         .onChange(of: model.showsFolderGrid) { _, showing in
@@ -2333,7 +2865,9 @@ struct Chrome: View {
                 await browser.refreshHelperPass()
             }
         }
-        .sheet(isPresented: $model.showsExportPanel) {
+        .sheet(isPresented: $model.showsExportPanel, onDismiss: {
+            model.discardFolderExportRequest()
+        }) {
             ExportPanel(model: model)
         }
     }
@@ -2360,24 +2894,36 @@ struct Chrome: View {
         model.rotate(files: files, clockwise: clockwise, catalog: catalog)
     }
 
-    private func pasteServerSelection() {
-        guard model.hasCopiedSettings else { return }
+    private func exportServerSelection() {
         var files: [URL] = []
-        var catalog: [String: CatalogEditTarget] = [:]
         for asset in browser.rotatableStills(in: serverRotatePool) {
-            guard let url = browser.fileURL(for: asset), let relativePath = asset.relPath else { continue }
+            guard let url = browser.fileURL(for: asset) else { continue }
             files.append(url)
-            catalog[FolderEntry.cacheKey(for: url)] = CatalogEditTarget(uid: asset.uid, relativePath: relativePath)
         }
-        model.paste(files: files, catalog: catalog)
+        model.beginFolderExport(files: files)
     }
 
-    /// Rotate sits beside the Folder/Image tabs in both views. Paste settings is Folder only.
+    private func printServerSelection() {
+        var files: [URL] = []
+        for asset in browser.rotatableStills(in: serverRotatePool) {
+            guard let url = browser.fileURL(for: asset) else { continue }
+            files.append(url)
+        }
+        model.printFolderFiles(files)
+    }
+
+    private func pasteServerSelection() {
+        model.pasteLibraryStills(browser.rotatableStills(in: serverRotatePool)) { browser.fileURL(for: $0) }
+    }
+
+    /// Rotate sits beside the Folder/Image tabs in both views. Paste settings, Export, and Print are Folder only.
     private func rotateButtons(
         enabled: Bool,
         showPaste: Bool,
         perform: @escaping (Bool) -> Void,
-        paste: @escaping () -> Void
+        paste: @escaping () -> Void,
+        export: @escaping () -> Void,
+        printPhotos: @escaping () -> Void
     ) -> some View {
         let leftHelp = showPaste
             ? "Turns the selected photos a quarter turn to the left, saves their settings, and rebuilds their previews."
@@ -2402,6 +2948,18 @@ struct Chrome: View {
                     .disabled(!model.hasCopiedSettings || !enabled)
                     .accessibilityIdentifier("Folder paste settings")
                     .help("Applies the copied Tone and Geometry settings to the selected photos, saves them, and rebuilds their previews.")
+                Button("Export") { export() }
+                    .buttonStyle(LibraryPushButtonStyle())
+                    .fixedSize(horizontal: true, vertical: false)
+                    .disabled(!enabled)
+                    .accessibilityIdentifier("Folder export")
+                    .help("Writes a new file for each selected photo. The original photos are not changed.")
+                Button("Print") { printPhotos() }
+                    .buttonStyle(LibraryPushButtonStyle())
+                    .fixedSize(horizontal: true, vertical: false)
+                    .disabled(!enabled)
+                    .accessibilityIdentifier("Folder print")
+                    .help("Prints each selected photo.")
             }
             if let note = model.folderRotateNote {
                 Text(note)
@@ -2547,6 +3105,12 @@ struct Chrome: View {
                 .accessibilityIdentifier("Choose Library Base Folder")
             Button("Pair with Helper") { LibraryHost.pairWithHelper(browser: browser) }
                 .accessibilityIdentifier("Pair with Helper")
+            Button("Clean folder") {
+                Task { await browser.cleanDisplayFolder() }
+            }
+            .disabled(librarySection != "Photos" || browser.cleanBusy || browser.removalBusy || browser.dateBusy)
+            .accessibilityIdentifier("Clean folder")
+            .help("Removes catalog records in this folder whose files are gone and whose name and size match a photo that is still here. Photos on disk stay.")
         } label: {
             Image(systemName: "line.3.horizontal")
                 .font(.system(size: 13, weight: .medium))
@@ -2573,6 +3137,8 @@ struct Chrome: View {
     private var inspector: some View {
         ScrollView(.vertical) {
             VStack(spacing: 0) {
+                InspectorSpectrum(model: model, collapsed: $spectrumCollapsed)
+                inspectorRule
                 InspectorTone(model: model, collapsed: $toneCollapsed)
                 inspectorRule
                 InspectorEyedropper(model: model, collapsed: $colorCollapsed)
@@ -2598,13 +3164,17 @@ struct Chrome: View {
             .accessibilityHidden(true)
     }
 
+    /// Both sources stay mounted. Hiding one keeps its preview-grid scroll offset.
     private var center: some View {
-        Group {
-            if diskMode {
-                diskCenter
-            } else {
-                serverCenter
-            }
+        ZStack {
+            diskCenter
+                .opacity(diskMode ? 1 : 0)
+                .allowsHitTesting(diskMode)
+                .accessibilityHidden(!diskMode)
+            serverCenter
+                .opacity(diskMode ? 0 : 1)
+                .allowsHitTesting(!diskMode)
+                .accessibilityHidden(diskMode)
         }
     }
 
@@ -2633,6 +3203,18 @@ struct Chrome: View {
                     }
                 } paste: {
                     pasteServerSelection()
+                } export: {
+                    exportServerSelection()
+                } printPhotos: {
+                    printServerSelection()
+                }
+                if serverShowsFolder, let note = browser.notice, !note.isEmpty {
+                    Text(note)
+                        .font(.system(size: 13))
+                        .foregroundStyle(ChromePalette.ink)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .accessibilityIdentifier("Library notice")
                 }
                 Spacer(minLength: 8)
                 if showsImage {
@@ -2665,13 +3247,15 @@ struct Chrome: View {
     }
 
     private var libraryPage: some View {
-        Group {
+        let live = !diskMode
+        let onScreen = !diskMode && serverShowsFolder
+        return Group {
             if librarySection == "Review" {
-                ReviewList(browser: browser)
+                ReviewList(browser: browser, model: model, live: live, onScreen: onScreen)
             } else if librarySection == "Duplicates" {
-                DuplicatesBrowser(browser: browser)
+                DuplicatesBrowser(browser: browser, model: model, live: live, onScreen: onScreen)
             } else {
-                LibraryGrid(browser: browser, media: "photo")
+                LibraryGrid(browser: browser, model: model, media: "photo", live: live, onScreen: onScreen)
             }
         }
     }
@@ -2695,6 +3279,11 @@ struct Chrome: View {
             Button("Export") { model.showExportPanel() }
                 .fixedSize(horizontal: true, vertical: false)
                 .help("Writes a new file. The original photo is not changed.")
+            Button("Print") { model.printOpenPhoto() }
+                .fixedSize(horizontal: true, vertical: false)
+                .disabled(model.proxy == nil || model.showsPDFPicker || model.folderRotateBusy)
+                .accessibilityIdentifier("Image print")
+                .help("Prints this photo.")
         }
     }
 
@@ -2736,6 +3325,10 @@ struct Chrome: View {
                     }
                 } paste: {
                     model.pasteFolderSelection()
+                } export: {
+                    model.beginFolderExport(files: model.exportableFolderFiles())
+                } printPhotos: {
+                    model.printFolderFiles(model.exportableFolderFiles())
                 }
                 .padding(.leading, 18)
                 Spacer(minLength: 8)
@@ -2746,7 +3339,7 @@ struct Chrome: View {
             .padding(.horizontal, 16)
             .padding(.vertical, 8)
             ZStack {
-                FolderBrowser(model: model)
+                FolderBrowser(model: model, onScreen: diskMode)
                     .opacity(model.showsFolderGrid ? 1 : 0)
                     .allowsHitTesting(model.showsFolderGrid)
                     .accessibilityHidden(!model.showsFolderGrid)
@@ -2775,7 +3368,9 @@ struct Chrome: View {
                 .toolToggleBorder(active: model.canvasTool == .zoom)
                 .accessibilityAddTraits(model.canvasTool == .zoom ? .isSelected : [])
                 .help("Click zooms in. Option-click zooms out. Hold Space to pan.")
-            RemoveObjectTool(model: model)
+            if diskMode {
+                RemoveObjectTool(model: model)
+            }
             Slider(
                 value: Binding(
                     get: { model.zoom.logarithmicPosition },

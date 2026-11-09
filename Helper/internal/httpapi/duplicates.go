@@ -60,7 +60,7 @@ func (s *Server) duplicates(w http.ResponseWriter, r *http.Request) {
 			AND (
 				SELECT COUNT(*) FROM assets a
 				WHERE a.derivative_group_id = g.id
-				AND a.placement != 'purged'
+				AND a.placement NOT IN ('purged', 'removed')
 				AND a.media_class IN ('image', 'raw')
 			) >= 2
 			ORDER BY g.id LIMIT ?`, after, group, group, limit)
@@ -121,7 +121,7 @@ func (s *Server) duplicateGroup(id int64, uid string, keeperID sql.NullInt64, st
 	item := duplicateGroupJSON{UID: uid, Members: []assetJSON{}}
 	query := assetSelect + `
 		WHERE derivative_group_id = ?
-		AND placement != 'purged'`
+		AND placement NOT IN ('purged', 'removed')`
 	if storeOnly {
 		query += `
 		AND rel_path LIKE 'Photos/\_Duplicates/%' ESCAPE '\'`
@@ -200,6 +200,109 @@ func (s *Server) toDuplicates(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.finishMove(w, "manual_duplicate", journalID, loc.uid)
+}
+
+// toRemoved journal-moves one file into Photos/_Removed. The bytes stay for a later deletion.
+func (s *Server) toRemoved(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method"})
+		return
+	}
+	s.fileMu.Lock()
+	defer s.fileMu.Unlock()
+	loc, ok := s.locate(w, r.PathValue("uid"))
+	if !ok {
+		return
+	}
+	if dating.UnderRemoved(loc.rel) || dating.UnderDuplicates(loc.rel) || loc.placement == "purged" || loc.placement == "removed" || loc.placement == "duplicates" {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "busy"})
+		return
+	}
+	if busy, err := s.journalOpen(loc.id); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "catalog"})
+		return
+	} else if busy {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "busy"})
+		return
+	}
+	dest, err := claimName(s, "Photos/_Removed", path.Base(loc.rel))
+	if err != nil || !dating.UnderRemoved(dest) {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "catalog"})
+		return
+	}
+	journalID, err := s.insertMove(loc, "manual_remove", dest)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "catalog"})
+		return
+	}
+	s.finishMove(w, "manual_remove", journalID, loc.uid)
+}
+
+// placeAsset stores the typed date and journal-moves that one file into its date folder.
+func (s *Server) placeAsset(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method"})
+		return
+	}
+	s.fileMu.Lock()
+	defer s.fileMu.Unlock()
+	loc, ok := s.locate(w, r.PathValue("uid"))
+	if !ok {
+		return
+	}
+	if dating.UnderRemoved(loc.rel) || dating.UnderDuplicates(loc.rel) || loc.placement == "purged" || loc.placement == "removed" || loc.placement == "duplicates" {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "busy"})
+		return
+	}
+	var body struct {
+		CaptureTime string `json:"captureTime"`
+	}
+	if err := readSmallJSON(r, &body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "body"})
+		return
+	}
+	decision, ok := dating.User(body.CaptureTime)
+	if !ok {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "date"})
+		return
+	}
+	var inflight int
+	if err := s.Catalog.Read.QueryRow(`
+		SELECT COUNT(*) FROM journal
+		WHERE asset_id = ? AND state NOT IN ('planned', 'done', 'failed')`, loc.id).Scan(&inflight); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "catalog"})
+		return
+	}
+	if inflight > 0 {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "busy"})
+		return
+	}
+	var run string
+	err := s.Catalog.Read.QueryRow(`SELECT run_state FROM job_state WHERE job_kind = 'reorg'`).Scan(&run)
+	if err != nil && err != sql.ErrNoRows {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "catalog"})
+		return
+	}
+	if run == "running" || run == "pause_requested" || run == "recovering" {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "busy"})
+		return
+	}
+	planned, ok := dating.PlannedPath(loc.rel, "move", "", dating.ReviewBucket(loc.blake, loc.rel), decision)
+	if !ok || !dating.PlaceDest(planned) {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "busy"})
+		return
+	}
+	dest, err := claimNameExcept(s, path.Dir(planned), path.Base(planned), loc.id)
+	if err != nil || !dating.PlaceDest(dest) {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "catalog"})
+		return
+	}
+	journalID, err := dating.PlaceUserDate(s.Catalog, loc.id, loc.rel, dest, loc.bytes, decision)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "catalog"})
+		return
+	}
+	s.finishMove(w, "manual_place", journalID, loc.uid)
 }
 
 func (s *Server) restoreAsset(w http.ResponseWriter, r *http.Request) {
@@ -583,6 +686,31 @@ func (s *Server) finishMove(w http.ResponseWriter, kind string, journalID int64,
 		return
 	}
 	writeJSON(w, http.StatusOK, item)
+}
+
+func claimNameExcept(s *Server, dir, name string, assetID int64) (string, error) {
+	dir = path.Clean(dir)
+	if dir == "." || name == "" || name == "." || name == ".." || strings.Contains(name, "/") {
+		return "", sql.ErrNoRows
+	}
+	for n := 1; n < 1000; n++ {
+		file := name
+		if n > 1 {
+			file = dating.CollisionName(name, n)
+		}
+		rel := dir + "/" + file
+		if !dating.PlaceDest(rel) {
+			return "", sql.ErrNoRows
+		}
+		var count int
+		if err := s.Catalog.Read.QueryRow(`SELECT COUNT(*) FROM assets WHERE rel_path = ? AND id != ?`, rel, assetID).Scan(&count); err != nil {
+			return "", err
+		}
+		if count == 0 {
+			return rel, nil
+		}
+	}
+	return "", sql.ErrNoRows
 }
 
 func claimName(s *Server, dir, name string) (string, error) {

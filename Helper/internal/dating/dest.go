@@ -3,6 +3,7 @@ package dating
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"path"
 	"strconv"
 	"strings"
 )
@@ -11,6 +12,30 @@ import (
 func UnderDuplicates(rel string) bool {
 	rel = strings.TrimPrefix(rel, "/")
 	return rel == "Photos/_Duplicates" || strings.HasPrefix(rel, "Photos/_Duplicates/")
+}
+
+// UnderRemoved reports a file parked for later deletion. Reorg leaves it there.
+func UnderRemoved(rel string) bool {
+	rel = strings.TrimPrefix(rel, "/")
+	return rel == "Photos/_Removed" || strings.HasPrefix(rel, "Photos/_Removed/")
+}
+
+// PlaceDest is a Photos path outside the review park and the two holding folders.
+func PlaceDest(rel string) bool {
+	rel = path.Clean(strings.TrimPrefix(rel, "/"))
+	if rel == "." || rel == ".." || strings.HasPrefix(rel, "../") {
+		return false
+	}
+	if rel != "Photos" && !strings.HasPrefix(rel, "Photos/") {
+		return false
+	}
+	if UnderDuplicates(rel) || UnderRemoved(rel) {
+		return false
+	}
+	if rel == "Photos/_Review" || strings.HasPrefix(rel, "Photos/_Review/") || strings.Contains(rel, "/_Review/") {
+		return false
+	}
+	return true
 }
 
 // ReviewBucket is two hex characters from blake3, otherwise the fast fingerprint.
@@ -27,7 +52,7 @@ func ReviewBucket(sum []byte, rel string) string {
 
 // PlannedPath is the dry-run destination. The store prefix is never a destination.
 func PlannedPath(rel, policy, folder, bucket string, d Decision) (string, bool) {
-	if policy != "move" || UnderDuplicates(rel) {
+	if policy != "move" || UnderDuplicates(rel) || UnderRemoved(rel) {
 		return "", false
 	}
 	base := rel
@@ -55,7 +80,7 @@ func PlannedPath(rel, policy, folder, bucket string, d Decision) (string, bool) 
 	} else {
 		dest = "Photos/" + d.Capture.Format("2006") + "/" + d.Capture.Format("2006-01-02") + "/" + eventDir(title, hasTitle) + "/" + base
 	}
-	if UnderDuplicates(dest) || strings.Contains(dest, "/_Duplicates/") {
+	if UnderDuplicates(dest) || UnderRemoved(dest) || strings.Contains(dest, "/_Duplicates/") || strings.Contains(dest, "/_Removed/") {
 		return "", false
 	}
 	return dest, true
@@ -83,16 +108,30 @@ func AlbumTitle(name string) (string, bool) {
 
 // AlbumTitleFromPath uses a dated folder's remainder when one is present.
 // Otherwise it uses the folder closest to the file.
+// A folder named Updated under Photos/_Review is a staging shelf, not an occasion.
 func AlbumTitleFromPath(rel string) (string, bool) {
 	parts := strings.Split(rel, "/")
 	if len(parts) > 0 {
 		parts = parts[:len(parts)-1]
 	}
+	underReview := false
+	for _, part := range parts {
+		if part == "_Review" {
+			underReview = true
+			break
+		}
+	}
 	fallback := ""
 	have := false
 	for i := len(parts) - 1; i >= 0; i-- {
 		part := strings.TrimSpace(parts[i])
+		if underReview && strings.EqualFold(part, "Updated") {
+			continue
+		}
 		if rest, ok := stripLeadingDay(part); ok && albumFolder(rest) {
+			if underReview && strings.EqualFold(rest, "Updated") {
+				continue
+			}
 			return rest, true
 		}
 		if !have && albumFolder(part) {
@@ -165,7 +204,7 @@ func albumFolder(name string) bool {
 	if name == "" || name == "." || name == ".." || strings.Contains(name, "/") {
 		return false
 	}
-	if name == "Photos" || name == "_Review" || name == "_NoDay" || name == "_Duplicates" || name == "Undated" {
+	if name == "Photos" || name == "_Review" || name == "_NoDay" || name == "_Duplicates" || name == "_Removed" || name == "Undated" {
 		return false
 	}
 	if strings.EqualFold(name, "event") || reviewBucket(name) {

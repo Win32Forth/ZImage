@@ -204,17 +204,20 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/v1/health", s.guard(false, s.health))
 	mux.HandleFunc("/v1/pair/claim", s.guard(false, s.claim))
 	mux.HandleFunc("/v1/assets/{uid}/to-duplicates", s.guard(true, s.toDuplicates))
+	mux.HandleFunc("/v1/assets/{uid}/to-removed", s.guard(true, s.toRemoved))
 	mux.HandleFunc("/v1/assets/{uid}/restore", s.guard(true, s.restoreAsset))
 	mux.HandleFunc("/v1/assets/{uid}/pin", s.guard(true, s.pinAsset))
 	mux.HandleFunc("/v1/assets/{uid}/purge", s.guard(true, s.purgeAsset))
 	mux.HandleFunc("/v1/duplicates/purge-all", s.guard(true, s.purgeAll))
 	mux.HandleFunc("/v1/duplicates/scan", s.guard(true, s.duplicateScan))
 	mux.HandleFunc("/v1/focus", s.guard(true, s.focus))
+	mux.HandleFunc("/v1/folders/clean", s.guard(true, s.cleanFolder))
 	mux.HandleFunc("/v1/duplicates", s.guard(true, s.duplicates))
 	mux.HandleFunc("/v1/assets/{uid}/thumbnail", s.guard(true, s.assetThumbnail))
 	mux.HandleFunc("/v1/assets/{uid}/facts", s.guard(true, s.assetFacts))
 	mux.HandleFunc("/v1/assets/{uid}/detail", s.guard(true, s.assetDetail))
 	mux.HandleFunc("/v1/assets/{uid}/date", s.guard(true, s.assetDate))
+	mux.HandleFunc("/v1/assets/{uid}/place", s.guard(true, s.placeAsset))
 	mux.HandleFunc("/v1/assets/{uid}", s.guard(true, s.assetOne))
 	mux.HandleFunc("/v1/assets", s.guard(true, s.assets))
 	mux.HandleFunc("/v1/events/{uid}", s.guard(true, s.eventRename))
@@ -310,7 +313,7 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 		var openManual int
 		err = s.Catalog.Read.QueryRow(`
 			SELECT COUNT(*) FROM journal
-			WHERE job_kind IN ('manual_duplicate', 'restore', 'purge')
+			WHERE job_kind IN ('manual_duplicate', 'manual_remove', 'manual_place', 'restore', 'purge')
 			AND state NOT IN ('planned', 'done', 'failed')`).Scan(&openManual)
 		if err == nil {
 			body.ManualOpsClear = openManual == 0

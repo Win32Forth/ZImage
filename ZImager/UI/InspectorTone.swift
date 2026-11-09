@@ -56,7 +56,23 @@ struct InspectorTone: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            InspectorPanelHeader(title: "Tone", collapsed: collapsed) { collapsed.toggle() }
+            InspectorPanelHeader(
+                title: "Tone",
+                collapsed: collapsed,
+                accessory: HStack(spacing: 8) {
+                    Button("Auto") { model.autoAdjustTone() }
+                        .buttonStyle(LibraryPushButtonStyle())
+                        .disabled(model.proxy == nil)
+                        .accessibilityIdentifier("Auto")
+                        .help("Sets Exposure, Contrast, Highlights, Shadows, Whites, and Blacks from this photograph.")
+                    Button("Reset") { model.resetPhoto() }
+                        .buttonStyle(LibraryPushButtonStyle())
+                        .disabled(!model.canResetPhoto)
+                        .accessibilityIdentifier("Reset")
+                        .help("Returns this photograph to the start. Redo brings each change back, one at a time.")
+                },
+                toggle: { collapsed.toggle() }
+            )
             if !collapsed {
                 VStack(alignment: .leading, spacing: InspectorMetrics.stackSpacing) {
                     ForEach(ToneSliderSpec.tone) { spec in

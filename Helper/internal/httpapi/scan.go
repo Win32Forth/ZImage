@@ -165,7 +165,7 @@ func (s *Server) countFoundGroups() int {
 		SELECT COUNT(*) FROM (
 			SELECT derivative_group_id FROM assets
 			WHERE derivative_group_id IS NOT NULL
-			AND placement != 'purged'
+			AND placement NOT IN ('purged', 'removed')
 			AND media_class IN ('image', 'raw')
 			GROUP BY derivative_group_id
 			HAVING COUNT(*) >= 2

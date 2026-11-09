@@ -247,6 +247,12 @@ struct PurgeAllCall: Equatable, Sendable {
     var error: String?
 }
 
+struct FolderCleanCall: Equatable, Sendable {
+    var removed: Int?
+    var kept: Int?
+    var error: String?
+}
+
 enum DuplicateCopy {
     static let keeper = "Keeper"
     static let emptyList = "This list shows copies gathered into Photos/_Duplicates. Find duplicates looks for matches. Start gathers the extra copies into this list."
@@ -934,6 +940,11 @@ final class HelperClient {
         try await assetPost(path: "/v1/assets/\(uid)/to-duplicates", body: nil)
     }
 
+    /// Journal-moves one file into Photos/_Removed. The bytes stay there for a later deletion.
+    func removeFromLibrary(uid: String) async throws -> AssetCall {
+        try await assetPost(path: "/v1/assets/\(uid)/to-removed", body: nil)
+    }
+
     func restoreAsset(uid: String) async throws -> AssetCall {
         try await assetPost(path: "/v1/assets/\(uid)/restore", body: nil)
     }
@@ -946,6 +957,33 @@ final class HelperClient {
     func purgeAsset(uid: String, confirmFilename: String) async throws -> AssetCall {
         let body = try JSONSerialization.data(withJSONObject: ["confirmFilename": confirmFilename])
         return try await assetPost(path: "/v1/assets/\(uid)/purge", body: body)
+    }
+
+    /// Tombstones leftover catalog rows under one folder. Files on disk stay.
+    func cleanFolder(prefix: String) async throws -> FolderCleanCall {
+        let body = try JSONSerialization.data(withJSONObject: ["prefix": prefix])
+        let response = try await perform(
+            path: "/v1/folders/clean",
+            method: "POST",
+            body: body,
+            authorize: true,
+            timeout: 300,
+            contentType: "application/json"
+        )
+        if response.status == 401 { throw HelperError.unauthorized }
+        if response.status == 200 {
+            struct Counts: Decodable {
+                var removed: Int
+                var kept: Int
+            }
+            let counts = try JSONDecoder().decode(Counts.self, from: response.body)
+            return FolderCleanCall(removed: counts.removed, kept: counts.kept)
+        }
+        if response.status == 400 || response.status == 409 {
+            let error = (try? JSONDecoder().decode(ReorgErrorBody.self, from: response.body))?.error
+            return FolderCleanCall(error: error)
+        }
+        throw HelperError.offline
     }
 
     func purgeAllDuplicates(confirm: String) async throws -> PurgeAllCall {
@@ -1022,6 +1060,12 @@ final class HelperClient {
     /// Park rows from the server `review=1` query.
     func reviewAssets() async throws -> LibraryPage {
         try await page(path: "/v1/assets?review=1&limit=200")
+    }
+
+    /// Stores the typed date and journal-moves that file into its date folder.
+    func placeCaptureDate(uid: String, captureTime: String) async throws -> AssetCall {
+        let body = try JSONSerialization.data(withJSONObject: ["captureTime": captureTime])
+        return try await assetPost(path: "/v1/assets/\(uid)/place", body: body)
     }
 
     func setCaptureDate(uid: String, captureTime: String) async throws -> LibraryAsset {

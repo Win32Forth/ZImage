@@ -48,6 +48,8 @@ struct ZImagerApp: App {
     @NSApplicationDelegateAdaptor(ZImageAppDelegate.self) private var appDelegate
     @State private var model = EditorModel()
     @State private var browser: LibraryBrowser
+    @AppStorage("ZImager.sourceMode") private var sourceMode = "disk"
+    @AppStorage("ZImager.serverShowsFolder") private var serverShowsFolder = true
 
     init() {
         SandboxPreferenceImport.adoptLibraryContainer()
@@ -112,7 +114,23 @@ struct ZImagerApp: App {
                 }
                 Button("Export…") { model.showExportPanel() }
             }
+            CommandGroup(replacing: .printItem) {
+                Button("Print…") { printCommand() }
+                    .keyboardShortcut("p", modifiers: .command)
+                    .disabled(!canPrint)
+            }
             CommandGroup(after: .sidebar) {
+                Button("Folder View") { showFolderView() }
+                    .keyboardShortcut("f", modifiers: .command)
+                Button("Edit View") { showEditView() }
+                    .keyboardShortcut("e", modifiers: .command)
+                Button("Previous Image") { stepImage(by: -1) }
+                    .keyboardShortcut(.leftArrow, modifiers: [])
+                    .disabled(!canStepImage(by: -1))
+                Button("Next Image") { stepImage(by: 1) }
+                    .keyboardShortcut(.rightArrow, modifiers: [])
+                    .disabled(!canStepImage(by: 1))
+                Divider()
                 Button("Fit") { model.fitToWindow() }
                     .keyboardShortcut("0", modifiers: .command)
                 Button("Actual Size") { model.actualSize() }
@@ -123,11 +141,18 @@ struct ZImagerApp: App {
                     .keyboardShortcut("r", modifiers: [.command, .option])
                 Button("Eyedropper") { model.toggleCanvasTool(.eyedropper) }
                     .keyboardShortcut("e", modifiers: [])
-                Button("Remove Object") { model.selectCanvasTool(.removeObject) }
                 Button("Remove Dust") { model.removeDust() }
                 Button("Remove Scratches") { model.removeScratches() }
                 Button("Spot") { model.toggleCanvasTool(.dustSpot) }
                 Button("Scratch") { model.toggleCanvasTool(.scratchMark) }
+            }
+            CommandGroup(after: .pasteboard) {
+                Button("Copy settings") { copySettingsCommand() }
+                    .keyboardShortcut("c", modifiers: [.command, .shift])
+                    .disabled(!canCopySettings)
+                Button("Paste settings") { pasteSettingsCommand() }
+                    .keyboardShortcut("v", modifiers: [.command, .shift])
+                    .disabled(!canPasteSettings)
             }
             CommandGroup(replacing: .undoRedo) {
                 Button("Undo") { model.undo() }
@@ -137,6 +162,131 @@ struct ZImagerApp: App {
                     .keyboardShortcut("z", modifiers: [.command, .shift])
                     .disabled(!model.log.canRedo)
             }
+        }
+    }
+
+    /// Folder view of the source on screen. Image view is the other choice.
+    private var showingFolder: Bool {
+        if sourceMode == "server" { return serverShowsFolder }
+        return model.showsFolderGrid
+    }
+
+    /// One still can be copied in Folder view. Image view copies the open photo.
+    private var canCopySettings: Bool {
+        if showingFolder {
+            if sourceMode == "server" { return browser.primarySettingsStill() != nil }
+            return model.primaryFolderStillURL() != nil
+        }
+        return model.proxy != nil && !model.showsPDFPicker
+    }
+
+    /// Folder view prints the selected stills. Image view prints the open photo.
+    private var canPrint: Bool {
+        guard !model.folderRotateBusy else { return false }
+        if showingFolder {
+            if sourceMode == "server" {
+                return !browser.rotatableStills(in: browser.sectionAssets()).isEmpty
+            }
+            return model.canRotateFolderSelection
+        }
+        return model.proxy != nil && !model.showsPDFPicker
+    }
+
+    private func printCommand() {
+        guard canPrint else { return }
+        if showingFolder {
+            if sourceMode == "server" {
+                var files: [URL] = []
+                for asset in browser.rotatableStills(in: browser.sectionAssets()) {
+                    guard let url = browser.fileURL(for: asset) else { continue }
+                    files.append(url)
+                }
+                model.printFolderFiles(files)
+            } else {
+                model.printFolderFiles(model.exportableFolderFiles())
+            }
+            return
+        }
+        model.printOpenPhoto()
+    }
+
+    /// Folder view pastes onto the selected stills. Image view pastes onto the open photo.
+    private var canPasteSettings: Bool {
+        guard model.hasCopiedSettings, !model.folderRotateBusy else { return false }
+        if showingFolder {
+            if sourceMode == "server" {
+                return !browser.settingsPasteTargets(clicked: nil).isEmpty
+            }
+            return model.canRotateFolderSelection
+        }
+        return model.proxy != nil && !model.showsPDFPicker
+    }
+
+    private func copySettingsCommand() {
+        guard canCopySettings else { return }
+        if showingFolder {
+            if sourceMode == "server" {
+                guard let asset = browser.primarySettingsStill(), let url = browser.fileURL(for: asset) else { return }
+                model.copySettings(from: url)
+            } else if let url = model.primaryFolderStillURL() {
+                model.copySettings(from: url)
+            }
+            return
+        }
+        model.copySettings()
+    }
+
+    private func pasteSettingsCommand() {
+        guard canPasteSettings else { return }
+        if showingFolder {
+            if sourceMode == "server" {
+                model.pasteLibraryStills(browser.settingsPasteTargets(clicked: nil)) { browser.fileURL(for: $0) }
+            } else {
+                model.pasteFolderSelection()
+            }
+            return
+        }
+        model.pasteSettings()
+    }
+
+    /// Image mode of the source on screen, with a photograph open.
+    private var editingImage: Bool {
+        guard model.proxy != nil, !model.showsPDFPicker else { return false }
+        if sourceMode == "server" { return !serverShowsFolder }
+        return !model.showsFolderGrid
+    }
+
+    private func canStepImage(by delta: Int) -> Bool {
+        guard editingImage else { return false }
+        if sourceMode == "server" {
+            return browser.canStepImage(by: delta, matching: model.openedFileURL)
+        }
+        return model.canStepListedImage(by: delta)
+    }
+
+    private func stepImage(by delta: Int) {
+        guard canStepImage(by: delta) else { return }
+        if sourceMode == "server" {
+            browser.stepImage(by: delta, matching: model.openedFileURL)
+        } else {
+            model.stepListedImage(by: delta)
+        }
+    }
+
+    /// Folder and Edit follow whichever source is on screen. Each source keeps its own choice.
+    private func showFolderView() {
+        if UserDefaults.standard.string(forKey: "ZImager.sourceMode") == "server" {
+            UserDefaults.standard.set(true, forKey: "ZImager.serverShowsFolder")
+        } else {
+            model.showsFolderGrid = true
+        }
+    }
+
+    private func showEditView() {
+        if UserDefaults.standard.string(forKey: "ZImager.sourceMode") == "server" {
+            UserDefaults.standard.set(false, forKey: "ZImager.serverShowsFolder")
+        } else {
+            model.showsFolderGrid = false
         }
     }
 }

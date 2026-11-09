@@ -14,6 +14,12 @@ Each entry uses this shape:
 - Scope: design section or PR name
 - Notes: facts, decisions, and the next step
 
+## 2026-11-09 — ZImager 1.6.0
+
+- Status: done
+- Scope: ZImager 1.6.0. ZImage and ZImage Library stay at 1.0. The helper gained place-date moves and folder cleanup.
+- Notes: View → Folder View is ⌘F and View → Edit View is ⌘E, in Disk and Server. In Edit view the left and right arrows step between photos. Switching Disk and Server keeps the folder scroll position. A newly chosen folder opens at the top. Control-click selects photos that are not next to each other. Folder view has Export and Print beside Paste settings. Edit view prints the open photo. File → Print is ⌘P. Videos are skipped. Copy settings and Paste settings are on the Edit menu as ⌘⇧C and ⌘⇧V, and on the right-click menu. They copy Tone and Geometry. Tone has Auto and Reset. Auto sets Exposure, Contrast, Highlights, Shadows, Whites, and Blacks in one step. Reset returns the photo to the start and leaves the later steps for redo. Spectrum sits above Tone, with low, middle, and high handles. Double-click a handle to reset it. The panel folds like the others. Server right-click says Edit Image. Remove Object is not in the View menu, and the Server image toolbar does not show it. Remove from library moves the selected Server files into `Photos/_Removed`. They are not deleted. Progress is shown and the folder list keeps its place. Set date writes the typed date on every selected photo and video and moves each file into its date folder. `POST /v1/assets/{uid}/place` does that move. `POST /v1/assets/{uid}/date` still stores the date and leaves the file where it is. A folder named Updated under `Photos/_Review` is a staging shelf, not an event name. Clean folder is in the Server three-bar menu. `POST /v1/folders/clean` drops catalog rows in that folder whose files are gone when another file there has the same name and size. It does not delete a file. A missing photo with no match stays. Reorganize, Review, and Duplicates still do not work and can lose photos. Leave them alone. Stop the DSM task before replacing the helper. Do not open `catalog.db` from the Mac.
+
 ## 2026-11-09 — ZImager 1.5.0
 
 - Status: done

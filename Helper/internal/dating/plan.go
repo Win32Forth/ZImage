@@ -60,7 +60,7 @@ func CleanPrefix(prefix string) (string, error) {
 	if prefix != "Photos" && !strings.HasPrefix(prefix, "Photos/") {
 		return "", ErrPrefix
 	}
-	if UnderDuplicates(prefix) {
+	if UnderDuplicates(prefix) || UnderRemoved(prefix) {
 		return "", ErrPrefix
 	}
 	return prefix, nil
@@ -270,6 +270,40 @@ func tallyPlan(counts *Counts, item planRow, folders map[int64]string, headers h
 	}
 }
 
+// PlaceUserDate stores a typed date, retires this asset's planned reorg rows,
+// and inserts one manual_place journal row. The caller moves the bytes.
+func PlaceUserDate(catalog *db.Catalog, assetID int64, src, dest string, size int64, d Decision) (int64, error) {
+	tx, err := catalog.Write.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := writeDecision(tx, assetID, d, "dated"); err != nil {
+		return 0, err
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := tx.Exec(`
+		UPDATE journal
+		SET state = 'failed', error = 'superseded', updated_at = ?
+		WHERE asset_id = ? AND job_kind = 'reorg' AND state = 'planned'`, now, assetID); err != nil {
+		return 0, err
+	}
+	res, err := tx.Exec(`
+		INSERT INTO journal (asset_id, job_kind, state, src_rel, dest_rel, byte_size, updated_at)
+		VALUES (?, 'manual_place', 'planned', ?, ?, ?, ?)`, assetID, src, dest, size, now)
+	if err != nil {
+		return 0, err
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return id, nil
+}
+
 // EnqueueUserDate stores a typed date at confidence 1 and one planned journal row.
 // It does not move the file and it does not set an event name_source.
 func EnqueueUserDate(catalog *db.Catalog, assetID int64, d Decision) error {
@@ -290,7 +324,7 @@ func EnqueueUserDate(catalog *db.Catalog, assetID int64, d Decision) error {
 	if err := writeDecision(tx, assetID, d, "dated"); err != nil {
 		return err
 	}
-	if policy == "move" && !UnderDuplicates(rel) {
+	if policy == "move" && !UnderDuplicates(rel) && !UnderRemoved(rel) {
 		dest, ok := PlannedPath(rel, policy, "", ReviewBucket(nil, rel), d)
 		if ok {
 			var taken int
@@ -413,7 +447,7 @@ func groupFolders(list []planRow) map[int64]string {
 	folders := map[int64]string{}
 	keepers := map[int64]string{}
 	for _, item := range list {
-		if !item.groupID.Valid || item.placement != "active" || item.folder == "" || UnderDuplicates(item.folder) {
+		if !item.groupID.Valid || item.placement != "active" || item.folder == "" || UnderDuplicates(item.folder) || UnderRemoved(item.folder) {
 			continue
 		}
 		if _, ok := folders[item.groupID.Int64]; !ok {

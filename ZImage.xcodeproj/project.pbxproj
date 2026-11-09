@@ -728,7 +728,7 @@
 					"$(PROJECT_DIR)/Vendor/libwebp/lib",
 					"$(PROJECT_DIR)/Vendor/libjxl/lib",
 				);
-				MARKETING_VERSION = 1.5.0;
+				MARKETING_VERSION = 1.6.0;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-lwebp",
@@ -775,7 +775,7 @@
 					"$(PROJECT_DIR)/Vendor/libwebp/lib",
 					"$(PROJECT_DIR)/Vendor/libjxl/lib",
 				);
-				MARKETING_VERSION = 1.5.0;
+				MARKETING_VERSION = 1.6.0;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-lwebp",

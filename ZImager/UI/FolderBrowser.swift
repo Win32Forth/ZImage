@@ -486,14 +486,150 @@ final class FolderScrollMemory {
     var yByFolder: [String: CGFloat] = [:]
     /// Folder that should return to its saved offset before new scrolling is recorded.
     var holding: String?
+    /// Folder whose list should open at the top. A newly selected folder uses this.
+    var resetting: String?
+    /// Last folder the grid actually showed. Hiding the grid leaves this in place.
+    var shownKey: String?
     var wasVisible = false
     var visibleKey: String?
+    /// True while a same-folder reload must not adopt a jump back to the top.
+    var pinning = false
+    var holdWasOn = false
+    /// Content height when the hold began. The hold stays until that height changes and the offset returns.
+    var pinnedContentHeight: CGFloat?
+    var pinSawContentChange = false
 }
 
 struct FolderScrollDecision: Equatable {
     var rememberY: CGFloat?
     var scrollTo: CGFloat?
     var clearHold: Bool
+}
+
+/// Keeps a vertical offset while a preview grid is off screen, then puts it back.
+struct KeptScroll: ViewModifier {
+    var visible: Bool
+    var key: String
+    /// Same folder, new rows. Hold the offset until the list settles at that place.
+    var holdOffset = false
+    @State private var scrollPosition = ScrollPosition(y: 0)
+    @State private var memory = FolderScrollMemory()
+
+    func body(content: Content) -> some View {
+        let _ = pin()
+        content
+            .scrollPosition($scrollPosition)
+            .onScrollGeometryChange(for: FolderScrollSample.self) { geometry in
+                FolderScrollSample(
+                    y: geometry.contentOffset.y,
+                    contentHeight: geometry.contentSize.height,
+                    containerHeight: geometry.containerSize.height
+                )
+            } action: { _, sample in
+                follow(sample)
+            }
+    }
+
+    /// Runs before layout so hiding the grid cannot record the reset-to-top offset.
+    /// A different folder opens at the top. Showing the same folder again restores its offset.
+    private func pin() {
+        if holdOffset && !memory.holdWasOn {
+            memory.pinning = true
+            memory.pinnedContentHeight = nil
+            memory.pinSawContentChange = false
+        } else if holdOffset {
+            memory.pinning = true
+        }
+        memory.holdWasOn = holdOffset
+        let becameVisible = visible && !memory.wasVisible
+        let changedWhileShown = visible && memory.visibleKey != nil && key != memory.visibleKey
+        let openedAnotherFolder = becameVisible && memory.shownKey != nil && key != memory.shownKey
+        if changedWhileShown || openedAnotherFolder {
+            memory.holding = nil
+            memory.pinning = false
+            memory.pinnedContentHeight = nil
+            memory.pinSawContentChange = false
+            memory.yByFolder[key] = 0
+            memory.resetting = key
+        } else if becameVisible {
+            memory.resetting = nil
+            memory.holding = key
+        }
+        if visible {
+            memory.shownKey = key
+        }
+        memory.wasVisible = visible
+        memory.visibleKey = visible ? key : nil
+    }
+
+    private func follow(_ sample: FolderScrollSample) {
+        let resetting = memory.resetting == key
+        if holdOffset, !resetting {
+            memory.pinning = true
+        }
+        if memory.pinning, !resetting, keepPinnedPlace(sample) {
+            return
+        }
+        let saved = memory.yByFolder[key] ?? 0
+        let decision = FolderScrollKeep.decide(
+            sample: sample,
+            saved: saved,
+            holding: !resetting && memory.holding == key,
+            folderVisible: visible,
+            userMoved: scrollPosition.isPositionedByUser,
+            resetToTop: resetting
+        )
+        if let y = decision.rememberY {
+            memory.yByFolder[key] = y
+        }
+        if decision.clearHold {
+            if memory.holding == key {
+                memory.holding = nil
+            }
+            if memory.resetting == key {
+                memory.resetting = nil
+            }
+        }
+        if let y = decision.scrollTo {
+            scrollPosition.scrollTo(y: y)
+        }
+    }
+
+    /// A reload can publish offset 0 for the same folder. Put the saved offset back.
+    /// A real drag still updates the saved place. Returns true when the sample was handled.
+    private func keepPinnedPlace(_ sample: FolderScrollSample) -> Bool {
+        if holdOffset, memory.pinnedContentHeight == nil, sample.contentHeight > FolderScrollKeep.minimumSpan {
+            memory.pinnedContentHeight = sample.contentHeight
+        }
+        if let baseline = memory.pinnedContentHeight, abs(sample.contentHeight - baseline) > 1 {
+            memory.pinSawContentChange = true
+        }
+        let saved = memory.yByFolder[key] ?? 0
+        guard let target = FolderScrollKeep.restoreTarget(saved: saved, sample: sample) else {
+            return true
+        }
+        let snappedToTop = sample.y < 1 && saved - sample.y > 80
+        if snappedToTop || (!scrollPosition.isPositionedByUser && abs(sample.y - target) > 1) {
+            scrollPosition.scrollTo(y: target)
+            return true
+        }
+        if abs(sample.y - target) > 1 {
+            memory.yByFolder[key] = max(0, sample.y)
+            if !holdOffset && scrollPosition.isPositionedByUser {
+                memory.pinning = false
+                memory.pinnedContentHeight = nil
+                memory.pinSawContentChange = false
+            }
+            return true
+        }
+        memory.yByFolder[key] = target
+        if !holdOffset && memory.pinSawContentChange {
+            memory.pinning = false
+            memory.pinnedContentHeight = nil
+            memory.pinSawContentChange = false
+        }
+        return true
+    }
 }
 
 /// Decides whether a geometry change is the user's place in the grid or a tab-switch reset.
@@ -517,9 +653,17 @@ enum FolderScrollKeep {
         saved: CGFloat,
         holding: Bool,
         folderVisible: Bool,
-        userMoved: Bool
+        userMoved: Bool,
+        resetToTop: Bool = false
     ) -> FolderScrollDecision {
         let none = FolderScrollDecision(rememberY: nil, scrollTo: nil, clearHold: false)
+        if resetToTop {
+            guard let target = restoreTarget(saved: 0, sample: sample) else { return none }
+            if abs(sample.y - target) > 1 {
+                return FolderScrollDecision(rememberY: nil, scrollTo: 0, clearHold: false)
+            }
+            return FolderScrollDecision(rememberY: 0, scrollTo: nil, clearHold: true)
+        }
         if holding {
             guard let target = restoreTarget(saved: saved, sample: sample) else { return none }
             if userMoved, abs(sample.y - target) > 1 {
@@ -554,11 +698,10 @@ enum EditorImageMenu {
 
 struct FolderBrowser: View {
     @Bindable var model: EditorModel
-    @State private var scrollPosition = ScrollPosition(y: 0)
-    @State private var scrollMemory = FolderScrollMemory()
+    /// False while Server is showing. The grid stays mounted so its offset can return.
+    var onScreen = true
 
     var body: some View {
-        let _ = pinScrollBeforeLayout()
         VStack(spacing: 0) {
             HStack(spacing: 12) {
                 PreviewSizeSlider(points: Binding(
@@ -603,16 +746,7 @@ struct FolderBrowser: View {
                     }
                     .padding(16)
                 }
-                .scrollPosition($scrollPosition)
-                .onScrollGeometryChange(for: FolderScrollSample.self) { geometry in
-                    FolderScrollSample(
-                        y: geometry.contentOffset.y,
-                        contentHeight: geometry.contentSize.height,
-                        containerHeight: geometry.containerSize.height
-                    )
-                } action: { _, sample in
-                    followScroll(sample)
-                }
+                .modifier(KeptScroll(visible: onScreen && model.showsFolderGrid, key: folderKey ?? ""))
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -623,40 +757,6 @@ struct FolderBrowser: View {
 
     private var folderKey: String? {
         model.folderURL.map { FolderEntry.cacheKey(for: $0) }
-    }
-
-    /// Runs before layout so a tab switch cannot record the reset-to-top offset.
-    private func pinScrollBeforeLayout() {
-        let visible = model.showsFolderGrid
-        let key = folderKey
-        let becameVisible = visible && !scrollMemory.wasVisible
-        let changedFolder = visible && key != scrollMemory.visibleKey
-        if becameVisible || changedFolder, let key {
-            scrollMemory.holding = key
-        }
-        scrollMemory.wasVisible = visible
-        scrollMemory.visibleKey = visible ? key : nil
-    }
-
-    private func followScroll(_ sample: FolderScrollSample) {
-        guard let key = folderKey else { return }
-        let saved = scrollMemory.yByFolder[key] ?? 0
-        let decision = FolderScrollKeep.decide(
-            sample: sample,
-            saved: saved,
-            holding: scrollMemory.holding == key,
-            folderVisible: model.showsFolderGrid,
-            userMoved: scrollPosition.isPositionedByUser
-        )
-        if let y = decision.rememberY {
-            scrollMemory.yByFolder[key] = y
-        }
-        if decision.clearHold, scrollMemory.holding == key {
-            scrollMemory.holding = nil
-        }
-        if let y = decision.scrollTo {
-            scrollPosition.scrollTo(y: y)
-        }
     }
 
     private var images: [FolderEntry] {
@@ -704,7 +804,12 @@ struct FolderBrowser: View {
         }
         .contentShape(Rectangle())
         .onTapGesture {
-            model.selectFolderEntry(entry, shift: NSEvent.modifierFlags.contains(.shift))
+            let flags = NSEvent.modifierFlags
+            model.selectFolderEntry(
+                entry,
+                shift: flags.contains(.shift),
+                extend: flags.contains(.command)
+            )
         }
         .onTapGesture(count: 2) {
             model.selectFolderEntry(entry, shift: false)
@@ -736,6 +841,15 @@ struct FolderBrowser: View {
                 }
             }
             Divider()
+            Button("Copy settings") {
+                model.copySettings(from: entry.url)
+            }
+            .disabled(entry.isVideo)
+            Button("Paste settings") {
+                model.paste(files: model.folderPasteTargets(clicked: entry), catalog: [:])
+            }
+            .disabled(!model.hasCopiedSettings || model.folderRotateBusy || model.folderPasteTargets(clicked: entry).isEmpty)
+            Divider()
             Text(model.sizeLabel(for: entry))
         }
         .accessibilityElement(children: .combine)
@@ -744,5 +858,11 @@ struct FolderBrowser: View {
             ? "Double-click opens this video in QuickTime Player. The menu can show it in Finder or open it in a video player."
             : "Double-click edits this image. The menu can show it in Finder or open it in another application.")
         .help(entry.isVideo ? "Double-click opens this video in QuickTime Player." : "Double-click edits this image.")
+        .overlay {
+            ControlClickCatcher {
+                model.selectFolderEntry(entry, shift: false, extend: true)
+            }
+            .accessibilityHidden(true)
+        }
     }
 }

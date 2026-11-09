@@ -181,6 +181,12 @@ func (r *Runner) bootLocked() (bool, error) {
 		if err := r.finishKind("manual_duplicate"); err != nil {
 			return false, err
 		}
+		if err := r.finishKind("manual_remove"); err != nil {
+			return false, err
+		}
+		if err := r.finishKind("manual_place"); err != nil {
+			return false, err
+		}
 		if err := r.finishKind("restore"); err != nil {
 			return false, err
 		}
@@ -419,6 +425,9 @@ func (r *Runner) advance(id int64) error {
 	if r.kind() == "reorg" && dating.UnderDuplicates(rel) {
 		return r.fail(id, "duplicates")
 	}
+	if r.kind() == "reorg" && dating.UnderRemoved(rel) {
+		return r.fail(id, "removed")
+	}
 	if !r.allowsDest(row.Dest) {
 		return r.fail(id, "dest_rejected")
 	}
@@ -581,7 +590,11 @@ func (r *Runner) finishInPlace(row journalRow, rel string) error {
 	defer func() { _ = tx.Rollback() }()
 	now := now()
 	phase := placePhase(rel)
-	if _, err := tx.Exec(`UPDATE assets SET phase = ?, updated_at = ? WHERE id = ?`, phase, now, row.AssetID); err != nil {
+	if r.kind() == "manual_place" {
+		if _, err := tx.Exec(`UPDATE assets SET phase = ?, placement = 'active', updated_at = ? WHERE id = ?`, phase, now, row.AssetID); err != nil {
+			return err
+		}
+	} else if _, err := tx.Exec(`UPDATE assets SET phase = ?, updated_at = ? WHERE id = ?`, phase, now, row.AssetID); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(`
@@ -653,6 +666,23 @@ func (r *Runner) commitCatalog(assetID, journalID int64, dest string) error {
 			return err
 		}
 		if err := detail.RecomputeTx(tx, assetID); err != nil {
+			return err
+		}
+	case "manual_remove":
+		if _, err := tx.Exec(`
+			UPDATE assets
+			SET rel_path = ?, phase = ?, placement = 'removed', updated_at = ?
+			WHERE id = ?`, dest, placePhase(dest), now, assetID); err != nil {
+			return err
+		}
+		if err := detail.RecomputeTx(tx, assetID); err != nil {
+			return err
+		}
+	case "manual_place":
+		if _, err := tx.Exec(`
+			UPDATE assets
+			SET rel_path = ?, phase = ?, placement = 'active', updated_at = ?
+			WHERE id = ?`, dest, placePhase(dest), now, assetID); err != nil {
 			return err
 		}
 	case "restore":
@@ -823,11 +853,15 @@ func (r *Runner) allowsDest(rel string) bool {
 	switch r.kind() {
 	case "trim", "manual_duplicate":
 		return dating.UnderDuplicates(rel)
+	case "manual_remove":
+		return dating.UnderRemoved(rel)
+	case "manual_place":
+		return dating.PlaceDest(rel)
 	case "restore":
 		if rel != "Photos" && !strings.HasPrefix(rel, "Photos/") {
 			return false
 		}
-		return !dating.UnderDuplicates(rel)
+		return !dating.UnderDuplicates(rel) && !dating.UnderRemoved(rel)
 	default:
 		return destAllowed(rel)
 	}
@@ -903,7 +937,7 @@ func destAllowed(rel string) bool {
 	if rel != "Photos" && !strings.HasPrefix(rel, "Photos/") {
 		return false
 	}
-	return !dating.UnderDuplicates(rel)
+	return !dating.UnderDuplicates(rel) && !dating.UnderRemoved(rel)
 }
 
 func placePhase(rel string) string {

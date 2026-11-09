@@ -37,6 +37,11 @@ nonisolated struct HistoryLog: Codable, Equatable, Sendable {
         cursor = commands.count
     }
 
+    /// Back to the unedited photograph. Every command stays, so redo walks them forward one at a time.
+    mutating func resetToBeginning() {
+        cursor = 0
+    }
+
     mutating func undo() {
         if cursor > 0 {
             cursor -= 1

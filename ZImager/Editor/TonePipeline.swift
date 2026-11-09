@@ -252,6 +252,9 @@ nonisolated enum TonePipeline {
                 "inputTargetNeutral": CIVector(x: tone.temperature, y: tone.tint),
             ])
         }
+        if !SpectrumLevels.isIdentity(low: tone.spectrumLow, mid: tone.spectrumMid, high: tone.spectrumHigh) {
+            image = spectrum(image, tone: tone, extent: extent)
+        }
         let edge = Double(longEdge)
         image = detail(
             image,
@@ -303,6 +306,27 @@ nonisolated enum TonePipeline {
         }
         guard let output = filter.outputImage else { return image }
         return output.cropped(to: extent)
+    }
+
+    /// Shadow, midtone, and highlight points in display tone, then back to linear light.
+    private static func spectrum(_ image: CIImage, tone: ToneState, extent: CGRect) -> CIImage {
+        var image = applying("CILinearToSRGBToneCurve", to: image, extent: extent, parameters: [:])
+        let black = tone.spectrumLow
+        let white = tone.spectrumHigh
+        if black > 0.0005 || white < 0.9995 {
+            var parameters: [String: Any] = [:]
+            for (index, point) in SpectrumLevels.stretchPoints(black: black, white: white).enumerated() {
+                parameters["inputPoint\(index)"] = CIVector(x: point.x, y: point.y)
+            }
+            image = applying("CIToneCurve", to: image, extent: extent, parameters: parameters)
+        }
+        let power = SpectrumLevels.gamma(low: tone.spectrumLow, mid: tone.spectrumMid, high: tone.spectrumHigh)
+        if abs(power - 1) > 0.01 {
+            image = applying("CIGammaAdjust", to: image, extent: extent, parameters: [
+                "inputPower": power,
+            ])
+        }
+        return applying("CISRGBToneCurveToLinear", to: image, extent: extent, parameters: [:])
     }
 
     /// Positive amount is an unsharp mask. Negative amount mixes in a blur.

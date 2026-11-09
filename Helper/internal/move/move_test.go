@@ -261,6 +261,19 @@ func TestDestinationUnderDuplicatesIsRejected(t *testing.T) {
 	assertBytes(t, root, "Photos/in/a.jpg", payload)
 }
 
+func TestDestinationUnderRemovedIsRejected(t *testing.T) {
+	root := t.TempDir()
+	catalog := openCatalog(t, root)
+	payload := []byte("stay")
+	id := seed(t, root, catalog, "Photos/in/a.jpg", "Photos/_Removed/a.jpg", payload)
+	runner := &Runner{Root: root, Catalog: catalog}
+	if err := runner.advance(id); err != nil {
+		t.Fatal(err)
+	}
+	assertState(t, catalog, id, "failed")
+	assertBytes(t, root, "Photos/in/a.jpg", payload)
+}
+
 func TestMoveOneFile(t *testing.T) {
 	root := t.TempDir()
 	catalog := openCatalog(t, root)

@@ -4,7 +4,12 @@ import SwiftUI
 /// Reduced images, or the video list. The preview slider scales the helper JPEG.
 struct LibraryGrid: View {
     @Bindable var browser: LibraryBrowser
+    @Bindable var model: EditorModel
     var media: String? = "photo"
+    /// Server mode. Disk leaves the preview walk idle.
+    var live = true
+    /// The grid is on screen. Hiding it keeps the scroll offset.
+    var onScreen = true
 
     private var columns: [GridItem] {
         [GridItem(.adaptive(minimum: browser.previewPoints + 24), spacing: 16)]
@@ -38,13 +43,7 @@ struct LibraryGrid: View {
             ))
             .padding(.horizontal, 16)
             .padding(.vertical, 10)
-            if let notice = browser.notice {
-                Text(notice)
-                    .font(.system(size: 13))
-                    .foregroundStyle(ChromePalette.ink)
-                    .padding(.horizontal, 16)
-                    .padding(.bottom, 8)
-            }
+            noticeLine
             if let status = browser.previewStatus {
                 Text(status)
                     .font(.system(size: 13))
@@ -67,12 +66,19 @@ struct LibraryGrid: View {
                 }
                 .padding(16)
             }
+            .modifier(KeptScroll(
+                visible: onScreen,
+                key: "\(media ?? "")|\(browser.displayFolder)",
+                holdOffset: browser.removalBusy || browser.dateBusy || browser.cleanBusy
+            ))
         }
         .background(ChromePalette.panel)
         .onDeleteCommand {
+            guard live else { return }
             browser.deleteKey()
         }
-        .task(id: "\(media ?? "")|\(browser.displayFolder)") {
+        .task(id: "\(media ?? "")|\(browser.displayFolder)|\(live)") {
+            guard live else { return }
             await browser.showFocus()
             await browser.reload(media: media)
             while !Task.isCancelled {
@@ -86,6 +92,21 @@ struct LibraryGrid: View {
                 }
             }
         }
+    }
+
+    /// Stays in the tree when the text is empty so the scroll view keeps its identity.
+    private var noticeLine: some View {
+        let text = browser.notice ?? ""
+        return Text(text)
+            .font(.system(size: 13))
+            .foregroundStyle(ChromePalette.ink)
+            .lineLimit(2)
+            .padding(.horizontal, 16)
+            .padding(.bottom, text.isEmpty ? 0 : 8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(height: text.isEmpty ? 0 : nil)
+            .clipped()
+            .accessibilityHidden(text.isEmpty)
     }
 
     private func cell(_ asset: LibraryAsset) -> some View {
@@ -128,7 +149,13 @@ struct LibraryGrid: View {
         }
         .contentShape(Rectangle())
         .onTapGesture {
-            browser.selectRow(asset.uid, shift: NSEvent.modifierFlags.contains(.shift), order: browser.rows.map(\.uid))
+            let flags = NSEvent.modifierFlags
+            browser.selectRow(
+                asset.uid,
+                shift: flags.contains(.shift),
+                extend: flags.contains(.command),
+                order: browser.rows.map(\.uid)
+            )
         }
         .onTapGesture(count: 2) {
             browser.selectRow(asset.uid, shift: false, order: browser.rows.map(\.uid))
@@ -142,7 +169,7 @@ struct LibraryGrid: View {
                 }
                 .disabled(browser.fileURL(for: asset) == nil || !browser.quickTimeAvailable)
             } else {
-                Button(LibraryItemMenu.openWithZImage) {
+                Button(LibraryItemMenu.editImage) {
                     browser.selectedUID = asset.uid
                     browser.openInEditor(asset)
                 }
@@ -166,20 +193,32 @@ struct LibraryGrid: View {
                 }
             }
             Divider()
-            Button("Remove from library") {
-                browser.selectedUID = asset.uid
-                Task { await browser.moveToDuplicates(asset) }
+            Button("Copy settings") {
+                if let url = browser.fileURL(for: asset) {
+                    model.copySettings(from: url)
+                }
             }
-            .disabled(alreadyStored(asset))
+            .disabled(!browser.isSettingsStill(asset))
+            Button("Paste settings") {
+                model.pasteLibraryStills(browser.settingsPasteTargets(clicked: asset)) { browser.fileURL(for: $0) }
+            }
+            .disabled(!model.hasCopiedSettings || model.folderRotateBusy || browser.settingsPasteTargets(clicked: asset).isEmpty)
+            Divider()
+            Button("Remove from library") {
+                let targets = browser.libraryRemovalTargets(clicked: asset)
+                Task { await browser.removeFromLibrary(targets) }
+            }
+            .disabled(browser.removalBusy || browser.dateBusy || browser.cleanBusy || browser.libraryRemovalTargets(clicked: asset).isEmpty)
             Divider()
             Text(browser.sizeLabel(for: asset))
         }
         .accessibilityLabel(browser.filename(for: asset))
+        .overlay {
+            ControlClickCatcher {
+                browser.selectRow(asset.uid, shift: false, extend: true, order: browser.rows.map(\.uid))
+            }
+            .accessibilityHidden(true)
+        }
     }
 
-    private func alreadyStored(_ asset: LibraryAsset) -> Bool {
-        if asset.placement == "duplicates" || asset.placement == "purged" { return true }
-        let path = asset.relPath ?? ""
-        return path == "Photos/_Duplicates" || path.hasPrefix("Photos/_Duplicates/")
-    }
 }

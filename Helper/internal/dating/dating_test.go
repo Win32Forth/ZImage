@@ -365,6 +365,31 @@ func TestPlanKeepsTheEventNameWrittenOnTheDayFolder(t *testing.T) {
 	}
 }
 
+func TestReviewUpdatedIsNotAnEventName(t *testing.T) {
+	when := time.Date(2010, 7, 17, 0, 0, 0, 0, time.UTC)
+	day := Decision{HasCapture: true, FullDay: true, Confidence: 1, Capture: when}
+	dest, ok := PlannedPath("Photos/_Review/Updated/photo.jpg", "move", "", "ab", day)
+	if !ok || dest != "Photos/2010/2010-07-17/event/photo.jpg" {
+		t.Fatalf("staging %v %s", ok, dest)
+	}
+	year := Decision{HasCapture: true, YearOnly: true, Year: 1964, Confidence: 1, Capture: time.Date(1964, 1, 1, 0, 0, 0, 0, time.UTC)}
+	dest, ok = PlannedPath("Photos/_Review/Updated/photo.jpg", "move", "", "ab", year)
+	if !ok || dest != "Photos/1964/_NoDay/event/photo.jpg" {
+		t.Fatalf("year %v %s", ok, dest)
+	}
+	dest, ok = PlannedPath("Photos/_Review/Updated/Wedding/photo.jpg", "move", "", "ab", day)
+	if !ok || dest != "Photos/2010/2010-07-17/Wedding/photo.jpg" {
+		t.Fatalf("album %v %s", ok, dest)
+	}
+	dest, ok = PlannedPath("Photos/2010/2010-07-17/Updated/photo.jpg", "move", "", "ab", day)
+	if !ok || dest != "Photos/2010/2010-07-17/Updated/photo.jpg" {
+		t.Fatalf("real folder %v %s", ok, dest)
+	}
+	if title, ok := AlbumTitleFromPath("Photos/_Review/Updated/photo.jpg"); ok {
+		t.Fatal(title)
+	}
+}
+
 func TestPlanPrefixFiltersAndRefusesTheStore(t *testing.T) {
 	root := t.TempDir()
 	catalog := openCatalog(t, root)
@@ -409,6 +434,34 @@ func TestPlanPrefixFiltersAndRefusesTheStore(t *testing.T) {
 	_, ok := PlannedPath("Photos/a.jpg", "move", "Photos/_Duplicates/group", "ab", Decision{HasCapture: true, FullDay: true, Confidence: 0.95, Capture: time.Date(2020, 5, 1, 0, 0, 0, 0, time.UTC)})
 	if ok {
 		t.Fatal("destination in the store")
+	}
+}
+
+func TestPlanLeavesTheRemovedFolder(t *testing.T) {
+	root := t.TempDir()
+	catalog := openCatalog(t, root)
+	id := insertRow(t, catalog, "parked", "Photos/_Removed/parked.jpg")
+	when := "2024-06-01T12:00:00Z"
+	if _, err := catalog.Write.Exec(`UPDATE assets SET capture_time = ?, capture_confidence = 0.95, capture_source = 'exif_original' WHERE id = ?`, when, id); err != nil {
+		t.Fatal(err)
+	}
+	counts, err := PlanPrefix(catalog, "Photos")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if counts.Move != 0 || counts.Park != 0 || counts.AlreadyPlaced != 0 {
+		t.Fatalf("counts %+v", counts)
+	}
+	var n int
+	if err := catalog.Read.QueryRow(`SELECT COUNT(*) FROM journal WHERE asset_id = ?`, id).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("parked row %d %v", n, err)
+	}
+	if _, err := PlanPrefix(catalog, "Photos/_Removed"); !errors.Is(err, ErrPrefix) {
+		t.Fatal(err)
+	}
+	_, ok := PlannedPath("Photos/_Removed/parked.jpg", "move", "", "ab", Decision{HasCapture: true, FullDay: true, Confidence: 0.95, Capture: time.Date(2024, 6, 1, 0, 0, 0, 0, time.UTC)})
+	if ok {
+		t.Fatal("removed folder was planned")
 	}
 }
 

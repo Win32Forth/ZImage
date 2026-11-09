@@ -4,6 +4,11 @@ import SwiftUI
 /// The duplicates store. The preview slider scales the stored preview JPEG. Delete does not purge.
 struct DuplicatesBrowser: View {
     @Bindable var browser: LibraryBrowser
+    @Bindable var model: EditorModel
+    /// Server mode. Disk leaves the duplicates poll idle.
+    var live = true
+    /// The list is on screen. Hiding it keeps the scroll offset.
+    var onScreen = true
     @State private var pendingPurge: PurgePrompt?
     @State private var showsPurgeAll = false
     @State private var purgeAllText = ""
@@ -95,6 +100,7 @@ struct DuplicatesBrowser: View {
                 }
                 .padding(16)
             }
+            .modifier(KeptScroll(visible: onScreen, key: "duplicates"))
             if let asset = selectedMember, DuplicateCopy.inStore(asset.relPath) {
                 HStack(spacing: 12) {
                     Button("Restore") {
@@ -149,7 +155,8 @@ struct DuplicatesBrowser: View {
         } message: {
             Text("Type DELETE to permanently delete every file in the duplicates store.")
         }
-        .task {
+        .task(id: live) {
+            guard live else { return }
             await browser.showFocus("Photos/_Duplicates")
             await browser.refreshScan()
             if browser.scan?.runState == "running" {
@@ -305,11 +312,36 @@ struct DuplicatesBrowser: View {
             }
         }
         .contentShape(Rectangle())
+        .contextMenu {
+            Button("Copy settings") {
+                if let url = browser.fileURL(for: asset) {
+                    model.copySettings(from: url)
+                }
+            }
+            .disabled(!browser.isSettingsStill(asset))
+            Button("Paste settings") {
+                model.pasteLibraryStills(browser.settingsPasteTargets(clicked: asset)) { browser.fileURL(for: $0) }
+            }
+            .disabled(!model.hasCopiedSettings || model.folderRotateBusy || browser.settingsPasteTargets(clicked: asset).isEmpty)
+        }
         .onTapGesture {
+            let flags = NSEvent.modifierFlags
             let order = browser.duplicateGroups.flatMap(\.members).map(\.uid)
-            browser.selectRow(asset.uid, shift: NSEvent.modifierFlags.contains(.shift), order: order)
+            browser.selectRow(
+                asset.uid,
+                shift: flags.contains(.shift),
+                extend: flags.contains(.command),
+                order: order
+            )
         }
         .accessibilityLabel(browser.filename(for: asset))
+        .overlay {
+            ControlClickCatcher {
+                let order = browser.duplicateGroups.flatMap(\.members).map(\.uid)
+                browser.selectRow(asset.uid, shift: false, extend: true, order: order)
+            }
+            .accessibilityHidden(true)
+        }
     }
 }
 

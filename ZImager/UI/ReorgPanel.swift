@@ -171,6 +171,7 @@ enum ReorgActivity {
     static func savedFolder(_ phase: String) -> String? {
         if phase != "Photos" && !phase.hasPrefix("Photos/") { return nil }
         if phase == "Photos/_Duplicates" || phase.hasPrefix("Photos/_Duplicates/") { return nil }
+        if phase == "Photos/_Removed" || phase.hasPrefix("Photos/_Removed/") { return nil }
         return phase
     }
 
@@ -376,6 +377,9 @@ enum ReorgFolder {
         guard parts.first == "Photos" else { return nil }
         let joined = parts.joined(separator: "/")
         if joined == "Photos/_Duplicates" || joined.hasPrefix("Photos/_Duplicates/") {
+            return nil
+        }
+        if joined == "Photos/_Removed" || joined.hasPrefix("Photos/_Removed/") {
             return nil
         }
         return joined

@@ -50,6 +50,175 @@ func TestManualMoveCreatesAGroupOfOne(t *testing.T) {
 	}
 }
 
+func TestRemoveParksTheFileOutsideTheDuplicateStore(t *testing.T) {
+	root := t.TempDir()
+	catalog := openAPICatalog(t, root)
+	payload := []byte("park-me")
+	insertAPIMember(t, root, catalog, 0, "solo", "Photos/2020/event/solo.jpg", payload, 1_000_000, nil, 0)
+	insertAPIMember(t, root, catalog, 0, "same", "Photos/2019/event/solo.jpg", []byte("other"), 1_000_000, nil, 0)
+	insertAPIMember(t, root, catalog, 0, "stored", "Photos/_Duplicates/g1/stored.jpg", []byte("store"), 1_000_000, nil, 0)
+	if _, err := catalog.Write.Exec(`UPDATE assets SET derivative_group_id = NULL`); err != nil {
+		t.Fatal(err)
+	}
+	client, base := reorgServer(t, root, catalog, nil)
+
+	resp := authorizedSend(t, client, http.MethodPost, base+"/v1/assets/solo/to-removed", nil)
+	body := readAll(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("remove %d %s", resp.StatusCode, body)
+	}
+	var asset assetJSON
+	if err := json.Unmarshal([]byte(body), &asset); err != nil {
+		t.Fatal(err)
+	}
+	if asset.Placement != "removed" || asset.RelPath != "Photos/_Removed/solo.jpg" {
+		t.Fatalf("asset %+v", asset)
+	}
+	got, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(asset.RelPath)))
+	if err != nil || !bytes.Equal(got, payload) {
+		t.Fatal("parked bytes")
+	}
+	if _, err := os.Stat(filepath.Join(root, "Photos", "2020", "event", "solo.jpg")); !os.IsNotExist(err) {
+		t.Fatal("source remained")
+	}
+	var reason string
+	var groups int
+	if err := catalog.Read.QueryRow(`SELECT COALESCE(duplicate_reason, ''), (SELECT COUNT(*) FROM derivative_groups) FROM assets WHERE uid = 'solo'`).Scan(&reason, &groups); err != nil {
+		t.Fatal(err)
+	}
+	if reason != "" || groups != 0 {
+		t.Fatalf("reason %q groups %d", reason, groups)
+	}
+
+	again := authorizedSend(t, client, http.MethodPost, base+"/v1/assets/solo/to-removed", nil)
+	if again.StatusCode != http.StatusConflict {
+		t.Fatalf("second %d %s", again.StatusCode, readAll(t, again))
+	}
+	second := authorizedSend(t, client, http.MethodPost, base+"/v1/assets/same/to-removed", nil)
+	secondBody := readAll(t, second)
+	if second.StatusCode != http.StatusOK {
+		t.Fatalf("collision %d %s", second.StatusCode, secondBody)
+	}
+	var collided assetJSON
+	if err := json.Unmarshal([]byte(secondBody), &collided); err != nil {
+		t.Fatal(err)
+	}
+	if collided.RelPath != "Photos/_Removed/solo-2.jpg" || collided.Placement != "removed" {
+		t.Fatalf("collision %+v", collided)
+	}
+	kept := authorizedSend(t, client, http.MethodPost, base+"/v1/assets/stored/to-removed", nil)
+	if kept.StatusCode != http.StatusConflict {
+		t.Fatalf("store %d %s", kept.StatusCode, readAll(t, kept))
+	}
+	if store, err := os.ReadFile(filepath.Join(root, "Photos", "_Duplicates", "g1", "stored.jpg")); err != nil || string(store) != "store" {
+		t.Fatal("store file changed")
+	}
+}
+
+func TestPlaceMovesReviewUpdatedIntoTheDateFolder(t *testing.T) {
+	root := t.TempDir()
+	catalog := openAPICatalog(t, root)
+	payload := []byte("dated-bytes")
+	insertAPIMember(t, root, catalog, 0, "shot", "Photos/_Review/Updated/photo.jpg", payload, 1_000_000, nil, 0)
+	insertAPIMember(t, root, catalog, 0, "bride", "Photos/_Review/Updated/Wedding/bride.jpg", []byte("bride"), 1_000_000, nil, 0)
+	insertAPIMember(t, root, catalog, 0, "again", "Photos/_Review/Updated/ab/photo.jpg", []byte("again"), 1_000_000, nil, 0)
+	insertAPIMember(t, root, catalog, 0, "keep", "Photos/_Review/Updated/keep.jpg", []byte("keep"), 1_000_000, nil, 0)
+	if _, err := catalog.Write.Exec(`UPDATE assets SET derivative_group_id = NULL`); err != nil {
+		t.Fatal(err)
+	}
+	var shotID int64
+	if err := catalog.Read.QueryRow(`SELECT id FROM assets WHERE uid = 'shot'`).Scan(&shotID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := catalog.Write.Exec(`
+		INSERT INTO journal (asset_id, job_kind, state, src_rel, dest_rel, byte_size, updated_at)
+		VALUES (?, 'reorg', 'planned', 'Photos/_Review/Updated/photo.jpg', 'Photos/1999/1999-01-01/Updated/photo.jpg', 11, '2026-01-01T00:00:00Z')`, shotID); err != nil {
+		t.Fatal(err)
+	}
+	client, base := reorgServer(t, root, catalog, nil)
+	body, _ := json.Marshal(map[string]any{"captureTime": "2010-07-17T00:00:00Z"})
+
+	if _, err := catalog.Write.Exec(`UPDATE job_state SET run_state = 'running' WHERE job_kind = 'reorg'`); err != nil {
+		t.Fatal(err)
+	}
+	busy := authorizedSend(t, client, http.MethodPost, base+"/v1/assets/shot/place", body)
+	if busy.StatusCode != http.StatusConflict {
+		t.Fatalf("running %d %s", busy.StatusCode, readAll(t, busy))
+	}
+	readAll(t, busy)
+	if _, err := os.Stat(filepath.Join(root, "Photos", "_Review", "Updated", "photo.jpg")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := catalog.Write.Exec(`UPDATE job_state SET run_state = 'plan_ready' WHERE job_kind = 'reorg'`); err != nil {
+		t.Fatal(err)
+	}
+
+	resp := authorizedSend(t, client, http.MethodPost, base+"/v1/assets/shot/place", body)
+	text := readAll(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("place %d %s", resp.StatusCode, text)
+	}
+	var asset assetJSON
+	if err := json.Unmarshal([]byte(text), &asset); err != nil {
+		t.Fatal(err)
+	}
+	if asset.RelPath != "Photos/2010/2010-07-17/event/photo.jpg" || asset.Placement != "active" || asset.Phase != "placed" {
+		t.Fatalf("asset %+v", asset)
+	}
+	got, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(asset.RelPath)))
+	if err != nil || !bytes.Equal(got, payload) {
+		t.Fatal("moved bytes")
+	}
+	if _, err := os.Stat(filepath.Join(root, "Photos", "_Review", "Updated", "photo.jpg")); !os.IsNotExist(err) {
+		t.Fatal("source remained")
+	}
+	var conf float64
+	var source, state, note string
+	if err := catalog.Read.QueryRow(`SELECT capture_confidence, capture_source FROM assets WHERE uid = 'shot'`).Scan(&conf, &source); err != nil {
+		t.Fatal(err)
+	}
+	if conf != 1 || source != "user" {
+		t.Fatalf("date %v %s", conf, source)
+	}
+	if err := catalog.Read.QueryRow(`SELECT state, COALESCE(error, '') FROM journal WHERE asset_id = ? AND job_kind = 'reorg'`, shotID).Scan(&state, &note); err != nil {
+		t.Fatal(err)
+	}
+	if state != "failed" || note != "superseded" {
+		t.Fatalf("reorg journal %s %s", state, note)
+	}
+	if err := catalog.Read.QueryRow(`SELECT state FROM journal WHERE asset_id = ? AND job_kind = 'manual_place'`, shotID).Scan(&state); err != nil || state != "done" {
+		t.Fatalf("place journal %s %v", state, err)
+	}
+
+	bride := authorizedSend(t, client, http.MethodPost, base+"/v1/assets/bride/place", body)
+	brideText := readAll(t, bride)
+	if bride.StatusCode != http.StatusOK || !bytesContain(brideText, "Photos/2010/2010-07-17/Wedding/bride.jpg") {
+		t.Fatalf("bride %d %s", bride.StatusCode, brideText)
+	}
+	again := authorizedSend(t, client, http.MethodPost, base+"/v1/assets/again/place", body)
+	againText := readAll(t, again)
+	if again.StatusCode != http.StatusOK || !bytesContain(againText, "Photos/2010/2010-07-17/event/photo-2.jpg") {
+		t.Fatalf("collision %d %s", again.StatusCode, againText)
+	}
+
+	dateBody, _ := json.Marshal(map[string]any{"captureTime": "2011-01-02T00:00:00Z"})
+	dated := authorizedSend(t, client, http.MethodPost, base+"/v1/assets/keep/date", dateBody)
+	if dated.StatusCode != http.StatusOK {
+		t.Fatalf("date %d %s", dated.StatusCode, readAll(t, dated))
+	}
+	readAll(t, dated)
+	if kept, err := os.ReadFile(filepath.Join(root, "Photos", "_Review", "Updated", "keep.jpg")); err != nil || string(kept) != "keep" {
+		t.Fatal("date route moved the file")
+	}
+	var dest string
+	if err := catalog.Read.QueryRow(`SELECT state, dest_rel FROM journal WHERE asset_id = (SELECT id FROM assets WHERE uid = 'keep') AND job_kind = 'reorg'`).Scan(&state, &dest); err != nil {
+		t.Fatal(err)
+	}
+	if state != "planned" || dest != "Photos/2011/2011-01-02/event/keep.jpg" {
+		t.Fatalf("planned only %s %s", state, dest)
+	}
+}
+
 func TestRestorePinsBesideTheKeeperAndTrimSkipsIt(t *testing.T) {
 	root := t.TempDir()
 	catalog := openAPICatalog(t, root)

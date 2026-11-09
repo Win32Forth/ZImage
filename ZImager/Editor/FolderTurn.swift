@@ -5,13 +5,31 @@ import ImageIO
 import UniformTypeIdentifiers
 
 /// Shift-click selects the range from the anchor through the clicked item.
+/// Control-click or Command-click toggles that one item and leaves the others selected.
 enum GridSelection {
     static func choose(
         order: [String],
         anchor: String?,
         clicked: String,
-        shift: Bool
-    ) -> (keys: Set<String>, anchor: String, primary: String) {
+        shift: Bool,
+        extend: Bool = false,
+        existing: Set<String> = []
+    ) -> (keys: Set<String>, anchor: String?, primary: String?) {
+        if extend {
+            var keys = existing
+            if keys.contains(clicked) {
+                keys.remove(clicked)
+            } else {
+                keys.insert(clicked)
+                return (keys, clicked, clicked)
+            }
+            guard !keys.isEmpty else { return ([], nil, nil) }
+            if let anchor, keys.contains(anchor) {
+                return (keys, anchor, anchor)
+            }
+            let fallback = order.first { keys.contains($0) } ?? keys.first
+            return (keys, fallback, fallback)
+        }
         if shift,
            let anchor,
            let start = order.firstIndex(of: anchor),
@@ -53,6 +71,26 @@ nonisolated enum FolderTurnWorker {
             geometry.quarterTurns = GeometryPipeline.wrap(geometry.quarterTurns + (clockwise ? 1 : -1))
             log.commit(.setGeometry(geometry, label: clockwise ? "Rotate clockwise" : "Rotate counterclockwise"))
         }
+    }
+
+    /// Tone and Geometry saved for a still that is not on the canvas. An unedited photo is identity.
+    static func adjustments(file: URL) -> (tone: ToneState, geometry: GeometryState)? {
+        let started = file.startAccessingSecurityScopedResource()
+        defer {
+            if started {
+                file.stopAccessingSecurityScopedResource()
+            }
+        }
+        let bytes: Data
+        do {
+            bytes = try Data(contentsOf: file)
+        } catch {
+            return nil
+        }
+        guard !bytes.isEmpty else { return nil }
+        let digest = Blake3.hex(bytes)
+        let state = storedLog(digest: digest, count: bytes.count)?.state ?? .identity
+        return (state.tone, state.geometry)
     }
 
     /// Replaces Tone and Geometry with the copied settings. Crop and object removal stay.
