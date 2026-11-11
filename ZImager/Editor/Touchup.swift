@@ -16,6 +16,62 @@ nonisolated enum TouchupWork: Sendable {
     case scratches
     case spot(CGPoint, Int)
     case scratch([CGPoint], Int)
+
+    var isSpot: Bool {
+        if case .spot = self { return true }
+        return false
+    }
+}
+
+/// One repair waiting its turn. Spot clicks stack here so the next click does not wait on the current repair.
+nonisolated struct QueuedTouchup: Sendable {
+    var banner: String
+    var empty: String
+    var work: TouchupWork
+}
+
+/// Outstanding Dust, Scratches, Spot, and Scratch repairs. The running job counts toward `cap`.
+nonisolated struct TouchupQueue: Sendable {
+    static let cap = 64
+
+    private(set) var waiting: [QueuedTouchup] = []
+    private(set) var running: QueuedTouchup?
+
+    var count: Int { waiting.count + (running == nil ? 0 : 1) }
+
+    /// Spot clicks not yet finished, including the one running.
+    var spotsRemaining: Int {
+        var total = 0
+        if let running, running.work.isSpot { total += 1 }
+        for job in waiting where job.work.isSpot { total += 1 }
+        return total
+    }
+
+    /// Starts `job` when the list is idle. Otherwise appends it. False when `cap` is already full.
+    mutating func add(_ job: QueuedTouchup) -> Bool {
+        guard count < Self.cap else { return false }
+        if running == nil {
+            running = job
+        } else {
+            waiting.append(job)
+        }
+        return true
+    }
+
+    /// Drops the running job and promotes the next one. Nil when the list is empty.
+    mutating func finishRunning() -> QueuedTouchup? {
+        if waiting.isEmpty {
+            running = nil
+            return nil
+        }
+        running = waiting.removeFirst()
+        return running
+    }
+
+    mutating func removeAll() {
+        waiting.removeAll()
+        running = nil
+    }
 }
 
 nonisolated enum Touchup {

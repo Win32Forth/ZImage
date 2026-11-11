@@ -14,6 +14,18 @@ Each entry uses this shape:
 - Scope: design section or PR name
 - Notes: facts, decisions, and the next step
 
+## 2026-11-10 — ZImager 1.7.1
+
+- Status: done
+- Scope: ZImager 1.7.1. Spot click list. The helper is unchanged.
+- Notes: Marketing version 1.7.1 is on the ZImager target. The test target stays 1.0. `CURRENT_PROJECT_VERSION` stays 1. Spot clicks, scratch strokes, and the Dust and Scratches buttons share one list of 64 repairs. A click during a repair waits in that list. The repairs run one at a time, each on the picture the previous repair produced, and each is its own history step. The canvas banner and the Touchup panel say how many spots are left, including the one running. A click past 64 is not added. Undo, redo, reset, and opening another photograph drop the list. The deployment target stays macOS 26.0. The keychain group and edit bookmarks are unchanged. Reorganize, Review, and Duplicates still do not work and can lose photos. Leave them alone. The disk image is `Releases/ZImager-1.7.1-macOS.dmg` and it does not include the helper. Stop the DSM task before replacing the helper. Do not open `catalog.db` from the Mac.
+
+## 2026-11-10 — Spot click list
+
+- Status: done
+- Scope: ZImager Touchup. Manual Spot.
+- Notes: Spot clicks, scratch strokes, and the Dust and Scratches buttons share one list of 64 repairs. A click during a repair waits in that list. The repairs run one at a time, each on the picture the previous repair produced, and each is its own history step. The canvas banner and the Touchup panel say how many spots are left, including the one running. A click past 64 is not added. Undo, redo, reset, and opening another photograph drop the list. The helper was not changed.
+
 ## 2026-11-09 — ZImager 1.7.0
 
 - Status: done

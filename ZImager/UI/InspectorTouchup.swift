@@ -12,12 +12,12 @@ struct InspectorTouchup: View {
             HStack(spacing: 8) {
                 Button("Dust") { model.removeDust() }
                     .buttonStyle(LibraryPushButtonStyle())
-                    .disabled(model.proxy == nil || model.touchupBusy)
+                    .disabled(model.proxy == nil)
                     .accessibilityIdentifier("Dust")
                     .help("Finds dust and blends it into the surrounding photo.")
                 Button("Scratches") { model.removeScratches() }
                     .buttonStyle(LibraryPushButtonStyle())
-                    .disabled(model.proxy == nil || model.touchupBusy)
+                    .disabled(model.proxy == nil)
                     .accessibilityIdentifier("Scratches")
                     .help("Finds scratches and blends them into the surrounding photo.")
             }
@@ -25,17 +25,23 @@ struct InspectorTouchup: View {
                 Button("Spot") { model.toggleCanvasTool(.dustSpot) }
                     .buttonStyle(LibraryPushButtonStyle())
                     .toolToggleBorder(active: model.canvasTool == .dustSpot)
-                    .disabled(model.proxy == nil || model.touchupBusy)
+                    .disabled(model.proxy == nil)
                     .accessibilityIdentifier("Spot")
                     .accessibilityAddTraits(model.canvasTool == .dustSpot ? .isSelected : [])
-                    .help("Cover a speck with the circle and click it. Click Spot again to leave.")
+                    .help("Cover a speck with the circle and click it. More clicks wait in a list of \(TouchupQueue.cap). Click Spot again to leave.")
                 Button("Scratch") { model.toggleCanvasTool(.scratchMark) }
                     .buttonStyle(LibraryPushButtonStyle())
                     .toolToggleBorder(active: model.canvasTool == .scratchMark)
-                    .disabled(model.proxy == nil || model.touchupBusy)
+                    .disabled(model.proxy == nil)
                     .accessibilityIdentifier("Scratch")
                     .accessibilityAddTraits(model.canvasTool == .scratchMark ? .isSelected : [])
                     .help("Drag the circle along a scratch. Click Scratch again to leave.")
+            }
+            if let left = model.touchupSpotsLeftLabel {
+                Text(left)
+                    .font(.body)
+                    .foregroundStyle(ChromePalette.muted)
+                    .accessibilityIdentifier("Spots left")
             }
             InspectorFieldRow(title: "Size", readout: "\(Int(model.touchupBrushDiameter.rounded())) px") {
                 InspectorSlider(

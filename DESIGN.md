@@ -4,8 +4,8 @@
 | --- | --- |
 | Product | ZImage |
 | Author | Thomas Zimmer |
-| Date | 2026-11-09 |
-| Status | ZImager 1.7.0 |
+| Date | 2026-11-10 |
+| Status | ZImager 1.7.1 |
 | Platform | Native macOS app, Apple Silicon, deployment target macOS 26.0. The build machine is an M5. The catalog and the reorganization state live on a Synology DS423. |
 | Repository | `ZImager/` is the only Mac app. `ZImageTests/` hosts on it. `Helper/` is the Go source. `README.md` says how to build and how to install the helper. |
 
@@ -17,11 +17,13 @@ Pass 2 is the catalog for the personal library on that Synology share. Its helpe
 
 The edited-document format is a versioned container, extension `.zimg`, nicknamed ZImage RAW in the product language. It stores a parametric edit log, not a second copy of every original. The million originals stay in their camera formats. In Pass 2, SQLite is not opened over SMB. A small Go helper on the DS423 is the only database writer. The Mac talks to it with an authenticated LAN API. Interactive edits run on a display-sized GPU proxy. Full resolution is a tiled export path.
 
-As of 2026-11-09 the app is ZImager 1.7.0 (`ZImager/`, bundle id `com.Win32Forth.ZImager`). Disk is the editor. Server is the library, in the same window. The separate ZImage and ZImage Library targets, schemes, and source folders are removed. Tests host on ZImager. The keychain group stays `X5YCJL3LJ8.com.Win32Forth.ZImage`. Saved edit bookmarks stay in `com.Win32Forth.ZImage.editBookmarks`. The sandbox is off. The deployment target is macOS 26.0. `STATUS.md` records what has landed. The paragraphs below keep the original plan, including choices that the code has since filled in.
+As of 2026-11-10 the app is ZImager 1.7.1 (`ZImager/`, bundle id `com.Win32Forth.ZImager`). Disk is the editor. Server is the library, in the same window. The separate ZImage and ZImage Library targets, schemes, and source folders are removed. Tests host on ZImager. The keychain group stays `X5YCJL3LJ8.com.Win32Forth.ZImage`. Saved edit bookmarks stay in `com.Win32Forth.ZImage.editBookmarks`. The sandbox is off. The deployment target is macOS 26.0. `STATUS.md` records what has landed. The paragraphs below keep the original plan, including choices that the code has since filled in.
 
-1.7.0 is that removal, and the app now runs on macOS 26. The vendored libjxl and libwebp binaries declare a minimum of macOS 26.0. 1.6.0 remains in the app: Spectrum above Tone, Auto and Reset on the Tone title, folder Export and Print, Edit-menu Copy settings and Paste settings, View-menu Folder View and Edit View, and arrow keys between photos. Server Remove from library moves files into `Photos/_Removed`. Set date moves each selected file into its date folder through `POST /v1/assets/{uid}/place`. Clean folder, in the Server three-bar menu, calls `POST /v1/folders/clean` and drops catalog rows whose files are gone when another file in that folder has the same name and size. It does not delete a file.
+1.7.1 stacks Spot clicks. The list holds 64 repairs, shared by Spot clicks, Scratch strokes, and the Dust and Scratches buttons. A click during a repair waits in that list. Each repair is its own history step and uses the picture the previous repair produced. The canvas banner and the Touchup panel say how many spots are left, including the one running. A click past 64 is not added. Undo, redo, reset, and opening another photograph drop the list. The helper is unchanged.
 
-Reorganize, Review, and Duplicates do not work yet. Using them can lose photos. Leave those controls alone in 1.7.0. Do not press Start, Pause, Continue, Find duplicates, or Delete all duplicates.
+1.7.0 removed the old apps, and the app runs on macOS 26. The vendored libjxl and libwebp binaries declare a minimum of macOS 26.0. 1.6.0 remains in the app: Spectrum above Tone, Auto and Reset on the Tone title, folder Export and Print, Edit-menu Copy settings and Paste settings, View-menu Folder View and Edit View, and arrow keys between photos. Server Remove from library moves files into `Photos/_Removed`. Set date moves each selected file into its date folder through `POST /v1/assets/{uid}/place`. Clean folder, in the Server three-bar menu, calls `POST /v1/folders/clean` and drops catalog rows whose files are gone when another file in that folder has the same name and size. It does not delete a file.
+
+Reorganize, Review, and Duplicates do not work yet. Using them can lose photos. Leave those controls alone in 1.7.1. Do not press Start, Pause, Continue, Find duplicates, or Delete all duplicates.
 
 Server mode needs `zimage-helper` on the Synology. The Mac disk image does not include that program. Build the static ARM64 binary from `Helper/`, copy it to `PhotoVideoAudio/.zimage/bin/zimage-helper`, and start it from DSM Task Scheduler as a non-admin user with `GOMEMLIMIT=160MiB`. The steps are in `README.md`. Stop the task before replacing the binary. Do not open `catalog.db` from the Mac.
 
@@ -452,7 +454,7 @@ A brush, a dilate/erode on the mask, and a different model are future commands. 
 
 ### Dust and scratches
 
-The Touchup panel sits between Geometry and History. Its title has the same disclosure as the other panels: a down chevron while open, an up chevron while collapsed to the title. Dust finds small specks that disappear under a small opening or closing and are not sitting on an edge. Scratches finds thin lines whose two sides match and whose center does not. Each button is one history step, Dust or Scratches. Spot and Scratch use a circle whose diameter is the Size slider, from 8 to 400 preview pixels, starting at 48. Double-click that knob restores 48. Spot searches inside the circle. Scratch is a drag: the circle leaves a translucent gray stroke while the mouse is down, and letting go blends that whole stroke into the photo on either side. A second click on Spot or Scratch returns to Zoom.
+The Touchup panel sits between Geometry and History. Its title has the same disclosure as the other panels: a down chevron while open, an up chevron while collapsed to the title. Dust finds small specks that disappear under a small opening or closing and are not sitting on an edge. Scratches finds thin lines whose two sides match and whose center does not. Each button is one history step, Dust or Scratches. Spot and Scratch use a circle whose diameter is the Size slider, from 8 to 400 preview pixels, starting at 48. Double-click that knob restores 48. Spot searches inside the circle. Scratch is a drag: the circle leaves a translucent gray stroke while the mouse is down, and letting go blends that whole stroke into the photo on either side. A second click on Spot or Scratch returns to Zoom. Spot clicks, scratch strokes, and the Dust and Scratches buttons share one list of 64 repairs. A click during a repair is added to that list. Each repair becomes its own history step when the one before it finishes, and it sees the picture that repair produced. While spot clicks remain, the canvas banner and the Touchup panel say how many spots are left, including the one running. A click past 64 is not added. Undo, redo, reset, and opening another photograph drop the list.
 
 The repair copies the surrounding color and adds nearby texture. It is stored as a mask on `InpaintOp`, model id `touchup-dust-v1` or `touchup-scratch-v1`, not as a bitmap. `strength` mixes that repair back over the photo. 1 is the full repair. 0 leaves the photo alone. Older files omit `strength` and mean 1. The Dust and Scratches sliders edit the latest step of that kind. A double-click on the knob restores full strength. Export writes this repair without the LaMa file. Object removal still refuses to export when that file is missing.
 
@@ -1184,7 +1186,7 @@ Rollback of code is git. Rollback of a move that already reached `done` is not a
 
 A DSM update can delete the Task Scheduler entry even when the binary on the data volume survives. The Mac offline banner names the recovery: open DSM Task Scheduler and confirm the boot task still runs `.zimage/bin/zimage-helper`. That is an operator step, not something the app can fix from the laptop.
 
-Install outline. `README.md` has the same steps for someone who is not reading this plan. The 1.7.0 disk image does not contain the helper. Set date's file move and Clean folder need this helper. Stop the DSM task before replacing the binary.
+Install outline. `README.md` has the same steps for someone who is not reading this plan. The 1.7.1 disk image does not contain the helper. Set date's file move and Clean folder need this helper. Stop the DSM task before replacing the binary.
 
 1. On the Mac, from `Helper/`: `GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o zimage-helper ./cmd/zimage-helper`.
 2. Stop the DSM task if it is already running. Copy the binary to `PhotoVideoAudio/.zimage/bin/zimage-helper` over SMB and set mode 0700. Do not copy over a running binary.

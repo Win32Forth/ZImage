@@ -100,12 +100,28 @@ final class EditorModel {
     /// Diameter of the Spot and Scratch circle, in preview pixels.
     var touchupBrushDiameter: Double = 48
     var touchupBusy = false
+    /// Spot clicks not yet finished, including the one running. The canvas and the Touchup panel show this.
+    var touchupSpotsRemaining = 0
     /// Display-tone histogram behind the Spectrum handles. Empty until a photograph is open.
     var spectrumBins: [Int] = []
     private var spectrumDragActive = false
     private var touchupGeneration = 0
     /// The generation that currently owns `touchupBusy`. A finished older job does not clear a newer one.
     private var touchupBusyGeneration = 0
+    /// Repairs waiting their turn, including the one running. Further Spot clicks append here.
+    @ObservationIgnored
+    private var touchupQueue = TouchupQueue()
+    /// Banner text from before this list started. Nil is a real saved value once `touchupBannerCaptured` is set.
+    @ObservationIgnored
+    private var touchupBannerCaptured = false
+    @ObservationIgnored
+    private var touchupBannerRestore: String?
+    /// The running repair's banner, without the spots-left suffix.
+    @ObservationIgnored
+    private var touchupBannerBase: String?
+    /// The picture after the current inpaint list, so the next spot does not rebuild every earlier repair.
+    @ObservationIgnored
+    private var touchupHead: (token: Int, operations: [InpaintOp], image: CIImage)?
     private var dustStrengthOverride: Double?
     private var scratchStrengthOverride: Double?
     private var touchupDragID: UUID?
@@ -1845,7 +1861,7 @@ final class EditorModel {
     /// Returns the open photograph to the start. Each edit stays on the redo stack.
     func resetPhoto() {
         guard proxy != nil, !showsPDFPicker else { return }
-        touchupGeneration += 1
+        cancelTouchupQueue()
         commitOpenDrafts()
         guard log.canUndo || cropSelection != nil else { return }
         log.resetToBeginning()
@@ -1856,7 +1872,7 @@ final class EditorModel {
     }
 
     func undo() {
-        touchupGeneration += 1
+        cancelTouchupQueue()
         cancelProvisionalEdits()
         log.undo()
         cropSelection = nil
@@ -1866,7 +1882,7 @@ final class EditorModel {
     }
 
     func redo() {
-        touchupGeneration += 1
+        cancelTouchupQueue()
         cancelProvisionalEdits()
         log.redo()
         cropSelection = nil
@@ -1876,7 +1892,7 @@ final class EditorModel {
     }
 
     func selectCommand(at index: Int) {
-        touchupGeneration += 1
+        cancelTouchupQueue()
         cancelProvisionalEdits()
         log.selectCommand(at: index)
         cropSelection = nil
@@ -2097,7 +2113,7 @@ final class EditorModel {
     }
 
     func removeDust() {
-        startTouchup(
+        enqueueTouchup(
             banner: "Removing dust…",
             empty: "No dust stood out from the surrounding photo. Spot covers a speck with the circle.",
             work: .dust
@@ -2105,7 +2121,7 @@ final class EditorModel {
     }
 
     func removeScratches() {
-        startTouchup(
+        enqueueTouchup(
             banner: "Removing scratches…",
             empty: "No scratch stood out from the surrounding photo. Drag the Scratch circle along one.",
             work: .scratches
@@ -2115,7 +2131,7 @@ final class EditorModel {
     func dustSpotClick(at viewPoint: CGPoint, in viewSize: CGSize) {
         guard let bitmap = touchupBitmap(at: viewPoint, in: viewSize) else { return }
         let radius = touchupRasterRadius()
-        startTouchup(
+        enqueueTouchup(
             banner: "Removing the spot…",
             empty: "No speck stood out in that circle. Cover the spot and click it.",
             work: .spot(bitmap, radius)
@@ -2144,7 +2160,7 @@ final class EditorModel {
         }
         guard length >= 2 else { return }
         let radius = touchupRasterRadius()
-        startTouchup(
+        enqueueTouchup(
             banner: "Removing the scratch…",
             empty: "No scratch stood out under that stroke.",
             work: .scratch(bitmaps, radius)
@@ -2231,53 +2247,125 @@ final class EditorModel {
         return CGPoint(x: pixel.x * scaleX, y: pixel.y * scaleY)
     }
 
-    private func startTouchup(banner: String, empty: String, work: TouchupWork) {
-        guard !touchupBusy, proxy != nil else { return }
+    /// The words under the photograph while spots are still in the list.
+    var touchupSpotsLeftLabel: String? {
+        guard touchupSpotsRemaining > 0 else { return nil }
+        return touchupSpotsRemaining == 1 ? "1 spot left" : "\(touchupSpotsRemaining) spots left"
+    }
+
+    /// Adds one repair. A click during a running repair waits in the list, up to `TouchupQueue.cap`.
+    private func enqueueTouchup(banner: String, empty: String, work: TouchupWork) {
+        guard proxy != nil else { return }
+        let idle = touchupQueue.running == nil
+        let job = QueuedTouchup(banner: banner, empty: empty, work: work)
+        guard touchupQueue.add(job) else {
+            noteTouchupListFull()
+            return
+        }
+        touchupSpotsRemaining = touchupQueue.spotsRemaining
+        if idle {
+            touchupBannerRestore = previewBanner
+            touchupBannerCaptured = true
+            beginRunningTouchup()
+        } else if let base = touchupBannerBase {
+            previewBanner = touchupStatusBanner(base)
+        }
+    }
+
+    private func noteTouchupListFull() {
+        let base = touchupBannerBase ?? "Removing the spot…"
+        previewBanner = "\(touchupStatusBanner(base)) The list holds \(TouchupQueue.cap)."
+    }
+
+    private func touchupStatusBanner(_ base: String) -> String {
+        guard let label = touchupSpotsLeftLabel else { return base }
+        return "\(base) \(label)"
+    }
+
+    /// Runs the job already stored in `touchupQueue.running`. The next queued job starts when this one finishes.
+    private func beginRunningTouchup() {
+        guard proxy != nil else {
+            stopTouchupQueue(restoreBanner: true)
+            return
+        }
+        guard !touchupBusy, let job = touchupQueue.running else { return }
         commitOpenDrafts()
-        guard let base = stage3Image(), let raster = Touchup.read(base) else { return }
+        guard let base = stage3Image(), let raster = Touchup.read(base) else {
+            stopTouchupQueue(restoreBanner: true)
+            return
+        }
         let chain = Touchup.chain(imageToken: touchupImageToken(), operations: touchupPreviewOperations())
         let extent = raster.extent
         touchupGeneration += 1
         let generation = touchupGeneration
         touchupBusyGeneration = generation
         touchupBusy = true
-        let previousBanner = previewBanner
-        previewBanner = banner
+        touchupSpotsRemaining = touchupQueue.spotsRemaining
+        touchupBannerBase = job.banner
+        previewBanner = touchupStatusBanner(job.banner)
         let samples = raster.samples
         let width = raster.width
         let height = raster.height
+        let work = job.work
+        let empty = job.empty
         Task { @MainActor in
             let built = await Touchup.performOffMain(work, samples: samples, width: width, height: height)
-            guard generation == self.touchupGeneration else {
-                if self.touchupBusyGeneration == generation {
-                    self.touchupBusy = false
-                    if self.previewBanner == banner {
-                        self.previewBanner = previousBanner
-                    }
-                }
-                return
+            guard generation == self.touchupGeneration else { return }
+            if let built {
+                let repaired = Touchup.ciImage(built.pixels, width: width, height: height, extent: extent)
+                Touchup.store(
+                    chain: chain,
+                    width: width,
+                    height: height,
+                    maskPNG: built.operation.maskPNG,
+                    modelID: built.operation.modelID,
+                    image: repaired
+                )
+                self.log.commit(.addInpaint(built.operation))
+                self.refreshPreview()
+                self.publishOpenPreview()
             }
-            self.touchupBusy = false
-            if self.previewBanner == banner {
-                self.previewBanner = previousBanner
-            }
-            guard let built else {
+            guard generation == self.touchupGeneration else { return }
+            let moreWaiting = !self.touchupQueue.waiting.isEmpty
+            if built == nil, !moreWaiting {
                 self.presentAlert(empty)
-                return
             }
-            let repaired = Touchup.ciImage(built.pixels, width: width, height: height, extent: extent)
-            Touchup.store(
-                chain: chain,
-                width: width,
-                height: height,
-                maskPNG: built.operation.maskPNG,
-                modelID: built.operation.modelID,
-                image: repaired
-            )
-            self.log.commit(.addInpaint(built.operation))
-            self.refreshPreview()
-            self.publishOpenPreview()
+            guard generation == self.touchupGeneration else { return }
+            self.advanceTouchupQueue()
         }
+    }
+
+    /// Starts the next repair, or clears the busy flag when the list is empty.
+    private func advanceTouchupQueue() {
+        guard touchupQueue.finishRunning() != nil else {
+            stopTouchupQueue(restoreBanner: true)
+            return
+        }
+        touchupBusy = false
+        touchupSpotsRemaining = touchupQueue.spotsRemaining
+        beginRunningTouchup()
+    }
+
+    /// Drops a list that belongs to the photograph being left, undone, or reset.
+    private func cancelTouchupQueue() {
+        touchupGeneration += 1
+        touchupBusyGeneration = touchupGeneration
+        stopTouchupQueue(restoreBanner: true)
+        touchupHead = nil
+    }
+
+    private func stopTouchupQueue(restoreBanner: Bool) {
+        let base = touchupBannerBase
+        let restore = touchupBannerRestore
+        touchupQueue.removeAll()
+        touchupBusy = false
+        touchupSpotsRemaining = 0
+        touchupBannerBase = nil
+        let captured = touchupBannerCaptured
+        touchupBannerCaptured = false
+        touchupBannerRestore = nil
+        guard restoreBanner, captured, let base, let banner = previewBanner, banner.hasPrefix(base) else { return }
+        previewBanner = restore
     }
 
     private func touchupImageToken() -> Int {
@@ -2317,8 +2405,7 @@ final class EditorModel {
     /// A photo with no remembered edits and no saved `.zimg` starts from identity.
     /// A saved `.zimg` opened directly assigns `pendingLoadedLog` instead.
     private func resetEditsForNewImage() {
-        touchupGeneration += 1
-        touchupBusy = false
+        cancelTouchupQueue()
         cancelProvisionalEdits()
         log = HistoryLog()
         cropSelection = nil
@@ -2656,13 +2743,30 @@ final class EditorModel {
     }
 
     /// Geometry, then inpaint. Tone is applied after this.
+    /// A new repair at the end of the list is applied on the picture already built for the repairs before it.
     private func stage3Image() -> CIImage? {
         guard let shaped = geometryImage() else { return nil }
-        return InpaintPipeline.applyInteractive(
-            base: shaped,
-            operations: touchupPreviewOperations(),
-            imageToken: touchupImageToken()
-        )
+        let token = touchupImageToken()
+        let operations = touchupPreviewOperations()
+        if let head = touchupHead, head.token == token {
+            if head.operations == operations {
+                return head.image
+            }
+            if operations.count > head.operations.count,
+               Array(operations.prefix(head.operations.count)) == head.operations {
+                var chain = token
+                for operation in head.operations where !operation.maskPNG.isEmpty {
+                    chain = Touchup.advance(chain, operation)
+                }
+                let suffix = Array(operations.dropFirst(head.operations.count))
+                let image = InpaintPipeline.applyInteractive(base: head.image, operations: suffix, imageToken: chain)
+                touchupHead = (token, operations, image)
+                return image
+            }
+        }
+        let image = InpaintPipeline.applyInteractive(base: shaped, operations: operations, imageToken: token)
+        touchupHead = (token, operations, image)
+        return image
     }
 
     private func touchupPreviewOperations() -> [InpaintOp] {

@@ -165,6 +165,36 @@ final class TouchupTests: XCTestCase {
         )
     }
 
+    func testSpotQueueHoldsSixtyFourAndCountsSpotsLeft() {
+        var queue = TouchupQueue()
+        XCTAssertTrue(queue.add(QueuedTouchup(banner: "Removing the spot…", empty: "empty", work: .spot(.zero, 8))))
+        for index in 1..<TouchupQueue.cap {
+            let job = QueuedTouchup(
+                banner: "Removing the spot…",
+                empty: "empty",
+                work: .spot(CGPoint(x: index, y: 1), 8)
+            )
+            XCTAssertTrue(queue.add(job))
+        }
+        XCTAssertFalse(queue.add(QueuedTouchup(banner: "Removing the spot…", empty: "empty", work: .spot(.zero, 8))))
+        XCTAssertEqual(queue.count, TouchupQueue.cap)
+        XCTAssertEqual(queue.spotsRemaining, TouchupQueue.cap)
+        XCTAssertNotNil(queue.finishRunning())
+        XCTAssertEqual(queue.spotsRemaining, TouchupQueue.cap - 1)
+        XCTAssertTrue(queue.add(QueuedTouchup(banner: "Removing the scratch…", empty: "empty", work: .scratch([.zero, CGPoint(x: 3, y: 3)], 8))))
+        XCTAssertEqual(queue.count, TouchupQueue.cap)
+        XCTAssertEqual(queue.spotsRemaining, TouchupQueue.cap - 1)
+        XCTAssertFalse(queue.add(QueuedTouchup(banner: "Removing dust…", empty: "empty", work: .dust)))
+    }
+
+    func testSpotQueueIgnoresARunningScratch() {
+        var queue = TouchupQueue()
+        XCTAssertTrue(queue.add(QueuedTouchup(banner: "Removing scratches…", empty: "empty", work: .scratches)))
+        XCTAssertTrue(queue.add(QueuedTouchup(banner: "Removing the spot…", empty: "empty", work: .spot(.zero, 4))))
+        XCTAssertEqual(queue.spotsRemaining, 1)
+        XCTAssertEqual(queue.count, 2)
+    }
+
     func testMissingStrengthDecodesAsFull() throws {
         let operation = InpaintOp(id: UUID(), maskPNG: Data([9]), modelID: InpaintModel.scratch, featherPx: 2, strength: 0.25)
         let encoded = try JSONEncoder().encode(operation)

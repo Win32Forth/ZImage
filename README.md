@@ -1,6 +1,6 @@
 # ZImage
 
-ZImager 1.7.0 is the app. It is one window. Disk is the editor. Server is the library. The separate ZImage editor and ZImage Library are no longer in this project.
+ZImager 1.7.1 is the app. It is one window. Disk is the editor. Server is the library. The separate ZImage editor and ZImage Library are no longer in this project.
 
 `DESIGN.md` is the plan. `STATUS.md` is the iteration log, newest first.
 
@@ -9,6 +9,12 @@ ZImager 1.7.0 is the app. It is one window. Disk is the editor. Server is the li
 Reorganize, Review, and Duplicates do not work yet. Using them can lose photos. Leave those controls alone. Do not press Start, Pause, Continue, Find duplicates, or Delete all duplicates.
 
 Disk, and Server browsing of a folder, are the parts to use. Rotate, paste, export, print, and the image adjustments save the photo and rebuild its preview.
+
+## What 1.7.1 changes
+
+Spot clicks stack. You can click the next speck while an earlier repair is still running. The list holds 64 repairs, shared by Spot clicks, Scratch strokes, and the Dust and Scratches buttons. Each repair is its own history step and uses the picture the previous repair produced. The banner on the photograph and the Touchup panel say how many spots are left, including the one running. A click past 64 is not added. Undo, redo, reset, and opening another photograph clear the list.
+
+The helper is unchanged. 1.7.0 and 1.6.0 behavior below is still in this app.
 
 ## What 1.7.0 changes
 
@@ -32,7 +38,7 @@ Clean folder is in the Server three-bar menu. It removes catalog records in the 
 
 ## Install ZImager
 
-The disk image is `Releases/ZImager-1.7.0-macOS.dmg`. It contains `ZImager.app` and `README.txt`.
+The disk image is `Releases/ZImager-1.7.1-macOS.dmg`. It contains `ZImager.app` and `README.txt`.
 
 1. Open the disk image.
 2. Drag **ZImager.app** into Applications.
