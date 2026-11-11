@@ -36,6 +36,43 @@ final class GeometryTests: XCTestCase {
         XCTAssertEqual(Int(half.extent.height.rounded()), 16)
     }
 
+    func testHorizonUsesPixelAspect() {
+        let degrees = 10.0
+        let wide = horizonDelta(degrees: degrees, pixelWidth: 400, pixelHeight: 200, run: 200)
+        XCTAssertEqual(wide.quarterTurns, 0)
+        XCTAssertEqual(wide.straightenDegrees, degrees, accuracy: 0.05)
+
+        let tall = horizonDelta(degrees: degrees, pixelWidth: 200, pixelHeight: 400, run: 80)
+        XCTAssertEqual(tall.quarterTurns, 0)
+        XCTAssertEqual(tall.straightenDegrees, degrees, accuracy: 0.05)
+    }
+
+    func testHorizonLevelsAWideFrame() {
+        let width = 361
+        let height = 181
+        let source = lineImage(angleDegrees: 12, width: width, height: height)
+        let context = TonePipeline.makeContext()
+        let before = TonePipeline.rgba8(of: source, context: context)
+        let ends = try! XCTUnwrap(lineEnds(before, width: width, height: height))
+        let geometry = GeometryPipeline.applyingHorizon(
+            from: NormPoint(x: ends.0 / Double(width), y: ends.1 / Double(height)),
+            to: NormPoint(x: ends.2 / Double(width), y: ends.3 / Double(height)),
+            pixelWidth: Double(width),
+            pixelHeight: Double(height),
+            current: .identity
+        )
+        let leveled = GeometryPipeline.apply(base: source, geometry: geometry)
+        let after = TonePipeline.rgba8(of: leveled, context: context)
+        let angle = try! XCTUnwrap(
+            lineAngleDegrees(
+                after,
+                width: Int(leveled.extent.width.rounded()),
+                height: Int(leveled.extent.height.rounded())
+            )
+        )
+        XCTAssertEqual(angle, 0, accuracy: 0.5, "wide line remained at \(angle)°")
+    }
+
     func testHorizonLevelsAKnownLine() {
         let source = lineImage(angleDegrees: 18, size: 181)
         let context = TonePipeline.makeContext()
@@ -184,25 +221,44 @@ final class GeometryTests: XCTestCase {
         return energy
     }
 
+    private func horizonDelta(
+        degrees: Double,
+        pixelWidth: Double,
+        pixelHeight: Double,
+        run: Double
+    ) -> (quarterTurns: Int, straightenDegrees: Double) {
+        let dy = run * tan(degrees * .pi / 180)
+        return GeometryPipeline.horizonDelta(
+            from: NormPoint(x: 40 / pixelWidth, y: 40 / pixelHeight),
+            to: NormPoint(x: (40 + run) / pixelWidth, y: (40 + dy) / pixelHeight),
+            pixelWidth: pixelWidth,
+            pixelHeight: pixelHeight
+        )
+    }
+
     private func lineImage(angleDegrees: Double, size: Int) -> CIImage {
+        lineImage(angleDegrees: angleDegrees, width: size, height: size)
+    }
+
+    private func lineImage(angleDegrees: Double, width: Int, height: Int) -> CIImage {
         let colorSpace = CGColorSpaceCreateDeviceRGB()
         let context = CGContext(
             data: nil,
-            width: size,
-            height: size,
+            width: width,
+            height: height,
             bitsPerComponent: 8,
             bytesPerRow: 0,
             space: colorSpace,
             bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
         )!
         context.setFillColor(CGColor(gray: 0, alpha: 1))
-        context.fill(CGRect(x: 0, y: 0, width: size, height: size))
-        context.translateBy(x: CGFloat(size) / 2, y: CGFloat(size) / 2)
+        context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        context.translateBy(x: CGFloat(width) / 2, y: CGFloat(height) / 2)
         context.rotate(by: CGFloat(angleDegrees * .pi / 180))
         context.setStrokeColor(CGColor(gray: 1, alpha: 1))
         context.setLineWidth(2)
         context.setLineCap(.square)
-        let reach = CGFloat(size) * 0.42
+        let reach = CGFloat(min(width, height)) * 0.42
         context.move(to: CGPoint(x: -reach, y: 0))
         context.addLine(to: CGPoint(x: reach, y: 0))
         context.strokePath()

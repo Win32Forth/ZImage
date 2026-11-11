@@ -10,6 +10,17 @@ struct TouchupBuilt: Sendable {
     var pixels: [Float]
 }
 
+/// One finished repair, including the picture to put on screen. Built off the main thread.
+struct TouchupJobResult: Sendable {
+    var built: TouchupBuilt?
+    var repaired: CIImage?
+    var preview: CGImage?
+    var spectrum: [Int]
+    var folderJPEG: Data?
+    var width: Int
+    var height: Int
+}
+
 /// Work for one Touchup button or stroke. Run it off the main actor.
 nonisolated enum TouchupWork: Sendable {
     case dust
@@ -76,6 +87,16 @@ nonisolated struct TouchupQueue: Sendable {
 
 nonisolated enum Touchup {
     private static let context = TonePipeline.makeContext()
+    /// Serial so the job context is never used from two threads. Low priority so the pointer stays live.
+    private static let jobQueue = DispatchQueue(label: "com.Win32Forth.ZImager.touchup", qos: .userInitiated)
+    private static let jobContext: CIContext = {
+        CIContext(options: [
+            .workingColorSpace: TonePipeline.workingColorSpace,
+            .workingFormat: CIFormat.RGBAh,
+            .cacheIntermediates: false,
+            .priorityRequestLow: true,
+        ])
+    }()
 
     static func perform(_ work: TouchupWork, samples: [Float], width: Int, height: Int) -> TouchupBuilt? {
         switch work {
@@ -90,13 +111,111 @@ nonisolated enum Touchup {
         }
     }
 
-    /// The closure is formed here, off the main actor, so the fill cannot hop back and wait on the UI.
-    static func performOffMain(_ work: TouchupWork, samples: [Float], width: Int, height: Int) async -> TouchupBuilt? {
+    /// Renders the working image, repairs it, and builds the on-screen picture away from the main thread.
+    /// `priorOperations` are repairs already in the log. They are applied here when the caller does not already have that picture.
+    static func finishOffMain(
+        image: CIImage,
+        work: TouchupWork,
+        tone: ToneState,
+        displaySpaceName: String,
+        priorOperations: [InpaintOp] = [],
+        priorToken: Int = 0
+    ) async -> TouchupJobResult {
         await withCheckedContinuation { continuation in
-            DispatchQueue.global(qos: .userInitiated).async {
-                continuation.resume(returning: perform(work, samples: samples, width: width, height: height))
+            jobQueue.async {
+                continuation.resume(returning: finish(
+                    image: image,
+                    work: work,
+                    tone: tone,
+                    displaySpaceName: displaySpaceName,
+                    priorOperations: priorOperations,
+                    priorToken: priorToken
+                ))
             }
         }
+    }
+
+    private static func finish(
+        image: CIImage,
+        work: TouchupWork,
+        tone: ToneState,
+        displaySpaceName: String,
+        priorOperations: [InpaintOp],
+        priorToken: Int
+    ) -> TouchupJobResult {
+        let source = priorOperations.isEmpty
+            ? image
+            : InpaintPipeline.applyInteractive(
+                base: image,
+                operations: priorOperations,
+                imageToken: priorToken,
+                context: jobContext
+            )
+        guard let raster = read(source, context: jobContext) else {
+            return TouchupJobResult(
+                built: nil, repaired: nil, preview: nil, spectrum: [], folderJPEG: nil, width: 0, height: 0
+            )
+        }
+        guard let built = perform(work, samples: raster.samples, width: raster.width, height: raster.height) else {
+            return TouchupJobResult(
+                built: nil, repaired: nil, preview: nil, spectrum: [], folderJPEG: nil,
+                width: raster.width, height: raster.height
+            )
+        }
+        let repaired = ciImage(built.pixels, width: raster.width, height: raster.height, extent: raster.extent)
+        let preview = displayImage(repaired, tone: tone, displaySpaceName: displaySpaceName)
+        let spectrum = histogram(shaped: repaired, tone: tone)
+        let folderJPEG = preview.flatMap { ZImgRaw.jpegPreview(from: $0, maxLongEdge: FolderPreviewCache.maxLongEdge) }
+        return TouchupJobResult(
+            built: built,
+            repaired: repaired,
+            preview: preview,
+            spectrum: spectrum,
+            folderJPEG: folderJPEG,
+            width: raster.width,
+            height: raster.height
+        )
+    }
+
+    private static func displayImage(_ shaped: CIImage, tone: ToneState, displaySpaceName: String) -> CGImage? {
+        let longEdge = max(shaped.extent.width, shaped.extent.height)
+        let toned = TonePipeline.apply(base: shaped, tone: tone, longEdge: longEdge)
+        let extent = toned.extent.integral
+        guard extent.width >= 1, extent.height >= 1 else { return nil }
+        let space = CGColorSpace(name: displaySpaceName as CFString) ?? CGColorSpace(name: CGColorSpace.sRGB)!
+        return jobContext.createCGImage(toned, from: extent, format: .RGBA8, colorSpace: space)
+    }
+
+    /// Same graph the inspector draws: the photograph before the Spectrum handles, scaled to a long edge of 160.
+    private static func histogram(shaped: CIImage, tone: ToneState) -> [Int] {
+        let extent = shaped.extent
+        let longSide = max(extent.width, extent.height)
+        guard longSide.isFinite, longSide > 1 else { return [] }
+        var plain = tone
+        plain.spectrumLow = 0
+        plain.spectrumMid = 0.5
+        plain.spectrumHigh = 1
+        let scale = min(1, 160 / longSide)
+        let small = shaped.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+        let toned = TonePipeline.apply(
+            base: small,
+            tone: plain,
+            longEdge: max(small.extent.width, small.extent.height)
+        )
+        let bounds = toned.extent.integral
+        let width = Int(bounds.width)
+        let height = Int(bounds.height)
+        guard width >= 2, height >= 2 else { return [] }
+        var bytes = [UInt8](repeating: 0, count: width * height * 4)
+        jobContext.render(
+            toned,
+            toBitmap: &bytes,
+            rowBytes: width * 4,
+            bounds: bounds,
+            format: .RGBA8,
+            colorSpace: CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
+        )
+        return SpectrumLevels.bins(rgba: bytes)
     }
 
     /// Identity of the photo under the repair. Tone is not included. The cache is in memory only.
@@ -128,6 +247,13 @@ nonisolated enum Touchup {
     }
 
     static func read(_ image: CIImage) -> (samples: [Float], width: Int, height: Int, extent: CGRect)? {
+        read(image, context: context)
+    }
+
+    static func read(
+        _ image: CIImage,
+        context: CIContext
+    ) -> (samples: [Float], width: Int, height: Int, extent: CGRect)? {
         let extent = image.extent.integral
         let width = Int(extent.width)
         let height = Int(extent.height)
@@ -188,6 +314,7 @@ nonisolated enum Touchup {
 
     /// `bitmapPoint` is top-left, the same space as an object-removal click.
     /// `radius` is the circle, in raster pixels, that limits the search.
+    /// The fill runs on a window around that circle. Pixels outside the window stay as they were.
     static func spot(
         samples: [Float],
         width: Int,
@@ -195,16 +322,113 @@ nonisolated enum Touchup {
         bitmapPoint: CGPoint,
         radius: Int = 12
     ) -> TouchupBuilt? {
-        guard let mask = TouchupEngine.spotMask(
-            samples: samples,
-            width: width,
-            height: height,
-            bitmapPoint: bitmapPoint,
-            radius: radius
-        ) else {
-            return nil
+        let window = spotWindow(width: width, height: height, bitmapPoint: bitmapPoint, radius: radius)
+        let mask: [UInt8]
+        let pixels: [Float]
+        if window.width == width && window.height == height {
+            guard let found = TouchupEngine.spotMask(
+                samples: samples,
+                width: width,
+                height: height,
+                bitmapPoint: bitmapPoint,
+                radius: radius
+            ) else { return nil }
+            mask = found
+            pixels = TouchupEngine.repair(
+                samples: samples, mask: found, width: width, height: height, scratch: false
+            )
+        } else {
+            let localSamples = cropSamples(samples, width: width, window: window)
+            let localPoint = CGPoint(
+                x: bitmapPoint.x - CGFloat(window.minX),
+                y: bitmapPoint.y - CGFloat(window.minY)
+            )
+            guard let localMask = TouchupEngine.spotMask(
+                samples: localSamples,
+                width: window.width,
+                height: window.height,
+                bitmapPoint: localPoint,
+                radius: radius
+            ) else { return nil }
+            let localPixels = TouchupEngine.repair(
+                samples: localSamples,
+                mask: localMask,
+                width: window.width,
+                height: window.height,
+                scratch: false
+            )
+            mask = pasteMask(localMask, width: width, height: height, window: window)
+            pixels = pastePixels(localPixels, into: samples, width: width, window: window)
         }
-        return built(mask: mask, samples: samples, width: width, height: height, modelID: InpaintModel.dust)
+        let png = TouchupEngine.maskPNG(mask, width: width, height: height)
+        guard !png.isEmpty else { return nil }
+        return TouchupBuilt(
+            operation: InpaintOp(id: UUID(), maskPNG: png, modelID: InpaintModel.dust, featherPx: 2),
+            pixels: pixels
+        )
+    }
+
+    /// Donor search reaches 30 px, and the blurs add a few more. The outer ring of the click is included too.
+    private struct SpotWindow {
+        var minX: Int
+        var minY: Int
+        var width: Int
+        var height: Int
+    }
+
+    private static func spotWindow(width: Int, height: Int, bitmapPoint: CGPoint, radius: Int) -> SpotWindow {
+        let radius = max(1, radius)
+        let margin = 40 + max(6, radius / 5)
+        let centerX = Int(bitmapPoint.x.rounded(.down))
+        let centerY = Int(bitmapPoint.y.rounded(.down))
+        let minX = max(0, centerX - radius - margin)
+        let maxX = min(width - 1, centerX + radius + margin)
+        let minY = max(0, centerY - radius - margin)
+        let maxY = min(height - 1, centerY + radius + margin)
+        return SpotWindow(minX: minX, minY: minY, width: max(1, maxX - minX + 1), height: max(1, maxY - minY + 1))
+    }
+
+    private static func cropSamples(_ samples: [Float], width: Int, window: SpotWindow) -> [Float] {
+        var local = [Float](repeating: 0, count: window.width * window.height * 4)
+        samples.withUnsafeBufferPointer { source in
+            local.withUnsafeMutableBufferPointer { destination in
+                guard let sourceBase = source.baseAddress, let destinationBase = destination.baseAddress else { return }
+                let rowCount = window.width * 4
+                for row in 0..<window.height {
+                    let src = ((window.minY + row) * width + window.minX) * 4
+                    destinationBase.advanced(by: row * rowCount).update(from: sourceBase.advanced(by: src), count: rowCount)
+                }
+            }
+        }
+        return local
+    }
+
+    private static func pasteMask(_ local: [UInt8], width: Int, height: Int, window: SpotWindow) -> [UInt8] {
+        var mask = [UInt8](repeating: 0, count: width * height)
+        for row in 0..<window.height {
+            let src = row * window.width
+            let dst = (window.minY + row) * width + window.minX
+            mask.replaceSubrange(dst..<(dst + window.width), with: local[src..<(src + window.width)])
+        }
+        return mask
+    }
+
+    private static func pastePixels(_ local: [Float], into samples: [Float], width: Int, window: SpotWindow) -> [Float] {
+        var pixels = samples
+        let rowCount = window.width * 4
+        local.withUnsafeBufferPointer { source in
+            pixels.withUnsafeMutableBufferPointer { destination in
+                guard let sourceBase = source.baseAddress, let destinationBase = destination.baseAddress else { return }
+                for row in 0..<window.height {
+                    let dst = ((window.minY + row) * width + window.minX) * 4
+                    destinationBase.advanced(by: dst).update(
+                        from: sourceBase.advanced(by: row * rowCount),
+                        count: rowCount
+                    )
+                }
+            }
+        }
+        return pixels
     }
 
     static func markedScratch(
@@ -238,13 +462,14 @@ nonisolated enum Touchup {
 
     /// Mixes a cached repair back over the photo. Strength 0 returns the photo unchanged.
     /// `chain` identifies the image this mask was built from. It does not include this step's strength.
-    static func apply(base: CIImage, operation: InpaintOp, chain: Int) -> CIImage {
+    static func apply(base: CIImage, operation: InpaintOp, chain: Int, context: CIContext? = nil) -> CIImage {
         let strength = min(1, max(0, operation.strength))
         if strength <= 0.001 { return base }
         let extent = base.extent.integral
         let width = Int(extent.width)
         let height = Int(extent.height)
         guard width > 1, height > 1 else { return base }
+        let renderContext = context ?? Touchup.context
         let key = TouchupCache.Key(
             chain: chain,
             width: width,
@@ -255,7 +480,7 @@ nonisolated enum Touchup {
         let repaired: CIImage
         if let cached = TouchupCache.shared.image(for: key) {
             repaired = cached
-        } else if let raster = read(base),
+        } else if let raster = read(base, context: renderContext),
                   let mask = TouchupEngine.bottomMask(operation.maskPNG, width: raster.width, height: raster.height) {
             let pixels = TouchupEngine.repair(
                 samples: raster.samples,
@@ -518,7 +743,7 @@ private nonisolated enum TouchupEngine {
         guard raster.count >= 2 else { return nil }
         var mask = [UInt8](repeating: 0, count: width * height)
         var covered: Float = 0
-        let spacing = max(1, radius / 2)
+        let spacing = max(1, radius / 4)
         for index in 1..<raster.count {
             let start = raster[index - 1]
             let end = raster[index]
@@ -569,7 +794,6 @@ private nonisolated enum TouchupEngine {
                 fillScratch(
                     filled: &filled,
                     samples: samples,
-                    high: high,
                     hole: hole,
                     blob: blob,
                     width: width,
@@ -665,7 +889,6 @@ private nonisolated enum TouchupEngine {
     private static func fillScratch(
         filled: inout [Float],
         samples: [Float],
-        high: [Float],
         hole: [UInt8],
         blob: Blob,
         width: Int,
@@ -673,65 +896,36 @@ private nonisolated enum TouchupEngine {
     ) {
         let boundary = boundaryPixels(hole, blob: blob, width: width, height: height)
         let range = channelRange(samples, indexes: boundary.isEmpty ? blob.pixels : boundary)
-        let span = max(blob.maxX - blob.minX, blob.maxY - blob.minY) + 8
-        let limit = min(512, max(24, span))
-        let directions: [(Float, Float)] = [
-            (1, 0),
-            (0.70710678, 0.70710678),
-            (0, 1),
-            (-0.70710678, 0.70710678),
-        ]
+        let field = outsideField(hole: hole, blob: blob, width: width, height: height)
         for index in blob.pixels {
             let x = index % width
             let y = index / width
-            var bestScore = Int.max
-            var positive: (index: Int, distance: Float)?
-            var negative: (index: Int, distance: Float)?
-            var alongX: Float = 1
-            var alongY: Float = 0
-            for direction in directions {
-                let forward = walk(
-                    hole, width: width, height: height, x: x, y: y,
-                    dx: direction.0, dy: direction.1, limit: limit
+            guard let near = field.seed(x: x, y: y) else { continue }
+            let vx = Float(x - near.x)
+            let vy = Float(y - near.y)
+            let nearDist = hypot(vx, vy)
+            guard nearDist >= 0.5 else { continue }
+            let ux = vx / nearDist
+            let uy = vy / nearDist
+            let nearColor = sideColor(
+                samples, hole: hole, width: width, height: height,
+                pixelX: x, pixelY: y, exitX: near.x, exitY: near.y
+            )
+            var red = nearColor.0
+            var green = nearColor.1
+            var blue = nearColor.2
+            if let far = oppositeExit(
+                hole: hole, width: width, height: height,
+                x: x, y: y, ux: ux, uy: uy, nearDist: nearDist
+            ) {
+                let farColor = sideColor(
+                    samples, hole: hole, width: width, height: height,
+                    pixelX: x, pixelY: y, exitX: far.x, exitY: far.y
                 )
-                let backward = walk(
-                    hole, width: width, height: height, x: x, y: y,
-                    dx: -direction.0, dy: -direction.1, limit: limit
-                )
-                let missing = (forward == nil ? 1 : 0) + (backward == nil ? 1 : 0)
-                let distance = Int((forward?.distance ?? Float(limit)) + (backward?.distance ?? Float(limit)))
-                let score = missing * 10_000 + distance
-                if score < bestScore {
-                    bestScore = score
-                    positive = forward
-                    negative = backward
-                    alongX = -direction.1
-                    alongY = direction.0
-                }
-            }
-            var red: Float = samples[index * 4]
-            var green: Float = samples[index * 4 + 1]
-            var blue: Float = samples[index * 4 + 2]
-            if let positive, let negative {
-                let t = positive.distance / (positive.distance + negative.distance)
-                red = samples[positive.index * 4] * (1 - t) + samples[negative.index * 4] * t
-                green = samples[positive.index * 4 + 1] * (1 - t) + samples[negative.index * 4 + 1] * t
-                blue = samples[positive.index * 4 + 2] * (1 - t) + samples[negative.index * 4 + 2] * t
-                if let grain = grainSample(high, hole: hole, width: width, height: height, index: positive.index, alongX: alongX, alongY: alongY),
-                   let other = grainSample(high, hole: hole, width: width, height: height, index: negative.index, alongX: alongX, alongY: alongY) {
-                    red += (grain.0 + other.0) * 0.5
-                    green += (grain.1 + other.1) * 0.5
-                    blue += (grain.2 + other.2) * 0.5
-                }
-            } else if let side = positive ?? negative {
-                red = samples[side.index * 4]
-                green = samples[side.index * 4 + 1]
-                blue = samples[side.index * 4 + 2]
-                if let grain = grainSample(high, hole: hole, width: width, height: height, index: side.index, alongX: alongX, alongY: alongY) {
-                    red += grain.0
-                    green += grain.1
-                    blue += grain.2
-                }
+                let t = nearDist / (nearDist + far.distance)
+                red = nearColor.0 * (1 - t) + farColor.0 * t
+                green = nearColor.1 * (1 - t) + farColor.1 * t
+                blue = nearColor.2 * (1 - t) + farColor.2 * t
             }
             let offset = index * 4
             filled[offset] = min(max(red, range.redLo), range.redHi)
@@ -739,6 +933,162 @@ private nonisolated enum TouchupEngine {
             filled[offset + 2] = min(max(blue, range.blueLo), range.blueHi)
             filled[offset + 3] = 1
         }
+    }
+
+    /// Nearest outside pixel for each pixel of the stroke. The search stays in the stroke's box.
+    private struct OutsideField {
+        var x0: Int
+        var y0: Int
+        var width: Int
+        var height: Int
+        var originX: [Int]
+        var originY: [Int]
+
+        func seed(x: Int, y: Int) -> (x: Int, y: Int)? {
+            let localX = x - x0
+            let localY = y - y0
+            guard localX >= 0, localY >= 0, localX < width, localY < height else { return nil }
+            let index = localY * width + localX
+            let seedX = originX[index]
+            guard seedX >= 0 else { return nil }
+            return (seedX, originY[index])
+        }
+    }
+
+    private static func outsideField(hole: [UInt8], blob: Blob, width: Int, height: Int) -> OutsideField {
+        let x0 = max(0, blob.minX - 2)
+        let y0 = max(0, blob.minY - 2)
+        let x1 = min(width - 1, blob.maxX + 2)
+        let y1 = min(height - 1, blob.maxY + 2)
+        let boxWidth = x1 - x0 + 1
+        let boxHeight = y1 - y0 + 1
+        var originX = [Int](repeating: -1, count: boxWidth * boxHeight)
+        var originY = [Int](repeating: -1, count: boxWidth * boxHeight)
+        var queue: [Int] = []
+        for y in y0...y1 {
+            for x in x0...x1 {
+                let global = y * width + x
+                guard hole[global] == 0 else { continue }
+                let touches = (x > 0 && hole[global - 1] != 0)
+                    || (x + 1 < width && hole[global + 1] != 0)
+                    || (y > 0 && hole[global - width] != 0)
+                    || (y + 1 < height && hole[global + width] != 0)
+                guard touches else { continue }
+                let local = (y - y0) * boxWidth + (x - x0)
+                originX[local] = x
+                originY[local] = y
+                queue.append(local)
+            }
+        }
+        var head = 0
+        while head < queue.count {
+            let current = queue[head]
+            head += 1
+            let localX = current % boxWidth
+            let localY = current / boxWidth
+            let seedX = originX[current]
+            let seedY = originY[current]
+            let x = x0 + localX
+            let y = y0 + localY
+            let neighbors = [(x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)]
+            for (nx, ny) in neighbors {
+                guard nx >= x0, ny >= y0, nx <= x1, ny <= y1 else { continue }
+                guard hole[ny * width + nx] != 0 else { continue }
+                let local = (ny - y0) * boxWidth + (nx - x0)
+                guard originX[local] < 0 else { continue }
+                originX[local] = seedX
+                originY[local] = seedY
+                queue.append(local)
+            }
+        }
+        return OutsideField(x0: x0, y0: y0, width: boxWidth, height: boxHeight, originX: originX, originY: originY)
+    }
+
+    /// The other side of the stroke. Nil at a round end, where the far side is a long walk down the stroke.
+    private static func oppositeExit(
+        hole: [UInt8],
+        width: Int,
+        height: Int,
+        x: Int,
+        y: Int,
+        ux: Float,
+        uy: Float,
+        nearDist: Float
+    ) -> (x: Int, y: Int, distance: Float)? {
+        let limit = min(512, max(24, Int(nearDist * 4) + 8))
+        for step in 1...limit {
+            let nx = Int((Float(x) + ux * Float(step)).rounded())
+            let ny = Int((Float(y) + uy * Float(step)).rounded())
+            guard nx >= 0, ny >= 0, nx < width, ny < height else { return nil }
+            guard hole[ny * width + nx] == 0 else { continue }
+            let distance = hypot(Float(nx - x), Float(ny - y))
+            guard distance <= nearDist * 3 + 8 else { return nil }
+            return (nx, ny, distance)
+        }
+        return nil
+    }
+
+    /// Color continued from outside the stroke, across from this pixel. A pixel on the lip is not smeared inward.
+    private static func sideColor(
+        _ samples: [Float],
+        hole: [UInt8],
+        width: Int,
+        height: Int,
+        pixelX: Int,
+        pixelY: Int,
+        exitX: Int,
+        exitY: Int
+    ) -> (Float, Float, Float) {
+        let dx = Float(exitX - pixelX)
+        let dy = Float(exitY - pixelY)
+        let len = max(0.5, hypot(dx, dy))
+        let tx = -dy / len
+        let ty = dx / len
+        let ux = dx / len
+        let uy = dy / len
+        for extra in 0...2 {
+            let mx = Int((Float(exitX) + ux * (len + Float(extra))).rounded())
+            let my = Int((Float(exitY) + uy * (len + Float(extra))).rounded())
+            if let color = outsideAverage(
+                samples, hole: hole, width: width, height: height,
+                x: mx, y: my, tx: tx, ty: ty
+            ) {
+                return color
+            }
+        }
+        let offset = (exitY * width + exitX) * 4
+        return (samples[offset], samples[offset + 1], samples[offset + 2])
+    }
+
+    private static func outsideAverage(
+        _ samples: [Float],
+        hole: [UInt8],
+        width: Int,
+        height: Int,
+        x: Int,
+        y: Int,
+        tx: Float,
+        ty: Float
+    ) -> (Float, Float, Float)? {
+        guard x >= 0, y >= 0, x < width, y < height, hole[y * width + x] == 0 else { return nil }
+        var red: Float = 0
+        var green: Float = 0
+        var blue: Float = 0
+        var count: Float = 0
+        for step in -1...1 {
+            let sx = Int((Float(x) + tx * Float(step)).rounded())
+            let sy = Int((Float(y) + ty * Float(step)).rounded())
+            guard sx >= 0, sy >= 0, sx < width, sy < height else { continue }
+            let index = sy * width + sx
+            guard hole[index] == 0 else { continue }
+            let offset = index * 4
+            red += samples[offset]
+            green += samples[offset + 1]
+            blue += samples[offset + 2]
+            count += 1
+        }
+        guard count > 0 else { return nil }
+        return (red / count, green / count, blue / count)
     }
 
     private static func snappedSpeck(
@@ -1291,50 +1641,6 @@ private nonisolated enum TouchupEngine {
         range.blueLo -= 0.06
         range.blueHi += 0.06
         return range
-    }
-
-    private static func walk(
-        _ hole: [UInt8],
-        width: Int,
-        height: Int,
-        x: Int,
-        y: Int,
-        dx: Float,
-        dy: Float,
-        limit: Int
-    ) -> (index: Int, distance: Float)? {
-        let limit = max(1, limit)
-        for step in 1...limit {
-            let nx = Int((Float(x) + dx * Float(step)).rounded())
-            let ny = Int((Float(y) + dy * Float(step)).rounded())
-            guard nx >= 0, ny >= 0, nx < width, ny < height else { return nil }
-            let index = ny * width + nx
-            if hole[index] == 0 { return (index, Float(step)) }
-        }
-        return nil
-    }
-
-    private static func grainSample(
-        _ high: [Float],
-        hole: [UInt8],
-        width: Int,
-        height: Int,
-        index: Int,
-        alongX: Float,
-        alongY: Float
-    ) -> (Float, Float, Float)? {
-        let x = index % width
-        let y = index / width
-        for distance in [7, 11, 4, 0] {
-            let nx = Int((Float(x) + alongX * Float(distance)).rounded())
-            let ny = Int((Float(y) + alongY * Float(distance)).rounded())
-            guard nx >= 0, ny >= 0, nx < width, ny < height else { continue }
-            let sample = ny * width + nx
-            if hole[sample] != 0 { continue }
-            let offset = sample * 4
-            return (high[offset], high[offset + 1], high[offset + 2])
-        }
-        return nil
     }
 
     private static func stampDisk(mask: inout [UInt8], width: Int, height: Int, x: Int, y: Int, radius: Int) {

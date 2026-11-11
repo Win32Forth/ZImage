@@ -46,7 +46,7 @@ struct InspectorTouchup: View {
             InspectorFieldRow(title: "Size", readout: "\(Int(model.touchupBrushDiameter.rounded())) px") {
                 InspectorSlider(
                     value: model.touchupBrushDiameter,
-                    range: 8...400,
+                    range: 8...200,
                     onChange: { model.touchupBrushDiameter = $0 },
                     onEditingChanged: { _ in },
                     onReset: { model.touchupBrushDiameter = 48 }

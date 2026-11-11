@@ -502,7 +502,7 @@ final class LibraryBrowser {
     var editedJPEG: [String: Data] = [:]
     var selectedEventUID: String?
     var openFile: (URL, String) -> Void
-    /// When set, a video open calls this instead of QuickTime Player.
+    /// Double-click plays the movie here. The QuickTime menu item does not use this.
     var openVideo: ((URL) -> Void)?
     private var scopedRoot: URL?
     private var fetchedThumbs: Set<String> = []
@@ -1479,9 +1479,15 @@ final class LibraryBrowser {
         openInEditor(asset)
     }
 
-    /// A still opens in ZImager. A video opens in QuickTime Player.
+    /// A still opens in the editor. A video plays in the image view when `openVideo` is set.
     func openPrimary(_ asset: LibraryAsset) {
         if isVideo(asset) {
+            guard let url = fileURL(for: asset) else { return }
+            selectedUID = asset.uid
+            if let openVideo {
+                openVideo(url)
+                return
+            }
             openInQuickTime(asset)
             return
         }
@@ -1491,10 +1497,6 @@ final class LibraryBrowser {
     func openInQuickTime(_ asset: LibraryAsset) {
         guard isVideo(asset), let url = fileURL(for: asset) else { return }
         selectedUID = asset.uid
-        if let openVideo {
-            openVideo(url)
-            return
-        }
         guard let app = NSWorkspace.shared.urlForApplication(withBundleIdentifier: LibraryItemMenu.quickTimeBundleID) else { return }
         let configuration = NSWorkspace.OpenConfiguration()
         configuration.activates = true

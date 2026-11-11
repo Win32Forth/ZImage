@@ -1,0 +1,123 @@
+ZImager 1.7.2
+
+ZImager is the photo editor and the library in one app.
+Disk opens folders on this Mac. Server talks to a helper on a Synology.
+
+This disk image contains ZImager.app and this README. It does not
+include the helper.
+
+What 1.7.2 changes
+------------------
+A double-click on a video in Disk folder view or the Server Photos
+grid plays it on the Image tab. The system play, pause, and scrub bar
+sit on the picture. Tone, the spectrum, Temperature, Tint, and Auto
+grade the frames while they play. Export writes a new MPEG-4 movie
+with those adjustments. The original video is not changed. Open with
+QuickTime Player stays on the right-click menu. Geometry, Spot,
+Scratch, and the eyedropper stay off while a video is open.
+
+Horizon levels a wide or tall photo without tilting past the line you
+clicked. Scratch repair continues the picture from both sides of the
+stroke. The Spot and Scratch Size slider stops at 200 preview pixels.
+The default stays 48.
+
+The helper program is unchanged. You do not need to replace it for
+this app update.
+
+This build is Apple Silicon. It runs on macOS 26. It does not require
+macOS 27.
+
+1.7.1, 1.7.0, and 1.6.0 are still in this app: stacked spot repairs,
+ZImager as the only app, Folder View and Edit View, arrow keys between
+photos, folder Export and Print, Copy settings and Paste settings,
+Tone Auto and Reset, Spectrum, Remove from library into
+Photos/_Removed, Set date into the date folder, and Clean folder. The
+helper token and saved edit bookmarks stay where they were.
+
+Do not use Reorganize, Review, or Duplicates
+---------------------------------------------
+Those three do not work yet. Using them can lose photos.
+Leave Reorganize, Review, and Duplicates alone.
+Do not press Start, Pause, Continue, Find duplicates, or Delete all duplicates.
+
+Install
+-------
+1. Open this disk image.
+2. Drag ZImager.app into Applications.
+3. Follow Approval below once.
+
+Approval
+--------
+ZImager is built by Tom Zimmer on his Mac using Apple's development tools.
+It is not notarized for distribution. macOS asks you to approve it once
+before it will run.
+
+1. Double-click ZImager.app.
+2. macOS says Apple could not verify that ZImager is free of malware.
+   Close that dialog.
+3. Open System Settings → Privacy & Security.
+4. Scroll to Security until you see that ZImager was blocked.
+5. Click Open Anyway.
+6. Confirm Open Anyway again if asked, then enter your password.
+
+After that, double-click ZImager and it will run.
+
+Helper on a Synology
+--------------------
+Skip this if you only use Disk.
+
+Server mode needs zimage-helper running on the NAS. This disk image does
+not include that program. The helper is unchanged in 1.7.2, so an
+already running copy does not need to be replaced. Stop the DSM task
+before you replace the binary. Do not open catalog.db from the Mac.
+
+1. On the Mac, in the ZImage repo:
+
+   cd Helper
+   GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o zimage-helper ./cmd/zimage-helper
+
+2. Copy zimage-helper to the share at:
+
+   PhotoVideoAudio/.zimage/bin/zimage-helper
+
+   Make it executable (mode 0700). Keep it on the data volume. A DSM
+   update can erase /usr/local.
+
+3. Copy Helper/config.example.yaml to PhotoVideoAudio/.zimage/config.yaml.
+   Set library_root_local to the folder DSM sees. On volume 1 that is
+   often:
+
+   /volume1/BackupData/PhotoVideoAudio
+
+   Leave scope_relative as Photos.
+
+4. Before the first catalog.db, on a btrfs volume, turn copy-on-write
+   off for the catalog directory. The helper does not do this:
+
+   mkdir -p /volume1/BackupData/PhotoVideoAudio/.zimage/catalog
+   chattr +C /volume1/BackupData/PhotoVideoAudio/.zimage/catalog
+
+5. In DSM, open Control Panel → Task Scheduler → Create → Triggered Task
+   → User-defined script.
+   Run it as a user who can read and write the shared folder.
+   Do not run it as root.
+   Event: Boot-up.
+   User-defined script:
+
+   export GOMEMLIMIT=160MiB
+   /volume1/BackupData/PhotoVideoAudio/.zimage/bin/zimage-helper -config /volume1/BackupData/PhotoVideoAudio/.zimage/config.yaml
+
+6. Run the task once. A second start exits while .zimage/helper.lock is
+   held. The helper listens on IPv4 port 8742.
+
+7. In ZImager, choose Server, then Pair with Helper. The first start
+   writes PAIRING-TOKEN on the share. ZImager reads it over the mounted
+   share and claims it.
+
+A later DSM update can remove the task while the binary remains. Open
+Task Scheduler and confirm the boot task still runs that command.
+
+The first walk of a large Photos tree takes a long time. The line to the
+right of Server names the task the helper is on. Open the folder you
+want to see. The helper makes that folder's previews before the rest of
+the library.

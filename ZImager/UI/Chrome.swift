@@ -52,6 +52,21 @@ final class EditorModel {
     var pdfPageIndex = PDFImport.defaultPageIndex
     var canvasSize: CGSize = .zero
     private(set) var preview: CGImage?
+    /// A movie is open in the image view, including while its first frame is still loading.
+    private(set) var showsVideo = false
+    /// The player on the canvas. Nil until the file is ready.
+    private(set) var videoPlayback: VideoPlayback?
+    /// Path key of the movie being opened or played.
+    private var videoKey: String?
+    /// The movie file on the canvas. Export reads this and writes a different file.
+    private var videoSourceURL: URL?
+    /// True while a graded movie is being written.
+    private(set) var videoExportBusy = false
+    /// Tone last used for each movie this session. Export can write it into a new file.
+    @ObservationIgnored
+    private var videoGrades: [String: ToneState] = [:]
+    /// Small frame for the Spectrum graph and Auto while a movie is open.
+    private var videoPoster: CIImage?
     private(set) var securityScopedBookmark: Data?
     private(set) var documentURL: URL?
     /// BLAKE3 of the original bytes captured when the photo was opened.
@@ -122,6 +137,14 @@ final class EditorModel {
     /// The picture after the current inpaint list, so the next spot does not rebuild every earlier repair.
     @ObservationIgnored
     private var touchupHead: (token: Int, operations: [InpaintOp], image: CIImage)?
+    /// Preview pixels to repair pixels. Measured when the picture is drawn.
+    /// A click must not ask Core Image for this while a repair is rendering that picture.
+    @ObservationIgnored
+    private var touchupBitmapScaleX: CGFloat = 1
+    @ObservationIgnored
+    private var touchupBitmapScaleY: CGFloat = 1
+    @ObservationIgnored
+    private var touchupBitmapScaleReady = false
     private var dustStrengthOverride: Double?
     private var scratchStrengthOverride: Double?
     private var touchupDragID: UUID?
@@ -258,7 +281,7 @@ final class EditorModel {
 
     func openListedEntry(_ entry: FolderEntry) {
         if entry.isVideo {
-            openInQuickTime(entry)
+            openVideo(at: entry.url)
             return
         }
         if entry.isDirectory {
@@ -302,6 +325,92 @@ final class EditorModel {
     func sizeLabel(for entry: FolderEntry) -> String {
         let bytes = (try? entry.url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize
         return LibraryItemMenu.sizeLabel(bytes: bytes)
+    }
+
+    /// Plays the movie in the image view and grades it with the Tone panel.
+    func openVideo(at url: URL) {
+        fileOpenStarted = true
+        openGeneration += 1
+        let generation = openGeneration
+        showsFolderGrid = false
+        showsPDFPicker = false
+        pdfDocument = nil
+        rememberCurrentEdits()
+        clearDocumentLink()
+        stopVideoPlayback()
+        clearStillForVideo()
+        showsVideo = true
+        openedFileName = url.lastPathComponent
+        canvasMessage = "Opening video…"
+        selectCanvasTool(.zoom)
+        releaseFileScope()
+        if url.startAccessingSecurityScopedResource() {
+            fileScopeURL = url
+        }
+        let key = FolderEntry.cacheKey(for: url)
+        videoKey = key
+        videoSourceURL = url
+        let remembered = videoGrades[key] ?? ToneState.identity
+        if remembered != .identity {
+            draftTone = remembered
+            log.commit(.setTone(remembered, label: "Tone"))
+        }
+        Task {
+            let playback = await VideoPlayback.make(url: url, tone: self.draftTone)
+            guard generation == self.openGeneration else {
+                playback?.stop()
+                return
+            }
+            guard let playback else {
+                self.showsVideo = false
+                self.videoKey = nil
+                self.videoSourceURL = nil
+                self.canvasMessage = "This video could not be opened."
+                return
+            }
+            self.videoPlayback = playback
+            self.videoPoster = playback.poster
+            self.canvasMessage = nil
+            playback.setTone(self.draftTone)
+            self.refreshSpectrumHistogram()
+            playback.play()
+        }
+    }
+
+    /// Drops the player. The tone for this movie stays in memory for the session.
+    private func stopVideoPlayback() {
+        if showsVideo, let videoKey {
+            videoGrades[videoKey] = draftTone
+        }
+        videoPlayback?.stop()
+        videoPlayback = nil
+        videoPoster = nil
+        videoKey = nil
+        videoSourceURL = nil
+        showsVideo = false
+    }
+
+    /// Removes the still so the canvas can show a movie.
+    private func clearStillForVideo() {
+        cancelTouchupQueue()
+        proxy = nil
+        baseCI = nil
+        preview = nil
+        spectrumBins = []
+        previewBanner = nil
+        decodeSupport = nil
+        editBase = nil
+        cropSelection = nil
+        savedCanvas = nil
+        sourceFileURL = nil
+        sourceDigest = nil
+        sourceByteCount = nil
+        sourceUTI = nil
+        securityScopedBookmark = nil
+        pendingOpenURL = nil
+        catalogAssetUID = nil
+        catalogRelPath = nil
+        resetEditsForNewImage()
     }
 
     /// Opens the video in QuickTime Player and leaves the folder grid in place.
@@ -583,12 +692,12 @@ final class EditorModel {
         publishOpenPreview()
     }
 
-    private func publishOpenPreview() {
+    private func publishOpenPreview(folderJPEG: Data? = nil) {
         guard let url = sourceFileURL, let preview else { return }
         let identity = log.state == .identity && log.commands.isEmpty
         if log.state == .identity {
             storeFolderPreview(url, renderedJPEG: nil, identity: true)
-        } else if let jpeg = ZImgRaw.jpegPreview(from: preview, maxLongEdge: FolderPreviewCache.maxLongEdge) {
+        } else if let jpeg = folderJPEG ?? ZImgRaw.jpegPreview(from: preview, maxLongEdge: FolderPreviewCache.maxLongEdge) {
             editedPreviewData[sourceKey(url)] = jpeg
             try? FolderPreviewCache.writeEditedJPEG(jpeg, for: url)
             onEditedFolderPreview?(url, jpeg)
@@ -675,6 +784,7 @@ final class EditorModel {
             rememberCurrentEdits()
             clearDocumentLink()
         }
+        stopVideoPlayback()
         pendingOpenURL = url
         releaseFileScope()
         if url.startAccessingSecurityScopedResource() {
@@ -834,13 +944,26 @@ final class EditorModel {
         syncDraftsFromLog()
         if let saved = image(fromPreviewJPEG: previewJPEG) {
             preview = saved
+            if let shaped = geometryImage() {
+                rememberTouchupBitmapScale(
+                    rasterWidth: shaped.extent.width,
+                    rasterHeight: shaped.extent.height,
+                    preview: saved
+                )
+            }
         } else {
             refreshPreview()
         }
     }
 
     /// Asks for a format, then writes a new file. The original path is refused.
+    /// An open video writes a new movie with the Tone adjustments instead of a still.
     func showExportPanel() {
+        guard !videoExportBusy else { return }
+        if showsVideo {
+            exportOpenVideo()
+            return
+        }
         discardFolderExportRequest()
         guard baseCI != nil else {
             presentAlert("Open a photo before exporting.")
@@ -950,6 +1073,76 @@ final class EditorModel {
     func discardFolderExportRequest() {
         folderExportSelection = false
         folderExportFiles = []
+    }
+
+    /// Asks where to write the open movie. The Tone on screen is baked into the new file.
+    private func exportOpenVideo() {
+        guard videoPlayback != nil, let source = videoSourceURL else {
+            presentAlert("This video is still opening.")
+            return
+        }
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.mpeg4Movie]
+        panel.canCreateDirectories = true
+        panel.isExtensionHidden = false
+        panel.directoryURL = source.deletingLastPathComponent()
+        let stem = (openedFileName as NSString?)?.deletingPathExtension ?? "Video"
+        panel.nameFieldStringValue = stem + ".mp4"
+        panel.prompt = "Export"
+        panel.message = "The Tone adjustments are written into this movie. The original video is not changed."
+        DispatchQueue.main.async {
+            guard panel.runModal() == .OK, let url = panel.url else { return }
+            self.writeVideoExport(from: source, to: url)
+        }
+    }
+
+    /// Writes the open movie to a new path. Playback pauses until the file is finished.
+    private func writeVideoExport(from source: URL, to url: URL) {
+        if FolderEntry.cacheKey(for: url) == FolderEntry.cacheKey(for: source) {
+            presentAlert("Export leaves the original file unchanged.")
+            return
+        }
+        let tone = draftTone
+        if let videoKey {
+            videoGrades[videoKey] = tone
+        }
+        let generation = openGeneration
+        let wasPlaying = videoPlayback?.isPlaying ?? false
+        videoPlayback?.pause()
+        videoExportBusy = true
+        previewBanner = "Exporting video…"
+        let meter = VideoExportMeter()
+        let started = url.startAccessingSecurityScopedResource()
+        let poll = Task { @MainActor in
+            while !Task.isCancelled {
+                let fraction = meter.load()
+                if fraction > 0, generation == self.openGeneration, self.showsVideo {
+                    let percent = min(99, Int((fraction * 100).rounded()))
+                    self.previewBanner = "Exporting video… \(percent)%"
+                }
+                try? await Task.sleep(nanoseconds: 400_000_000)
+            }
+        }
+        Task {
+            defer {
+                poll.cancel()
+                if started {
+                    url.stopAccessingSecurityScopedResource()
+                }
+                self.videoExportBusy = false
+                if generation == self.openGeneration, self.showsVideo {
+                    self.previewBanner = nil
+                    if wasPlaying {
+                        self.videoPlayback?.play()
+                    }
+                }
+            }
+            do {
+                try await VideoExporter.write(source: source, tone: tone, to: url, meter: meter)
+            } catch {
+                self.presentAlert(error.localizedDescription)
+            }
+        }
     }
 
     func exportStill(_ request: ExportRequest) {
@@ -1107,6 +1300,7 @@ final class EditorModel {
     }
 
     private func openPDF(at url: URL) {
+        stopVideoPlayback()
         previewBanner = nil
         decodeSupport = nil
         editBase = nil
@@ -1852,6 +2046,10 @@ final class EditorModel {
 
     /// True when the open photograph has an edit Redo can bring back, or a change that has not been released yet.
     var canResetPhoto: Bool {
+        if showsVideo {
+            if log.canUndo { return true }
+            return draftTone != log.state.tone || draftTone != .identity
+        }
         guard proxy != nil, !showsPDFPicker else { return false }
         if log.canUndo { return true }
         if draftTone != log.state.tone || draftGeometry != log.state.geometry { return true }
@@ -1860,7 +2058,7 @@ final class EditorModel {
 
     /// Returns the open photograph to the start. Each edit stays on the redo stack.
     func resetPhoto() {
-        guard proxy != nil, !showsPDFPicker else { return }
+        guard showsVideo || (proxy != nil && !showsPDFPicker) else { return }
         cancelTouchupQueue()
         commitOpenDrafts()
         guard log.canUndo || cropSelection != nil else { return }
@@ -1997,12 +2195,14 @@ final class EditorModel {
     }
 
     func rotateClockwise() {
+        guard proxy != nil else { return }
         replaceGeometry("Rotate clockwise") { geometry in
             geometry.quarterTurns = GeometryPipeline.wrap(geometry.quarterTurns + 1)
         }
     }
 
     func rotateCounterclockwise() {
+        guard proxy != nil else { return }
         replaceGeometry("Rotate counterclockwise") { geometry in
             geometry.quarterTurns = GeometryPipeline.wrap(geometry.quarterTurns - 1)
         }
@@ -2048,17 +2248,23 @@ final class EditorModel {
     func horizonClick(at viewPoint: CGPoint, in viewSize: CGSize) {
         guard let image = preview else { return }
         let pixel = imagePixel(viewPoint, viewSize: viewSize, imageSize: CGSize(width: image.width, height: image.height))
-        let displayed = NormPoint(
+        // The preview is already the cropped picture, in its own pixels.
+        horizonClicks.append(NormPoint(
             x: Double(pixel.x / CGFloat(image.width)),
             y: Double(pixel.y / CGFloat(image.height))
-        )
-        horizonClicks.append(CropRect.sourcePoint(displayed, within: log.state.crop))
+        ))
         guard horizonClicks.count >= 2 else { return }
         let start = horizonClicks[0]
         let end = horizonClicks[1]
         horizonClicks.removeAll()
         endGeometryDrag()
-        draftGeometry = GeometryPipeline.applyingHorizon(from: start, to: end, current: draftGeometry)
+        draftGeometry = GeometryPipeline.applyingHorizon(
+            from: start,
+            to: end,
+            pixelWidth: Double(image.width),
+            pixelHeight: Double(image.height),
+            current: draftGeometry
+        )
         pendingGeometryLabel = "Horizon"
         commitGeometryDraft()
     }
@@ -2168,11 +2374,11 @@ final class EditorModel {
     }
 
     func touchupRasterRadius() -> Int {
-        guard let shaped = geometryImage(), let preview else {
+        guard let preview else {
             return max(1, Int((touchupBrushDiameter / 2).rounded()))
         }
-        let scale = shaped.extent.width / CGFloat(max(preview.width, 1))
-        return max(1, Int((touchupBrushDiameter / 2 * Double(scale)).rounded()))
+        let scale = touchupBitmapScale(for: preview)
+        return max(1, Int((touchupBrushDiameter / 2 * Double(scale.x)).rounded()))
     }
 
     func hasTouchup(_ modelID: String) -> Bool {
@@ -2236,15 +2442,38 @@ final class EditorModel {
     }
 
     private func touchupBitmap(at viewPoint: CGPoint, in viewSize: CGSize) -> CGPoint? {
-        guard let shaped = geometryImage(), let preview else { return nil }
+        guard let preview else { return nil }
         let pixel = imagePixel(
             viewPoint,
             viewSize: viewSize,
             imageSize: CGSize(width: preview.width, height: preview.height)
         )
-        let scaleX = shaped.extent.width / CGFloat(max(preview.width, 1))
-        let scaleY = shaped.extent.height / CGFloat(max(preview.height, 1))
-        return CGPoint(x: pixel.x * scaleX, y: pixel.y * scaleY)
+        let scale = touchupBitmapScale(for: preview)
+        return CGPoint(x: pixel.x * scale.x, y: pixel.y * scale.y)
+    }
+
+    /// The scale from the last picture that was drawn. While a repair is rendering, this does not touch that image.
+    private func touchupBitmapScale(for preview: CGImage) -> (x: CGFloat, y: CGFloat) {
+        if touchupBitmapScaleReady {
+            return (touchupBitmapScaleX, touchupBitmapScaleY)
+        }
+        if touchupBusy {
+            return (1, 1)
+        }
+        guard let shaped = geometryImage() else { return (1, 1) }
+        rememberTouchupBitmapScale(
+            rasterWidth: shaped.extent.width,
+            rasterHeight: shaped.extent.height,
+            preview: preview
+        )
+        return (touchupBitmapScaleX, touchupBitmapScaleY)
+    }
+
+    private func rememberTouchupBitmapScale(rasterWidth: CGFloat, rasterHeight: CGFloat, preview: CGImage) {
+        guard rasterWidth > 0, rasterHeight > 0 else { return }
+        touchupBitmapScaleX = rasterWidth / CGFloat(max(preview.width, 1))
+        touchupBitmapScaleY = rasterHeight / CGFloat(max(preview.height, 1))
+        touchupBitmapScaleReady = true
     }
 
     /// The words under the photograph while spots are still in the list.
@@ -2290,12 +2519,24 @@ final class EditorModel {
         }
         guard !touchupBusy, let job = touchupQueue.running else { return }
         commitOpenDrafts()
-        guard let base = stage3Image(), let raster = Touchup.read(base) else {
+        let imageToken = touchupImageToken()
+        let operations = touchupPreviewOperations()
+        let base: CIImage
+        let prior: [InpaintOp]
+        if let head = touchupHead, head.token == imageToken, head.operations == operations {
+            base = head.image
+            prior = []
+        } else if let shaped = geometryImage() {
+            base = shaped
+            prior = operations
+        } else {
             stopTouchupQueue(restoreBanner: true)
             return
         }
-        let chain = Touchup.chain(imageToken: touchupImageToken(), operations: touchupPreviewOperations())
-        let extent = raster.extent
+        let chain = Touchup.chain(imageToken: imageToken, operations: operations)
+        let tone = draftTone
+        let displaySpaceName = (NSScreen.main?.colorSpace?.cgColorSpace?.name as String?)
+            ?? (CGColorSpace.sRGB as String)
         touchupGeneration += 1
         let generation = touchupGeneration
         touchupBusyGeneration = generation
@@ -2303,35 +2544,59 @@ final class EditorModel {
         touchupSpotsRemaining = touchupQueue.spotsRemaining
         touchupBannerBase = job.banner
         previewBanner = touchupStatusBanner(job.banner)
-        let samples = raster.samples
-        let width = raster.width
-        let height = raster.height
         let work = job.work
         let empty = job.empty
         Task { @MainActor in
-            let built = await Touchup.performOffMain(work, samples: samples, width: width, height: height)
+            let rendered = await Touchup.finishOffMain(
+                image: base,
+                work: work,
+                tone: tone,
+                displaySpaceName: displaySpaceName,
+                priorOperations: prior,
+                priorToken: imageToken
+            )
             guard generation == self.touchupGeneration else { return }
-            if let built {
-                let repaired = Touchup.ciImage(built.pixels, width: width, height: height, extent: extent)
+            if let built = rendered.built, let repaired = rendered.repaired {
                 Touchup.store(
                     chain: chain,
-                    width: width,
-                    height: height,
+                    width: rendered.width,
+                    height: rendered.height,
                     maskPNG: built.operation.maskPNG,
                     modelID: built.operation.modelID,
                     image: repaired
                 )
                 self.log.commit(.addInpaint(built.operation))
-                self.refreshPreview()
-                self.publishOpenPreview()
+                self.touchupHead = (imageToken, self.touchupPreviewOperations(), repaired)
+                if let preview = rendered.preview, self.draftTone == tone {
+                    self.preview = preview
+                    self.rememberTouchupBitmapScale(
+                        rasterWidth: CGFloat(rendered.width),
+                        rasterHeight: CGFloat(rendered.height),
+                        preview: preview
+                    )
+                    self.spectrumBins = rendered.spectrum
+                    self.proxyRenderCount += 1
+                } else {
+                    self.refreshPreview()
+                }
+                self.publishOpenPreview(folderJPEG: rendered.folderJPEG)
             }
             guard generation == self.touchupGeneration else { return }
             let moreWaiting = !self.touchupQueue.waiting.isEmpty
-            if built == nil, !moreWaiting {
+            if rendered.built == nil, !moreWaiting {
                 self.presentAlert(empty)
             }
             guard generation == self.touchupGeneration else { return }
-            self.advanceTouchupQueue()
+            // Let the picture land, and let a click already in the queue join, before the next render starts.
+            if moreWaiting {
+                Task { @MainActor in
+                    await Task.yield()
+                    guard generation == self.touchupGeneration else { return }
+                    self.advanceTouchupQueue()
+                }
+            } else {
+                self.advanceTouchupQueue()
+            }
         }
     }
 
@@ -2409,6 +2674,7 @@ final class EditorModel {
         cancelProvisionalEdits()
         log = HistoryLog()
         cropSelection = nil
+        touchupBitmapScaleReady = false
         syncDraftsFromLog()
     }
 
@@ -2611,7 +2877,7 @@ final class EditorModel {
 
     /// Moves one Spectrum handle. One drag is one history step.
     func setSpectrum(_ handle: SpectrumHandle, to value: Double) {
-        guard proxy != nil, spectrumDragActive else { return }
+        guard (proxy != nil || showsVideo), spectrumDragActive else { return }
         let next = SpectrumLevels.moving(
             handle,
             to: value,
@@ -2624,7 +2890,7 @@ final class EditorModel {
 
     /// Puts one Spectrum handle back. Low returns to black, high to white, and middle to the center.
     func resetSpectrum(_ handle: SpectrumHandle) {
-        guard proxy != nil else { return }
+        guard proxy != nil || showsVideo else { return }
         let next = SpectrumLevels.reset(
             handle,
             low: draftTone.spectrumLow,
@@ -2652,7 +2918,7 @@ final class EditorModel {
     /// One history step named Auto. The six basic sliders come from the photograph before the current tone, so pressing Auto again does not stack.
     func autoAdjustTone() {
         endToneDrag()
-        guard let shaped = stage3Image() else { return }
+        guard let shaped = videoPoster ?? stage3Image() else { return }
         let extent = shaped.extent
         let longSide = max(extent.width, extent.height)
         guard longSide.isFinite, longSide > 1 else { return }
@@ -2726,6 +2992,9 @@ final class EditorModel {
     private func commitToneDraft() {
         guard draftTone != log.state.tone else { return }
         log.commit(.setTone(draftTone, label: pendingToneLabel))
+        if showsVideo, let videoKey {
+            videoGrades[videoKey] = draftTone
+        }
         publishOpenPreview()
     }
 
@@ -2745,13 +3014,13 @@ final class EditorModel {
     /// Geometry, then inpaint. Tone is applied after this.
     /// A new repair at the end of the list is applied on the picture already built for the repairs before it.
     private func stage3Image() -> CIImage? {
-        guard let shaped = geometryImage() else { return nil }
         let token = touchupImageToken()
         let operations = touchupPreviewOperations()
+        if let head = touchupHead, head.token == token, head.operations == operations {
+            return head.image
+        }
+        guard let shaped = geometryImage() else { return nil }
         if let head = touchupHead, head.token == token {
-            if head.operations == operations {
-                return head.image
-            }
             if operations.count > head.operations.count,
                Array(operations.prefix(head.operations.count)) == head.operations {
                 var chain = token
@@ -2781,6 +3050,11 @@ final class EditorModel {
     }
 
     private func refreshPreview() {
+        if showsVideo {
+            videoPlayback?.setTone(draftTone)
+            refreshSpectrumHistogram()
+            return
+        }
         guard let shaped = stage3Image() else {
             preview = nil
             spectrumBins = []
@@ -2796,6 +3070,13 @@ final class EditorModel {
         }
         let screen = NSScreen.main?.colorSpace?.cgColorSpace ?? CGColorSpace(name: CGColorSpace.sRGB)!
         preview = toneContext.createCGImage(toned, from: extent, format: .RGBA8, colorSpace: screen)
+        if let preview {
+            rememberTouchupBitmapScale(
+                rasterWidth: shaped.extent.width,
+                rasterHeight: shaped.extent.height,
+                preview: preview
+            )
+        }
         proxyRenderCount += 1
         refreshSpectrumHistogram()
     }
@@ -2803,9 +3084,16 @@ final class EditorModel {
     /// Luminance of the photograph before the Spectrum handles, so the graph stays put while a handle moves.
     private func refreshSpectrumHistogram() {
         guard !spectrumDragActive else { return }
-        guard let shaped = stage3Image() else {
+        guard let shaped = videoPoster ?? stage3Image() else {
             spectrumBins = []
             return
+        }
+        if let preview {
+            rememberTouchupBitmapScale(
+                rasterWidth: shaped.extent.width,
+                rasterHeight: shaped.extent.height,
+                preview: preview
+            )
         }
         let extent = shaped.extent
         let longSide = max(extent.width, extent.height)
@@ -2904,6 +3192,10 @@ struct Chrome: View {
         .onAppear {
             browser.openFile = { url, _ in
                 model.openSecurityScopedFile(at: url, switchToImageTab: false)
+                UserDefaults.standard.set(false, forKey: "ZImager.serverShowsFolder")
+            }
+            browser.openVideo = { url in
+                model.openVideo(at: url)
                 UserDefaults.standard.set(false, forKey: "ZImager.serverShowsFolder")
             }
             model.onEditedFolderPreview = { url, jpeg in
@@ -3341,7 +3633,9 @@ struct Chrome: View {
                     )
                 } else if showsImage {
                     VStack(spacing: 0) {
-                        editorBar
+                        if !model.showsVideo {
+                            editorBar
+                        }
                         canvas
                     }
                 }
@@ -3382,7 +3676,10 @@ struct Chrome: View {
                 .disabled(!model.canCrop)
             Button("Export") { model.showExportPanel() }
                 .fixedSize(horizontal: true, vertical: false)
-                .help("Writes a new file. The original photo is not changed.")
+                .disabled(model.videoExportBusy || (model.showsVideo && model.videoPlayback == nil))
+                .help(model.showsVideo
+                    ? "Writes a new movie with the Tone adjustments. The original video is not changed."
+                    : "Writes a new file. The original photo is not changed.")
             Button("Print") { model.printOpenPhoto() }
                 .fixedSize(horizontal: true, vertical: false)
                 .disabled(model.proxy == nil || model.showsPDFPicker || model.folderRotateBusy)
@@ -3456,7 +3753,9 @@ struct Chrome: View {
                     )
                 } else if !model.showsFolderGrid {
                     VStack(spacing: 0) {
-                        editorBar
+                        if !model.showsVideo {
+                            editorBar
+                        }
                         canvas
                     }
                 }

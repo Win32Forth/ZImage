@@ -163,6 +163,11 @@ struct LibraryGrid: View {
         }
         .contextMenu {
             if browser.isVideo(asset) {
+                Button("Play") {
+                    browser.selectedUID = asset.uid
+                    browser.openPrimary(asset)
+                }
+                .disabled(browser.fileURL(for: asset) == nil)
                 Button(LibraryItemMenu.openWithQuickTime) {
                     browser.selectedUID = asset.uid
                     browser.openInQuickTime(asset)

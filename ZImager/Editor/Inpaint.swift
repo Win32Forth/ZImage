@@ -79,12 +79,17 @@ nonisolated enum InpaintPipeline {
 
     /// Interactive fill. A missing model uses the stub. The stored command is still the mask, not the pixels.
     /// `imageToken` is the geometry and file under the masks. Tone is applied later and is not part of it.
-    static func applyInteractive(base: CIImage, operations: [InpaintOp], imageToken: Int = 0) -> CIImage {
+    static func applyInteractive(
+        base: CIImage,
+        operations: [InpaintOp],
+        imageToken: Int = 0,
+        context: CIContext? = nil
+    ) -> CIImage {
         var image = base
         var chain = imageToken
         for operation in operations where !operation.maskPNG.isEmpty {
             if InpaintModel.isTouchup(operation.modelID) {
-                image = Touchup.apply(base: image, operation: operation, chain: chain)
+                image = Touchup.apply(base: image, operation: operation, chain: chain, context: context)
             } else {
                 image = StubInpainter.composite(base: image, maskPNG: operation.maskPNG, featherPx: operation.featherPx)
             }

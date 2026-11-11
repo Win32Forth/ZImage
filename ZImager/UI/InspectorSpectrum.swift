@@ -77,7 +77,7 @@ private struct SpectrumWell: View {
     private func drag(width: CGFloat, axisY: CGFloat) -> some Gesture {
         DragGesture(minimumDistance: 0)
             .onChanged { value in
-                guard model.proxy != nil, width > 1 else { return }
+                guard (model.proxy != nil || model.showsVideo), width > 1 else { return }
                 let handle: SpectrumHandle
                 let origin: Double
                 if let dragHandle, !suppressDrag {

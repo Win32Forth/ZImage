@@ -72,6 +72,7 @@ struct InspectorGeometry: View {
                         model.nudgeGeometry("k2") { $0.lens.k2 = value }
                     }
                 }
+                .disabled(model.showsVideo)
             }
         }
         .padding(EdgeInsets(top: InspectorMetrics.panelTopPadding, leading: 16, bottom: InspectorMetrics.panelBottomPadding, trailing: 16))

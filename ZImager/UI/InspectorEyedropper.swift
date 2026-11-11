@@ -31,6 +31,7 @@ struct InspectorEyedropper: View {
                     .accessibilityIdentifier(EyedropperCopy.tool)
                     .accessibilityAddTraits(model.canvasTool == .eyedropper ? .isSelected : [])
                     .help(EyedropperCopy.toolHelp)
+                    .disabled(model.showsVideo)
                     }
                     if model.eyedropperMode == .skin {
                         Picker(EyedropperCopy.presetMenu, selection: $model.skinPresetID) {

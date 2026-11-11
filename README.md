@@ -1,6 +1,6 @@
 # ZImage
 
-ZImager 1.7.1 is the app. It is one window. Disk is the editor. Server is the library. The separate ZImage editor and ZImage Library are no longer in this project.
+ZImager 1.7.2 is the app. It is one window. Disk is the editor. Server is the library. The separate ZImage editor and ZImage Library are no longer in this project.
 
 `DESIGN.md` is the plan. `STATUS.md` is the iteration log, newest first.
 
@@ -9,6 +9,14 @@ ZImager 1.7.1 is the app. It is one window. Disk is the editor. Server is the li
 Reorganize, Review, and Duplicates do not work yet. Using them can lose photos. Leave those controls alone. Do not press Start, Pause, Continue, Find duplicates, or Delete all duplicates.
 
 Disk, and Server browsing of a folder, are the parts to use. Rotate, paste, export, print, and the image adjustments save the photo and rebuild its preview.
+
+## What 1.7.2 changes
+
+A double-click on a video in Disk folder view or the Server Photos grid plays it on the Image tab. The system play, pause, and scrub bar sit on the picture. Tone, the spectrum, Temperature, Tint, and Auto grade the frames while they play. Export writes a new MPEG-4 movie with those adjustments. The original video is not changed. Open with QuickTime Player stays on the right-click menu. Geometry, Spot, Scratch, and the eyedropper stay off while a video is open.
+
+Horizon levels a wide or tall photo without tilting past the line you clicked. Scratch repair continues the picture from both sides of the stroke. The Spot and Scratch Size slider stops at 200 preview pixels. The default stays 48.
+
+The helper is unchanged. 1.7.1 and 1.7.0 behavior below is still in this app. This build is Apple Silicon and runs on macOS 26.
 
 ## What 1.7.1 changes
 
@@ -38,7 +46,7 @@ Clean folder is in the Server three-bar menu. It removes catalog records in the 
 
 ## Install ZImager
 
-The disk image is `Releases/ZImager-1.7.1-macOS.dmg`. It contains `ZImager.app` and `README.txt`.
+The disk image is `Releases/ZImager-1.7.2-macOS.dmg`. It contains `ZImager.app` and `README.txt`.
 
 1. Open the disk image.
 2. Drag **ZImager.app** into Applications.

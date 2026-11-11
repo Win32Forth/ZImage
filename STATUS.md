@@ -14,6 +14,60 @@ Each entry uses this shape:
 - Scope: design section or PR name
 - Notes: facts, decisions, and the next step
 
+## 2026-11-10 — ZImager 1.7.2
+
+- Status: done
+- Scope: ZImager 1.7.2. Video playback and graded export. Horizon, scratch fill, and the Spot size slider. The helper is unchanged.
+- Notes: Marketing version 1.7.2 is on the ZImager target. The test target stays 1.0. `CURRENT_PROJECT_VERSION` stays 1. A double-click plays a video in the image view. Tone grades the frames, and Export writes a new MPEG-4. The original video is not changed. Horizon uses the pixels on screen. A scratch stroke fills from both sides. The Size slider stops at 200 preview pixels. Release builds arm64 only. The deployment target stays macOS 26.0. The keychain group and edit bookmarks are unchanged. Reorganize, Review, and Duplicates still do not work and can lose photos. Leave them alone. The disk image is `Releases/ZImager-1.7.2-macOS.dmg` and it does not include the helper. Stop the DSM task before replacing the helper. Do not open `catalog.db` from the Mac.
+
+## 2026-11-10 — Export writes a graded movie
+
+- Status: done
+- Scope: ZImager Export. The helper is unchanged.
+- Notes: Export on an open video writes a new MPEG-4 movie with the Tone adjustments on screen. The original video is not changed. A line on the picture shows how far the export has gotten. Geometry, Spot, Scratch, and the eyedropper stay off. The helper was not changed.
+
+## 2026-11-10 — A video plays in the image view
+
+- Status: done
+- Scope: ZImager image view. The helper is unchanged.
+- Notes: A double-click on a video in Disk folder view or the Server Photos grid plays it on the Image tab. The system play, pause, and scrub bar sit on the picture. Tone, the spectrum, Temperature, Tint, and Auto grade the frames while they play. That grade stays in memory for the session and is not written into the movie, a `.zimg`, or the folder JPEG. Opening the same video again in this session restores that grade. Geometry, Spot, Scratch, and the eyedropper stay off. The right-click menu still has Open with QuickTime Player, and Play opens the in-app player. The helper was not changed.
+
+## 2026-11-10 — Horizon uses the pixels on screen
+
+- Status: done
+- Scope: ZImager Geometry. Horizon. The helper is unchanged.
+- Notes: Two clicks were measured in a unit square. On a wide photo the vertical run was too large, so the straighten went past level. The clicks are still normalized, then scaled by the width and height of the picture on screen before `atan2`. The measured tilt is still written back, and the filter sign is unchanged. The helper was not changed.
+
+## 2026-11-10 — Spot and Scratch size stops at 200
+
+- Status: done
+- Scope: ZImager Touchup size slider. The helper is unchanged.
+- Notes: The Size slider ran from 8 to 400 preview pixels, so the smaller diameters were packed into the left half of the track. The maximum is now 200. The default stays 48, and a double-click still restores 48. The helper was not changed.
+
+## 2026-11-10 — Release archive builds arm64
+
+- Status: done
+- Scope: ZImager archive. The helper is unchanged.
+- Notes: Archive was compiling x86_64 as well as arm64. The macOS 27 SDK marks `Float16` unavailable for x86_64, so Geometry and Tone failed, and the vendored libjxl binaries are arm64 only. Debug already builds the active architecture, which is arm64 on this Mac. Release now sets `ARCHS` to arm64 and excludes x86_64. The helper was not changed.
+
+## 2026-11-10 — Second spot click stays live
+
+- Status: done
+- Scope: ZImager Touchup. Manual Spot. The helper is unchanged.
+- Notes: The second Spot click was asking Core Image for the size of the photograph the first repair was already rendering, so the pointer waited for that render. A click now uses the size measured when the picture was drawn. The next repair starts on the following turn of the run loop. When the saved picture does not already include earlier repairs, those repairs are applied on the repair queue. The helper was not changed.
+
+## 2026-11-10 — Scratch fill follows both sides
+
+- Status: done
+- Scope: ZImager Touchup. Scratch stroke. The helper is unchanged.
+- Notes: A scratch stroke was blending the two edge pixels straight across the brush and stamping one grain sample down that column. That painted lines across the repair. Each pixel now continues the picture from outside both sides of the stroke, mirrored across the edge, and mixes those by how far it sits from each side. A round end, where the other side is a long walk down the stroke, copies only the near side. Disks along the stroke are spaced at about a quarter of the radius. The helper was not changed.
+
+## 2026-11-10 — Spot clicks stay live
+
+- Status: done
+- Scope: ZImager Touchup. Manual Spot. The helper is unchanged.
+- Notes: A spot click was freezing the pointer because the working-image render and the on-screen picture were built on the main thread. Both now run on a serial queue, and the click returns as soon as the repair is added to the list. Further clicks join that list while one is running. A Spot repair reads a window around the circle, including the 30-pixel donor search and the small blurs, and copies that window back. Dust, Scratches, and Scratch strokes still read the whole frame, on that same queue. The helper was not changed.
+
 ## 2026-11-10 — ZImager 1.7.1
 
 - Status: done

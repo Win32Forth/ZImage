@@ -112,6 +112,33 @@ final class TouchupTests: XCTestCase {
         XCTAssertGreaterThan(spot?.pixels[index(21, 19, width: width, height: height)] ?? 0, 0.25)
     }
 
+    func testScratchContinuesBothSidesWithoutPaintingAColumn() {
+        let width = 120
+        let height = 90
+        var samples = flat(width: width, height: height, value: 0.42)
+        fill(rect: 15..<105, rows: 44..<48, samples: &samples, width: width, height: height, value: 0.05)
+        let spike = index(60, 31, width: width, height: height)
+        samples[spike] = 1
+        samples[spike + 1] = 1
+        samples[spike + 2] = 1
+        let repaired = Touchup.markedScratch(
+            samples: samples,
+            width: width,
+            height: height,
+            from: CGPoint(x: 20, y: 44),
+            to: CGPoint(x: 100, y: 44),
+            radius: 12
+        )
+        XCTAssertGreaterThan(repaired?.pixels[index(60, 44, width: width, height: height)] ?? 0, 0.3)
+        var bright = 0
+        for y in 32..<56 {
+            let value = repaired?.pixels[index(60, y, width: width, height: height)] ?? 0
+            if value > 0.7 { bright += 1 }
+        }
+        XCTAssertLessThan(bright, 3)
+        XCTAssertEqual(repaired?.pixels[index(4, 4, width: width, height: height)] ?? 0, 0.42, accuracy: 0.02)
+    }
+
     func testMarkedScratchBlendsTheWholeBrush() {
         let width = 160
         let height = 100
@@ -127,6 +154,23 @@ final class TouchupTests: XCTestCase {
         )
         XCTAssertGreaterThan(repaired?.pixels[index(80, 50, width: width, height: height)] ?? 0, 0.4)
         XCTAssertEqual(repaired?.pixels[index(4, 4, width: width, height: height)] ?? 0, 0.62, accuracy: 0.02)
+    }
+
+    func testSpotOnAWideFrameRepairsTheSpeckAndLeavesTheCorner() {
+        let width = 400
+        let height = 300
+        var samples = flat(width: width, height: height, value: 0.55)
+        fill(rect: 198..<203, rows: 148..<153, samples: &samples, width: width, height: height, value: 0.02)
+        let repaired = Touchup.spot(
+            samples: samples,
+            width: width,
+            height: height,
+            bitmapPoint: CGPoint(x: 200, y: 150),
+            radius: 16
+        )
+        XCTAssertGreaterThan(repaired?.pixels[index(200, 150, width: width, height: height)] ?? 0, 0.25)
+        XCTAssertEqual(repaired?.pixels[index(4, 4, width: width, height: height)] ?? 0, 0.55, accuracy: 0.02)
+        XCTAssertEqual(repaired?.pixels[index(390, 290, width: width, height: height)] ?? 0, 0.55, accuracy: 0.02)
     }
 
     func testLargeSpotNeedsACircleThatReachesTheSurroundings() {

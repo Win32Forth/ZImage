@@ -30,7 +30,11 @@ struct CanvasView: View {
         GeometryReader { geo in
             ZStack {
                 ChromePalette.canvas
-                if let image = model.preview {
+                if let playback = model.videoPlayback {
+                    VideoCanvasPlayer(player: playback.player)
+                        .frame(width: geo.size.width, height: geo.size.height)
+                        .accessibilityLabel(model.openedFileName ?? "Video")
+                } else if let image = model.preview {
                     Image(decorative: image, scale: 1, orientation: .up)
                         .frame(width: CGFloat(image.width), height: CGFloat(image.height))
                         .scaleEffect(model.zoom.magnification, anchor: .center)
@@ -101,8 +105,9 @@ struct CanvasView: View {
                         .background(ChromePalette.panel)
                 }
             }
-            .contentShape(Rectangle())
+            .canvasHitTarget(model.videoPlayback == nil)
             .onContinuousHover { phase in
+                guard model.videoPlayback == nil else { return }
                 switch phase {
                 case .active(let location):
                     pointerInside = true
@@ -135,11 +140,11 @@ struct CanvasView: View {
                 popHandCursor()
                 NSCursor.arrow.set()
             }
-            .cropDrag(model.canvasTool == .select, selectGesture(in: geo.size))
-            .cropDrag(model.canvasTool == .scratchMark && !model.handIsActive, scratchGesture(in: geo.size))
-            .cropDrag(model.handIsActive, panGesture(in: geo.size))
-            .simultaneousGesture(pinchGesture(in: geo.size))
-            .simultaneousGesture(zoomClickGesture(in: geo.size))
+            .cropDrag(model.videoPlayback == nil && model.canvasTool == .select, selectGesture(in: geo.size))
+            .cropDrag(model.videoPlayback == nil && model.canvasTool == .scratchMark && !model.handIsActive, scratchGesture(in: geo.size))
+            .cropDrag(model.videoPlayback == nil && model.handIsActive, panGesture(in: geo.size))
+            .stillGesture(model.videoPlayback == nil, pinchGesture(in: geo.size))
+            .stillGesture(model.videoPlayback == nil, zoomClickGesture(in: geo.size))
             .preference(key: CanvasSizeKey.self, value: geo.size)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -388,6 +393,24 @@ private extension View {
     func cropDrag(_ enabled: Bool, _ gesture: some Gesture) -> some View {
         if enabled {
             highPriorityGesture(gesture)
+        } else {
+            self
+        }
+    }
+
+    @ViewBuilder
+    func canvasHitTarget(_ enabled: Bool) -> some View {
+        if enabled {
+            contentShape(Rectangle())
+        } else {
+            self
+        }
+    }
+
+    @ViewBuilder
+    func stillGesture(_ enabled: Bool, _ gesture: some Gesture) -> some View {
+        if enabled {
+            simultaneousGesture(gesture)
         } else {
             self
         }

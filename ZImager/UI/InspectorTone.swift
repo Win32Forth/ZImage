@@ -62,7 +62,7 @@ struct InspectorTone: View {
                 accessory: HStack(spacing: 8) {
                     Button("Auto") { model.autoAdjustTone() }
                         .buttonStyle(LibraryPushButtonStyle())
-                        .disabled(model.proxy == nil)
+                        .disabled(model.proxy == nil && !model.showsVideo)
                         .accessibilityIdentifier("Auto")
                         .help("Sets Exposure, Contrast, Highlights, Shadows, Whites, and Blacks from this photograph.")
                     Button("Reset") { model.resetPhoto() }

@@ -817,6 +817,9 @@ struct FolderBrowser: View {
         }
         .contextMenu {
             if entry.isVideo {
+                Button("Play") {
+                    model.openVideo(at: entry.url)
+                }
                 Button(LibraryItemMenu.openWithQuickTime) {
                     model.openInQuickTime(entry)
                 }
@@ -855,9 +858,9 @@ struct FolderBrowser: View {
         .accessibilityElement(children: .combine)
         .accessibilityLabel(entry.name)
         .accessibilityHint(entry.isVideo
-            ? "Double-click opens this video in QuickTime Player. The menu can show it in Finder or open it in a video player."
+            ? "Double-click plays this video in the image view. The menu can open it in QuickTime Player or another player."
             : "Double-click edits this image. The menu can show it in Finder or open it in another application.")
-        .help(entry.isVideo ? "Double-click opens this video in QuickTime Player." : "Double-click edits this image.")
+        .help(entry.isVideo ? "Double-click plays this video in the image view." : "Double-click edits this image.")
         .overlay {
             ControlClickCatcher {
                 model.selectFolderEntry(entry, shift: false, extend: true)

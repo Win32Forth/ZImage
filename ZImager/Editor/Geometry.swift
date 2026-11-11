@@ -92,9 +92,18 @@ nonisolated enum GeometryPipeline {
 
     /// Quarter-turn delta (clockwise positive) and straighten delta, in degrees.
     /// A line steeper than 45° takes one quarter-turn toward upright, then the residual.
-    static func horizonDelta(from start: NormPoint, to end: NormPoint) -> (quarterTurns: Int, straightenDegrees: Double) {
-        let dx = end.x - start.x
-        let dy = end.y - start.y
+    /// The clicks are normalized. `pixelWidth` and `pixelHeight` are the picture on
+    /// screen, so the run is measured in those pixels. Equal sides leave the angle unchanged.
+    static func horizonDelta(
+        from start: NormPoint,
+        to end: NormPoint,
+        pixelWidth: Double = 1,
+        pixelHeight: Double = 1
+    ) -> (quarterTurns: Int, straightenDegrees: Double) {
+        let width = pixelWidth > 0 ? pixelWidth : 1
+        let height = pixelHeight > 0 ? pixelHeight : 1
+        let dx = (end.x - start.x) * width
+        let dy = (end.y - start.y) * height
         guard dx != 0 || dy != 0 else { return (0, 0) }
         var tilt = atan2(dy, dx) * 180 / .pi
         while tilt > 90 { tilt -= 180 }
@@ -113,8 +122,14 @@ nonisolated enum GeometryPipeline {
         return (turns, min(45, max(-45, needed)))
     }
 
-    static func applyingHorizon(from start: NormPoint, to end: NormPoint, current: GeometryState) -> GeometryState {
-        let delta = horizonDelta(from: start, to: end)
+    static func applyingHorizon(
+        from start: NormPoint,
+        to end: NormPoint,
+        pixelWidth: Double = 1,
+        pixelHeight: Double = 1,
+        current: GeometryState
+    ) -> GeometryState {
+        let delta = horizonDelta(from: start, to: end, pixelWidth: pixelWidth, pixelHeight: pixelHeight)
         var next = current
         next.quarterTurns = wrap(current.quarterTurns + delta.quarterTurns)
         next.straightenDegrees = min(45, max(-45, current.straightenDegrees + delta.straightenDegrees))
