@@ -25,7 +25,7 @@ extension CornerPin {
     )
 }
 
-/// Stage 2 of the fixed render order: lens, perspective, quarter-turns, straighten, then sharpness.
+/// Stage 2 of the fixed render order: lens, perspective, quarter-turns, straighten, offset, then sharpness.
 /// Identity geometry returns the base image unchanged.
 nonisolated enum GeometryPipeline {
     /// Keystone strength. `1` moves the top-left corner to `(-1/6, -1/6)`.
@@ -53,8 +53,24 @@ nonisolated enum GeometryPipeline {
             image = straighten(image, degrees: geometry.straightenDegrees)
             image = finite(image)
         }
+        image = slide(image, offsetX: geometry.offsetX, offsetY: geometry.offsetY)
         let edge = max(image.extent.width, image.extent.height)
         return sharpen(image, amount: geometry.sharpness, longEdge: edge)
+    }
+
+    /// Slides the photograph inside the frame it already occupies. Positive X moves right.
+    /// Positive Y moves up. The frame stays the same size, and the uncovered part is clear.
+    private static func slide(_ image: CIImage, offsetX: Double, offsetY: Double) -> CIImage {
+        guard abs(offsetX) > 1e-9 || abs(offsetY) > 1e-9 else { return image }
+        let box = image.extent
+        guard !box.isInfinite, box.width >= 1, box.height >= 1 else { return image }
+        let moved = image.transformed(by: CGAffineTransform(
+            translationX: CGFloat(offsetX) * box.width,
+            y: CGFloat(offsetY) * box.height
+        ))
+        let inside = moved.cropped(to: box)
+        let clear = CIImage(color: CIColor(red: 0, green: 0, blue: 0, alpha: 0)).cropped(to: box)
+        return inside.composited(over: clear)
     }
 
     /// Fine unsharp mask. Radius is `1 × longEdge / 2560`. Zero leaves the image.

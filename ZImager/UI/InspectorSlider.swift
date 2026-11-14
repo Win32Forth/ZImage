@@ -66,7 +66,11 @@ struct InspectorSlider: NSViewRepresentable {
         }
 
         @objc func valueChanged(_ sender: NSSlider) {
-            parent.onChange(sender.doubleValue)
+            let next = sender.doubleValue
+            // A view update can deliver the value the slider already shows. That echo
+            // rewrote the draft and started another repair pass.
+            guard abs(next - parent.value) > 0.000_000_1 else { return }
+            parent.onChange(next)
         }
 
         func editingChanged(_ editing: Bool) {

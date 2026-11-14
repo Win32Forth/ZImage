@@ -48,6 +48,8 @@ final class EditorModel {
     private var folderExportFiles: [URL] = []
     private(set) var helperUp = false
     private(set) var catalogAssetUID: String?
+    /// Set by a library-grid open, then consumed when that file's proxy is read.
+    private var openingCatalog: CatalogEditTarget?
     var pdfDocument: PDFDocument?
     var pdfPageIndex = PDFImport.defaultPageIndex
     var canvasSize: CGSize = .zero
@@ -137,6 +139,31 @@ final class EditorModel {
     /// The picture after the current inpaint list, so the next spot does not rebuild every earlier repair.
     @ObservationIgnored
     private var touchupHead: (token: Int, operations: [InpaintOp], image: CIImage)?
+    /// The frame `touchupHead` was painted from. A later token for the same pixels still matches.
+    @ObservationIgnored
+    private var touchupHeadFrame: TouchupFrame?
+    /// Recent on-screen pictures, so Undo of a spot puts the speck back without rebuilding the rest.
+    @ObservationIgnored
+    private var touchupPictures = TouchupPictures()
+    /// A cold replay is already running off the main thread. Further preview requests wait for it.
+    @ObservationIgnored
+    private var touchupReplayInFlight = false
+    @ObservationIgnored
+    private var touchupReplayAgain = false
+    /// The bar across the photograph while saved repairs are being rebuilt. Nil when that work is idle.
+    var touchupMeter: TouchupMeter?
+    /// True while Flatten is rendering the full-size TIFF.
+    var flattenBusy = false
+    @ObservationIgnored
+    private var flattenGeneration = 0
+    /// True while Export is writing a flattened TIFF at full size.
+    var exportBusy = false
+    @ObservationIgnored
+    private var exportGeneration = 0
+    @ObservationIgnored
+    private var touchupMeterSerial = 0
+    @ObservationIgnored
+    private var touchupMeterTicket: Int?
     /// Preview pixels to repair pixels. Measured when the picture is drawn.
     /// A click must not ask Core Image for this while a repair is rendering that picture.
     @ObservationIgnored
@@ -695,7 +722,9 @@ final class EditorModel {
     private func publishOpenPreview(folderJPEG: Data? = nil) {
         guard let url = sourceFileURL, let preview else { return }
         let identity = log.state == .identity && log.commands.isEmpty
-        if log.state == .identity {
+        // Flatten stores the pixels in the TIFF and clears the edit list. The folder cell
+        // keeps that picture. A photo with no flatten file still falls back to the original.
+        if log.state == .identity && !hasFlattenedSidecar {
             storeFolderPreview(url, renderedJPEG: nil, identity: true)
         } else if let jpeg = folderJPEG ?? ZImgRaw.jpegPreview(from: preview, maxLongEdge: FolderPreviewCache.maxLongEdge) {
             editedPreviewData[sourceKey(url)] = jpeg
@@ -766,13 +795,40 @@ final class EditorModel {
         do {
             try await client.putEdits(uid: catalog.uid, body: body)
             helperUp = true
+            dropLocalEditCopy(digest: digest)
         } catch {
             return
         }
     }
 
+    /// The library file is the one that remains. This Mac copy is only the send buffer.
+    private func dropLocalEditCopy(digest: String) {
+        let local = try? LocalEditStore.fileURL(digest: digest)
+        LocalEditStore.discard(digest: digest)
+        guard let path = local?.standardizedFileURL.path else { return }
+        if documentURL?.standardizedFileURL.path == path {
+            documentURL = nil
+            documentBookmark = nil
+        }
+        for key in editsBySource.keys {
+            guard var edits = editsBySource[key],
+                  edits.documentURL?.standardizedFileURL.path == path else { continue }
+            edits.documentURL = nil
+            edits.documentBookmark = nil
+            editsBySource[key] = edits
+        }
+    }
+
+    /// A server-grid open. The asset id is already known, so the flattened TIFF can be the edit base.
+    func openCatalogPhoto(at url: URL, uid: String, relativePath: String) {
+        openingCatalog = CatalogEditTarget(uid: uid, relativePath: relativePath)
+        openSecurityScopedFile(at: url, switchToImageTab: false)
+    }
+
     func openSecurityScopedFile(at url: URL, keepLoadedLog: Bool = false, switchToImageTab: Bool = true) {
         fileOpenStarted = true
+        let catalogHint = openingCatalog
+        openingCatalog = nil
         openGeneration += 1
         let generation = openGeneration
         if switchToImageTab {
@@ -803,7 +859,7 @@ final class EditorModel {
             openPDF(at: url)
             return
         }
-        openProxy(at: url, generation: generation)
+        openProxy(at: url, generation: generation, catalog: catalogHint)
     }
 
     /// The `.zimg` for this photo in ZImage's own folder. The photo folder is not used.
@@ -895,6 +951,7 @@ final class EditorModel {
             case .success(let bytes):
                 do {
                     try await editorHelper.putEdits(uid: uid, body: bytes)
+                    self.dropLocalEditCopy(digest: digest)
                     self.previewBanner = "Edits saved."
                 } catch {
                     self.presentAlert("The edits were not saved.")
@@ -906,7 +963,12 @@ final class EditorModel {
     private func attachCatalogEdits(generation: Int) async {
         guard generation == catalogGeneration else { return }
         await refreshHelper()
-        guard generation == catalogGeneration, helperUp, let editorHelper, let sourceFileURL, let sourceDigest else { return }
+        guard generation == catalogGeneration, helperUp, let editorHelper, let sourceFileURL, let sourceDigest else {
+            guard generation == catalogGeneration else { return }
+            if log.commands.isEmpty { _ = applyOnDiskCatalogLog() }
+            adoptFlattenedBaseIfPresent()
+            return
+        }
         let page: LibraryPage
         do {
             page = try await editorHelper.assets(matching: sourceFileURL.lastPathComponent)
@@ -920,22 +982,78 @@ final class EditorModel {
         }
         catalogAssetUID = asset.uid
         catalogRelPath = rel
-        guard log.commands.isEmpty else { return }
+        guard log.commands.isEmpty else {
+            adoptFlattenedBaseIfPresent()
+            return
+        }
         let saved: Data?
         do {
             saved = try await editorHelper.edits(uid: asset.uid)
         } catch {
-            return
+            saved = sidecarZimg(uid: asset.uid)
         }
-        guard generation == catalogGeneration, let saved, let document = try? ZImgRaw.read(saved) else { return }
-        guard document.base.kind == .catalogRef,
-              document.base.assetUID == asset.uid,
-              document.base.blake3 == sourceDigest else { return }
-        if let count = sourceByteCount, document.base.byteSize != count { return }
+        guard generation == catalogGeneration else { return }
+        if let saved, let document = try? ZImgRaw.read(saved),
+           document.base.kind == .catalogRef,
+           document.base.assetUID == asset.uid,
+           document.base.blake3 == sourceDigest,
+           sourceByteCount == nil || document.base.byteSize == sourceByteCount {
+            if let hint = document.base.relativePathHint, !hint.isEmpty {
+                catalogRelPath = hint
+            }
+            applyCatalogLog(document.history, previewJPEG: document.previewJPEG)
+        }
+        adoptFlattenedBaseIfPresent()
+    }
+
+    /// The `.zimg` on the library share. Used when the helper does not answer.
+    private func sidecarZimg(uid: String) -> Data? {
+        guard let folder = libraryEditsFolder() else { return nil }
+        let url = folder.appendingPathComponent(uid + ".zimg")
+        return try? Data(contentsOf: url)
+    }
+
+    /// The library `.zimg` when this Mac has no edit list of its own. Returns true when that list is now current.
+    private func applyOnDiskCatalogLog() -> Bool {
+        guard let uid = catalogAssetUID, let digest = sourceDigest,
+              let data = sidecarZimg(uid: uid),
+              let document = try? ZImgRaw.read(data),
+              document.base.kind == .catalogRef,
+              document.base.assetUID == uid,
+              document.base.blake3 == digest,
+              sourceByteCount == nil || document.base.byteSize == sourceByteCount else { return false }
         if let hint = document.base.relativePathHint, !hint.isEmpty {
             catalogRelPath = hint
         }
         applyCatalogLog(document.history, previewJPEG: document.previewJPEG)
+        return true
+    }
+
+    private func presentOpenedRepairs(quickLook: CGImage?) {
+        if let quickLook {
+            preview = quickLook
+        }
+        let generation = openGeneration
+        let touchupTicket = touchupGeneration
+        let token = touchupImageToken()
+        let operations = touchupPreviewOperations()
+        if let shaped = geometryImage(), operations.contains(where: { !$0.maskPNG.isEmpty }) {
+            Task { @MainActor in
+                guard let replayed = await self.awaitTouchupReplay(
+                    shaped: shaped,
+                    operations: operations,
+                    token: token,
+                    generation: generation,
+                    touchupTicket: touchupTicket
+                ) else { return }
+                self.storeTouchupHead(token: token, operations: operations, image: replayed.image)
+                self.rememberShownTouchup()
+                self.refreshSpectrumHistogram()
+                self.hideTouchupMeter(replayed.meter)
+            }
+        } else {
+            self.refreshSpectrumHistogram()
+        }
     }
 
     private func applyCatalogLog(_ saved: HistoryLog, previewJPEG: Data) {
@@ -1168,9 +1286,17 @@ final class EditorModel {
         }
     }
 
-    /// Picks a folder, then writes one new file per still. The open photo uses the picture on screen.
+    /// Picks a folder, then writes one new file per still. The open photo uses its flattened TIFF when that file is present.
     private func writeFolderExport(_ files: [URL], request: ExportRequest) {
         guard !folderRotateBusy, !files.isEmpty else { return }
+        if flattenBusy {
+            folderRotateNote = "Flatten is still writing this photograph."
+            return
+        }
+        if exportBusy {
+            folderRotateNote = "An export is already running."
+            return
+        }
         let panel = NSOpenPanel()
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
@@ -1186,7 +1312,15 @@ final class EditorModel {
     }
 
     private func runFolderExport(_ files: [URL], request: ExportRequest, folder: URL) {
-        guard !folderRotateBusy, !files.isEmpty else { return }
+        guard !files.isEmpty else { return }
+        if flattenBusy {
+            folderRotateNote = "Flatten is still writing this photograph."
+            return
+        }
+        if exportBusy || folderRotateBusy {
+            folderRotateNote = "An export is already running."
+            return
+        }
         folderRotateBusy = true
         folderRotateNote = nil
         let total = files.count
@@ -1198,8 +1332,10 @@ final class EditorModel {
             state.geometry = draftGeometry
             return state
         }()
+        let openTIFF = openState == nil ? nil : readableFlattenedTIFF()
         let openBase = openState == nil ? nil : baseCI
         let openToken = sourceFileURL?.path ?? ""
+        let sidecars = FlattenSidecarIndex()
         var sessions: [String: HistoryLog] = [:]
         for url in files {
             let key = sourceKey(url)
@@ -1215,7 +1351,17 @@ final class EditorModel {
                 self.folderRotateNote = "Exporting \(index + 1) of \(total)."
                 let key = self.sourceKey(url)
                 let wrote: Bool
-                if key == openKey, let openState, let openBase {
+                if key == openKey, let openState, let openTIFF {
+                    wrote = await Task.detached {
+                        FolderExportWorker.write(
+                            flattened: openTIFF,
+                            file: url,
+                            folder: folder,
+                            request: request,
+                            state: openState
+                        )
+                    }.value
+                } else if key == openKey, let openState, let openBase {
                     wrote = self.writeOpenFolderExport(
                         file: url,
                         folder: folder,
@@ -1227,7 +1373,13 @@ final class EditorModel {
                 } else {
                     let session = sessions[key]
                     wrote = await Task.detached {
-                        FolderExportWorker.write(file: url, folder: folder, request: request, session: session)
+                        FolderExportWorker.write(
+                            file: url,
+                            folder: folder,
+                            request: request,
+                            session: session,
+                            sidecars: sidecars
+                        )
                     }.value
                 }
                 if !wrote { failed += 1 }
@@ -1351,12 +1503,14 @@ final class EditorModel {
         }
     }
 
-    private func openProxy(at url: URL, generation: Int) {
+    private func openProxy(at url: URL, generation: Int, catalog: CatalogEditTarget?) {
         let name = url.lastPathComponent
         Task {
-            let outcome: Result<ProxyImage, ProxyOpenError> = await Task.detached {
+            let outcome: Result<(ProxyImage, FlattenedMaster.Identity?), ProxyOpenError> = await Task.detached {
                 do {
-                    return .success(try ProxyRenderer.open(url: url))
+                    let proxy = try ProxyRenderer.open(url: url)
+                    let flat = FlattenedMaster.find(file: url, hint: catalog)
+                    return .success((proxy, flat))
                 } catch let error as ProxyOpenError {
                     return .failure(error)
                 } catch {
@@ -1365,8 +1519,16 @@ final class EditorModel {
             }.value
             guard generation == self.openGeneration else { return }
             switch outcome {
-            case .success(let proxy):
-                self.adopt(proxy: proxy, name: name, url: url, banner: nil, support: .full, editBase: nil)
+            case .success(let (proxy, flat)):
+                self.adopt(
+                    proxy: proxy,
+                    name: name,
+                    url: url,
+                    banner: nil,
+                    support: .full,
+                    editBase: nil,
+                    flat: flat
+                )
             case .failure(let error):
                 self.failOpen(name: name, message: error.localizedDescription)
             }
@@ -1379,10 +1541,29 @@ final class EditorModel {
         url: URL?,
         banner: String?,
         support: DecodeSupport,
-        editBase: EditBase?
+        editBase: EditBase?,
+        flat: FlattenedMaster.Identity? = nil
     ) {
-        self.proxy = proxy
-        self.baseCI = CIImage(cgImage: proxy.image)
+        cancelTouchupQueue()
+        touchupPictures.removeAll()
+        Touchup.resetRasterCache()
+        if let flat {
+            catalogAssetUID = flat.uid
+            catalogRelPath = flat.relativePath
+        }
+        let openedProxy: ProxyImage
+        if let flat, let data = FlattenedMaster.workingJPEG(for: flat), let image = image(fromPreviewJPEG: data) {
+            openedProxy = ProxyImage(
+                image: image,
+                entryPoint: .imageIOThumbnail,
+                appliedScaleFactor: nil,
+                nativeLongEdge: nil
+            )
+        } else {
+            openedProxy = proxy
+        }
+        self.proxy = openedProxy
+        self.baseCI = CIImage(cgImage: openedProxy.image)
         self.openedFileName = name
         self.canvasMessage = nil
         self.previewBanner = banner
@@ -1416,16 +1597,22 @@ final class EditorModel {
         } else {
             resetEditsForNewImage()
         }
-        if let savedCanvas {
+        let loadedCatalogLog = log.commands.isEmpty && applyOnDiskCatalogLog()
+        if hasFlattenedSidecar {
+            adoptFlattenedBaseIfPresent()
+        } else if !loadedCatalogLog, let savedCanvas {
             preview = savedCanvas
             self.savedCanvas = nil
-            self.refreshSpectrumHistogram()
-        } else {
+            presentOpenedRepairs(quickLook: savedCanvas)
+        } else if !loadedCatalogLog {
+            preview = nil
+            spectrumBins = []
             self.refreshPreview()
+        } else {
+            self.savedCanvas = nil
+            presentOpenedRepairs(quickLook: preview)
         }
         self.fitIfPossible()
-        self.catalogAssetUID = nil
-        self.catalogRelPath = nil
         guard EditorHelper.client() != nil else { return }
         catalogGeneration += 1
         let generation = catalogGeneration
@@ -1598,16 +1785,35 @@ final class EditorModel {
         return stem + "." + request.fileExtension
     }
 
-    /// Geometry and tone of the open photo. Inpaint is not filled with the interactive stub.
+    /// Geometry, tone, and later repairs of the open photo.
+    /// A flattened TIFF is the source when that file is present, so the export keeps its size and depth.
     private func writeExport(_ request: ExportRequest, to url: URL) {
-        guard let baseCI else { return }
-        if let sourceFileURL, url.standardizedFileURL == sourceFileURL.standardizedFileURL {
+        let tiff = readableFlattenedTIFF()
+        guard baseCI != nil || tiff != nil else { return }
+        if let sourceFileURL, sameExportFile(url, sourceFileURL) {
             presentAlert("Export leaves the original file unchanged.")
+            return
+        }
+        if let tiff, sameExportFile(url, tiff) {
+            presentAlert("Export leaves the flattened TIFF unchanged.")
+            return
+        }
+        if flattenBusy {
+            presentAlert("Flatten is still writing this photograph.")
+            return
+        }
+        if exportBusy || folderRotateBusy {
+            presentAlert("An export is already running.")
             return
         }
         var state = log.state
         state.tone = draftTone
         state.geometry = draftGeometry
+        if let tiff {
+            writeFlattenedExport(request, state: state, tiff: tiff, to: url)
+            return
+        }
+        guard let baseCI else { return }
         let shaped = CropRect.apply(GeometryPipeline.apply(base: baseCI, geometry: state.geometry), crop: state.crop)
         let filled = InpaintPipeline.applyInteractive(
             base: shaped,
@@ -1628,6 +1834,97 @@ final class EditorModel {
             try? FileManager.default.removeItem(at: url)
             presentAlert(error.localizedDescription)
         }
+    }
+
+    /// Renders the full `.zflat` off the main thread and writes the format chosen in the export panel.
+    private func writeFlattenedExport(_ request: ExportRequest, state: EditState, tiff: URL, to url: URL) {
+        exportGeneration += 1
+        let generation = exportGeneration
+        exportBusy = true
+        let ownsMeter = touchupMeter == nil && !touchupReplayInFlight
+        if ownsMeter {
+            touchupMeter = TouchupMeter(title: "Exporting the photograph", done: 0, total: 0, fraction: nil)
+        }
+        let started = url.startAccessingSecurityScopedResource()
+        let tokenPath = sourceFileURL?.path ?? ""
+        Task {
+            let outcome: Result<Void, Error> = await Task.detached {
+                let context = TonePipeline.makeContext()
+                do {
+                    let image = try FolderExportWorker.tonedFlattened(
+                        tiff: tiff,
+                        state: state,
+                        tokenPath: tokenPath,
+                        context: context
+                    ) { fraction, done, total in
+                        guard total > 0 else { return }
+                        let shown: Double? = done > 0 ? min(1, max(0, fraction)) : nil
+                        DispatchQueue.main.async {
+                            MainActor.assumeIsolated {
+                                guard self.exportGeneration == generation, self.exportBusy else { return }
+                                guard self.touchupMeterTicket == nil, !self.touchupReplayInFlight else { return }
+                                self.touchupMeter = TouchupMeter(
+                                    title: "Repairing the photograph",
+                                    done: done,
+                                    total: total,
+                                    fraction: shown
+                                )
+                            }
+                        }
+                    }
+                    try StillExporter.write(
+                        image: image,
+                        state: state,
+                        request: request,
+                        to: url,
+                        context: context
+                    ) { done, total in
+                        let fraction = total > 0 && done > 0 ? Double(done) / Double(total) : nil
+                        DispatchQueue.main.async {
+                            MainActor.assumeIsolated {
+                                guard self.exportGeneration == generation, self.exportBusy else { return }
+                                guard self.touchupMeterTicket == nil, !self.touchupReplayInFlight else { return }
+                                self.touchupMeter = TouchupMeter(
+                                    title: "Exporting the photograph",
+                                    done: done,
+                                    total: total,
+                                    fraction: fraction
+                                )
+                            }
+                        }
+                    }
+                    return .success(())
+                } catch {
+                    return .failure(error)
+                }
+            }.value
+            if case .failure(let error) = outcome {
+                try? FileManager.default.removeItem(at: url)
+                if started {
+                    url.stopAccessingSecurityScopedResource()
+                }
+                self.finishFlattenedExport(generation: generation, ownsMeter: ownsMeter)
+                self.presentAlert(error.localizedDescription)
+                return
+            }
+            if started {
+                url.stopAccessingSecurityScopedResource()
+            }
+            self.finishFlattenedExport(generation: generation, ownsMeter: ownsMeter)
+        }
+    }
+
+    private func finishFlattenedExport(generation: Int, ownsMeter: Bool) {
+        guard exportGeneration == generation else { return }
+        exportGeneration += 1
+        exportBusy = false
+        if ownsMeter, touchupMeterTicket == nil, !touchupReplayInFlight {
+            touchupMeter = nil
+        }
+    }
+
+    private func sameExportFile(_ a: URL, _ b: URL) -> Bool {
+        a.standardizedFileURL.resolvingSymlinksInPath() == b.standardizedFileURL.resolvingSymlinksInPath()
     }
 
     private func suggestedDocumentName() -> String {
@@ -2056,6 +2353,333 @@ final class EditorModel {
         return cropSelection != nil
     }
 
+    /// A library still can be flattened. The edit file's folder on the share has to be visible.
+    var canFlattenPhoto: Bool {
+        guard !flattenBusy, !exportBusy, !showsVideo, !showsPDFPicker, proxy != nil,
+              catalogAssetUID?.isEmpty == false, libraryEditsFolder() != nil else { return false }
+        return true
+    }
+
+    /// Asks, then writes the full-size `.zflat` beside the library `.zimg`.
+    func confirmFlatten() {
+        guard canFlattenPhoto else { return }
+        let alert = NSAlert()
+        alert.messageText = "Flatten this photograph?"
+        alert.informativeText = """
+        Flatten writes a full-size LZW TIFF beside this photo's edits on the library. The file name ends in .zflat. An 8-bit original is saved as 8-bit. An original with more than 8 bits per channel is saved as 16-bit.
+
+        That TIFF becomes the starting point for later edits. Tone, spots, and the other edits are saved into the TIFF, and the edit list returns to the start. The original photo stays unchanged. The preview and the .zimg stay. Flatten again overwrites the TIFF.
+
+        A large photo is rendered at full size once, with a progress bar.
+
+        Revert is available after a flatten. It removes that TIFF and every edit, and the photograph returns to the original file.
+        """
+        alert.addButton(withTitle: "Continue")
+        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: "Revert")
+        if alert.buttons.count > 2 {
+            alert.buttons[2].isEnabled = hasFlattenedSidecar
+        }
+        NSCursor.arrow.set()
+        switch alert.runModal() {
+        case .alertFirstButtonReturn:
+            startFlatten()
+        case .alertThirdButtonReturn:
+            confirmRevertFlatten()
+        default:
+            break
+        }
+    }
+
+    /// Warns, then removes the flattened TIFF and every edit.
+    private func confirmRevertFlatten() {
+        guard hasFlattenedSidecar else { return }
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Revert this photograph?"
+        alert.informativeText = """
+        Revert removes the flattened TIFF and every edit, including edits made after the flatten. The photograph returns to the original file with an empty edit list. The original file stays unchanged.
+        """
+        alert.addButton(withTitle: "No")
+        alert.addButton(withTitle: "Yes")
+        if alert.buttons.count > 1 {
+            alert.buttons[1].keyEquivalent = ""
+        }
+        NSCursor.arrow.set()
+        guard alert.runModal() == .alertSecondButtonReturn else {
+            confirmFlatten()
+            return
+        }
+        startRevert()
+    }
+
+    /// Loads the original file, then drops the flattened sidecars.
+    private func startRevert() {
+        guard canFlattenPhoto, hasFlattenedSidecar,
+              let source = sourceFileURL,
+              let uid = catalogAssetUID,
+              let folder = libraryEditsFolder(),
+              let digest = sourceDigest,
+              let count = sourceByteCount else { return }
+        cancelTouchupQueue()
+        touchupReplayAgain = false
+        let sourceKey = sourceKey(source)
+        let uti = sourceUTI ?? "public.data"
+        let relative = catalogRelPath ?? ""
+        let catalog = CatalogEditTarget(uid: uid, relativePath: relative)
+        let zflat = folder.appendingPathComponent(uid + ".zflat")
+        flattenGeneration += 1
+        let generation = flattenGeneration
+        let openGen = openGeneration
+        flattenBusy = true
+        touchupMeter = TouchupMeter(title: "Reverting the photograph", done: 0, total: 0, fraction: nil)
+        Task {
+            let outcome: Result<(ProxyImage, Data), Error> = await Task.detached {
+                do {
+                    let opened = try ProxyRenderer.open(url: source)
+                    guard let previewJPEG = ZImgRaw.jpegPreview(from: opened.image) else {
+                        throw FlattenError.cannotWrite(source.lastPathComponent)
+                    }
+                    try FlattenedMaster.revertToOriginal(
+                        uid: uid,
+                        editsFolder: folder,
+                        previewJPEG: previewJPEG,
+                        blake3: digest,
+                        byteSize: count,
+                        uti: uti,
+                        relativePath: relative
+                    )
+                    return .success((opened, previewJPEG))
+                } catch {
+                    return .failure(error)
+                }
+            }.value
+            guard self.flattenGeneration == generation else { return }
+            self.flattenBusy = false
+            self.touchupMeter = nil
+            switch outcome {
+            case .failure(let error):
+                self.presentAlert(error.localizedDescription)
+            case .success(let (opened, previewJPEG)):
+                self.finishRevert(
+                    opened,
+                    previewJPEG: previewJPEG,
+                    sourceKey: sourceKey,
+                    catalog: catalog,
+                    digest: digest,
+                    count: count,
+                    uti: uti,
+                    openGeneration: openGen,
+                    zflat: zflat
+                )
+            }
+        }
+    }
+
+    /// The open photograph shows the original file. The edit list is empty, with nothing waiting on Redo.
+    private func finishRevert(
+        _ opened: ProxyImage,
+        previewJPEG: Data,
+        sourceKey: String,
+        catalog: CatalogEditTarget,
+        digest: String,
+        count: Int,
+        uti: String,
+        openGeneration: Int,
+        zflat: URL
+    ) {
+        editSaveToken[sourceKey] = (editSaveToken[sourceKey] ?? 0) + 1
+        let stillOpen = self.openGeneration == openGeneration && !FileManager.default.isReadableFile(atPath: zflat.path)
+        var shown: CGImage?
+        if stillOpen {
+            cancelTouchupQueue()
+            touchupReplayAgain = false
+            log = HistoryLog()
+            cropSelection = nil
+            touchupPictures.removeAll()
+            Touchup.resetRasterCache()
+            clearTouchupHead()
+            syncDraftsFromLog()
+            baseCI = CIImage(cgImage: opened.image)
+            proxy = opened
+            refreshPreview()
+            shown = preview
+            previewBanner = "Reverted."
+            publishOpenPreview()
+        }
+        editsBySource[sourceKey] = PhotoEdits(
+            log: HistoryLog(),
+            documentURL: nil,
+            documentBookmark: nil,
+            display: shown
+        )
+        dropLocalEditCopy(digest: digest)
+        Task {
+            await self.putCatalogEdits(
+                catalog,
+                log: HistoryLog(),
+                previewJPEG: previewJPEG,
+                digest: digest,
+                count: count,
+                uti: uti
+            )
+        }
+    }
+
+    private func startFlatten() {
+        guard canFlattenPhoto,
+              let source = sourceFileURL,
+              let uid = catalogAssetUID,
+              let folder = libraryEditsFolder(),
+              let digest = sourceDigest,
+              let count = sourceByteCount else { return }
+        commitOpenDrafts()
+        cancelTouchupQueue()
+        let state = log.state
+        let zflat = folder.appendingPathComponent(uid + ".zflat")
+        let zjpg = folder.appendingPathComponent(uid + ".zjpg")
+        let zimg = folder.appendingPathComponent(uid + ".zimg")
+        let pixels = FileManager.default.isReadableFile(atPath: zflat.path) ? zflat : source
+        let uti = sourceUTI ?? "public.data"
+        let relative = catalogRelPath ?? ""
+        let catalog = CatalogEditTarget(uid: uid, relativePath: relative)
+        flattenGeneration += 1
+        let generation = flattenGeneration
+        let openGen = openGeneration
+        flattenBusy = true
+        touchupMeter = TouchupMeter(title: "Flattening the photograph", done: 0, total: 0, fraction: nil)
+        Task {
+            let outcome: Result<FlattenWriter.Product, Error> = await Task.detached {
+                do {
+                    let product = try FlattenWriter.produce(
+                        pixels: pixels,
+                        depthFrom: source,
+                        state: state,
+                        tiff: zflat
+                    ) { title, done, total, fraction in
+                        DispatchQueue.main.async {
+                            MainActor.assumeIsolated {
+                                guard self.flattenGeneration == generation, self.flattenBusy else { return }
+                                self.touchupMeter = TouchupMeter(
+                                    title: title,
+                                    done: done,
+                                    total: total,
+                                    fraction: fraction
+                                )
+                            }
+                        }
+                    }
+                    let document = try SaveEdits.catalogBytes(
+                        log: HistoryLog(),
+                        blake3: digest,
+                        byteSize: count,
+                        uti: uti,
+                        assetUID: uid,
+                        relativePathHint: relative,
+                        previewJPEG: product.previewJPEG
+                    )
+                    try product.workingJPEG.write(to: zjpg, options: .atomic)
+                    try document.write(to: zimg, options: .atomic)
+                    return .success(product)
+                } catch {
+                    return .failure(error)
+                }
+            }.value
+            guard self.flattenGeneration == generation else { return }
+            self.flattenBusy = false
+            self.touchupMeter = nil
+            switch outcome {
+            case .failure(let error):
+                self.presentAlert(error.localizedDescription)
+            case .success(let product):
+                guard self.openGeneration == openGen else { return }
+                self.finishFlatten(product, catalog: catalog, digest: digest, count: count, uti: uti)
+            }
+        }
+    }
+
+    /// The edit list is cleared because those changes are now in the TIFF. Later edits start from the working JPEG.
+    private func finishFlatten(
+        _ product: FlattenWriter.Product,
+        catalog: CatalogEditTarget,
+        digest: String,
+        count: Int,
+        uti: String
+    ) {
+        cancelTouchupQueue()
+        log = HistoryLog()
+        cropSelection = nil
+        touchupPictures.removeAll()
+        Touchup.resetRasterCache()
+        clearTouchupHead()
+        syncDraftsFromLog()
+        if let image = image(fromPreviewJPEG: product.workingJPEG) {
+            baseCI = CIImage(cgImage: image)
+            proxy = ProxyImage(
+                image: image,
+                entryPoint: .imageIOThumbnail,
+                appliedScaleFactor: nil,
+                nativeLongEdge: nil
+            )
+            preview = image
+        }
+        refreshSpectrumHistogram()
+        previewBanner = "Flattened."
+        publishOpenPreview()
+        Task {
+            await self.putCatalogEdits(
+                catalog,
+                log: HistoryLog(),
+                previewJPEG: product.previewJPEG,
+                digest: digest,
+                count: count,
+                uti: uti
+            )
+            self.dropLocalEditCopy(digest: digest)
+        }
+    }
+
+    /// `.zimage/edits` on the same library volume as the open photo.
+    private func libraryEditsFolder() -> URL? {
+        guard let source = sourceFileURL, let rel = catalogRelPath else { return nil }
+        return FlattenedMaster.editsFolder(file: source, relativePath: rel)
+    }
+
+    /// When a flatten file exists, later edits start from its working JPEG.
+    private func adoptFlattenedBaseIfPresent() {
+        guard let uid = catalogAssetUID, let folder = libraryEditsFolder() else { return }
+        let zflat = folder.appendingPathComponent(uid + ".zflat")
+        let zjpg = folder.appendingPathComponent(uid + ".zjpg")
+        guard FileManager.default.isReadableFile(atPath: zflat.path),
+              let data = try? Data(contentsOf: zjpg),
+              let image = image(fromPreviewJPEG: data) else { return }
+        baseCI = CIImage(cgImage: image)
+        proxy = ProxyImage(
+            image: image,
+            entryPoint: .imageIOThumbnail,
+            appliedScaleFactor: nil,
+            nativeLongEdge: nil
+        )
+        if log.commands.isEmpty {
+            preview = image
+            refreshSpectrumHistogram()
+            publishOpenPreview()
+        } else {
+            refreshPreview()
+        }
+    }
+
+    /// The library `.zflat` for the open photo. Later edits and the folder cell use that picture.
+    private var hasFlattenedSidecar: Bool {
+        readableFlattenedTIFF() != nil
+    }
+
+    /// Full-size flattened TIFF for the open photo. Opening the photo still uses the working JPEG.
+    private func readableFlattenedTIFF() -> URL? {
+        guard let uid = catalogAssetUID, !uid.isEmpty, let folder = libraryEditsFolder() else { return nil }
+        return FlattenedMaster.tiffURL(uid: uid, editsFolder: folder)
+    }
+
     /// Returns the open photograph to the start. Each edit stays on the redo stack.
     func resetPhoto() {
         guard showsVideo || (proxy != nil && !showsPDFPicker) else { return }
@@ -2065,38 +2689,106 @@ final class EditorModel {
         log.resetToBeginning()
         cropSelection = nil
         syncDraftsFromLog()
-        refreshPreview()
-        publishOpenPreview()
+        refreshAfterHistoryChange()
     }
 
     func undo() {
-        cancelTouchupQueue()
         cancelProvisionalEdits()
+        let snapshot = touchupSnapshot()
+        cancelTouchupQueue()
         log.undo()
         cropSelection = nil
         syncDraftsFromLog()
-        refreshPreview()
-        publishOpenPreview()
+        applyHistoryMove(snapshot)
     }
 
     func redo() {
-        cancelTouchupQueue()
         cancelProvisionalEdits()
+        let snapshot = touchupSnapshot()
+        cancelTouchupQueue()
         log.redo()
         cropSelection = nil
         syncDraftsFromLog()
-        refreshPreview()
-        publishOpenPreview()
+        applyHistoryMove(snapshot)
     }
 
     func selectCommand(at index: Int) {
-        cancelTouchupQueue()
         cancelProvisionalEdits()
+        let snapshot = touchupSnapshot()
+        cancelTouchupQueue()
         log.selectCommand(at: index)
         cropSelection = nil
         syncDraftsFromLog()
-        refreshPreview()
-        publishOpenPreview()
+        applyHistoryMove(snapshot)
+    }
+
+    /// The repaired picture before this Undo, Redo, or history click.
+    private struct TouchupSnapshot {
+        var token: Int
+        var operations: [InpaintOp]
+        var image: CIImage?
+    }
+
+    private func touchupSnapshot() -> TouchupSnapshot {
+        TouchupSnapshot(
+            token: touchupImageToken(),
+            operations: touchupPreviewOperations(),
+            image: touchupHead?.image
+        )
+    }
+
+    /// Pastes the small before or after picture for the repairs that moved. A miss rebuilds from the masks.
+    private func applyHistoryMove(_ snapshot: TouchupSnapshot) {
+        if !showsVideo, !showsPDFPicker, let image = restoredTouchupImage(from: snapshot) {
+            let token = touchupImageToken()
+            storeTouchupHead(token: token, operations: touchupPreviewOperations(), image: image)
+            paintPreview(from: image)
+            refreshSpectrumHistogram(using: image)
+            publishOpenPreview()
+            return
+        }
+        refreshAfterHistoryChange()
+    }
+
+    private func restoredTouchupImage(from snapshot: TouchupSnapshot) -> CIImage? {
+        let token = touchupImageToken()
+        guard token == snapshot.token else { return nil }
+        let current = touchupPreviewOperations()
+        if sameRepairList(current, snapshot.operations), let image = snapshot.image {
+            return image
+        }
+        if current.count < snapshot.operations.count,
+           sameRepairList(current, Array(snapshot.operations.prefix(current.count))),
+           let image = snapshot.image,
+           let restored = Touchup.stampBefore(
+            Array(snapshot.operations.dropFirst(current.count)),
+            onto: image,
+            frameToken: token
+           ) {
+            return restored
+        }
+        if snapshot.operations.count < current.count,
+           sameRepairList(snapshot.operations, Array(current.prefix(snapshot.operations.count))),
+           let image = snapshot.image,
+           let restored = Touchup.stampAfter(
+            Array(current.dropFirst(snapshot.operations.count)),
+            onto: image,
+            frameToken: token
+           ) {
+            return restored
+        }
+        guard let shaped = geometryImage() else { return nil }
+        return Touchup.stampAfter(current, onto: shaped, frameToken: token)
+    }
+
+    /// Puts a remembered repair picture back on screen. A full rebuild runs only when that picture is gone.
+    private func refreshAfterHistoryChange() {
+        if restoreRememberedTouchup() {
+            publishOpenPreview()
+        } else {
+            refreshPreview()
+            publishOpenPreview()
+        }
     }
 
     func pushSyntheticTone() {
@@ -2233,7 +2925,10 @@ final class EditorModel {
     }
 
     func nudgeGeometry(_ label: String, update: (inout GeometryState) -> Void) {
-        update(&draftGeometry)
+        var next = draftGeometry
+        update(&next)
+        guard next != draftGeometry else { return }
+        draftGeometry = next
         pendingGeometryLabel = label
         refreshPreview()
         guard !geometryDragActive else { return }
@@ -2329,7 +3024,7 @@ final class EditorModel {
     func removeScratches() {
         enqueueTouchup(
             banner: "Removing scratches…",
-            empty: "No scratch stood out from the surrounding photo. Drag the Scratch circle along one.",
+            empty: "No scratch stood out from the surrounding photo. Drag the circle along one.",
             work: .scratches
         )
     }
@@ -2345,7 +3040,9 @@ final class EditorModel {
     }
 
     /// `viewPoints` are the drag, in canvas coordinates. A short drag does not add a history step.
-    func scratchStroke(_ viewPoints: [CGPoint], in viewSize: CGSize) {
+    /// Returns false when the stroke is too short to be a scratch.
+    @discardableResult
+    func scratchStroke(_ viewPoints: [CGPoint], in viewSize: CGSize) -> Bool {
         var bitmaps: [CGPoint] = []
         for viewPoint in viewPoints {
             guard let bitmap = touchupBitmap(at: viewPoint, in: viewSize) else { continue }
@@ -2364,13 +3061,14 @@ final class EditorModel {
         for index in 1..<bitmaps.count {
             length += hypot(bitmaps[index].x - bitmaps[index - 1].x, bitmaps[index].y - bitmaps[index - 1].y)
         }
-        guard length >= 2 else { return }
+        guard length >= 2 else { return false }
         let radius = touchupRasterRadius()
         enqueueTouchup(
             banner: "Removing the scratch…",
             empty: "No scratch stood out under that stroke.",
             work: .scratch(bitmaps, radius)
         )
+        return true
     }
 
     func touchupRasterRadius() -> Int {
@@ -2405,6 +3103,9 @@ final class EditorModel {
 
     func setTouchupStrength(modelID: String, _ value: Double) {
         let clamped = min(1, max(0, value))
+        if abs(touchupStrength(modelID: modelID) - clamped) < 0.000_000_1 {
+            return
+        }
         if touchupDragID == nil {
             beginTouchupStrength(modelID: modelID)
         }
@@ -2511,7 +3212,7 @@ final class EditorModel {
         return "\(base) \(label)"
     }
 
-    /// Runs the job already stored in `touchupQueue.running`. The next queued job starts when this one finishes.
+    /// Runs the job already stored in `touchupQueue.running`. Spot clicks already waiting fill together.
     private func beginRunningTouchup() {
         guard proxy != nil else {
             stopTouchupQueue(restoreBanner: true)
@@ -2523,7 +3224,7 @@ final class EditorModel {
         let operations = touchupPreviewOperations()
         let base: CIImage
         let prior: [InpaintOp]
-        if let head = touchupHead, head.token == imageToken, head.operations == operations {
+        if touchupHeadShows(operations, token: imageToken), let head = touchupHead {
             base = head.image
             prior = []
         } else if let shaped = geometryImage() {
@@ -2533,7 +3234,10 @@ final class EditorModel {
             stopTouchupQueue(restoreBanner: true)
             return
         }
+        let spotBatch = leadingSpotBatch(startingAt: job)
         let chain = Touchup.chain(imageToken: imageToken, operations: operations)
+        let baseChain = chain
+        rememberShownTouchup(allowWithoutImage: true)
         let tone = draftTone
         let displaySpaceName = (NSScreen.main?.colorSpace?.cgColorSpace?.name as String?)
             ?? (CGColorSpace.sRGB as String)
@@ -2547,56 +3251,121 @@ final class EditorModel {
         let work = job.work
         let empty = job.empty
         Task { @MainActor in
-            let rendered = await Touchup.finishOffMain(
-                image: base,
-                work: work,
-                tone: tone,
-                displaySpaceName: displaySpaceName,
-                priorOperations: prior,
-                priorToken: imageToken
-            )
-            guard generation == self.touchupGeneration else { return }
-            if let built = rendered.built, let repaired = rendered.repaired {
-                Touchup.store(
-                    chain: chain,
-                    width: rendered.width,
-                    height: rendered.height,
-                    maskPNG: built.operation.maskPNG,
-                    modelID: built.operation.modelID,
-                    image: repaired
+            if spotBatch.count >= 2 {
+                let rendered = await Touchup.finishSpotsOffMain(
+                    image: base,
+                    spots: spotBatch,
+                    tone: tone,
+                    displaySpaceName: displaySpaceName,
+                    priorOperations: prior,
+                    priorToken: imageToken,
+                    baseChain: baseChain,
+                    frameToken: imageToken
                 )
-                self.log.commit(.addInpaint(built.operation))
-                self.touchupHead = (imageToken, self.touchupPreviewOperations(), repaired)
-                if let preview = rendered.preview, self.draftTone == tone {
-                    self.preview = preview
-                    self.rememberTouchupBitmapScale(
-                        rasterWidth: CGFloat(rendered.width),
-                        rasterHeight: CGFloat(rendered.height),
-                        preview: preview
+                guard generation == self.touchupGeneration else { return }
+                if let repaired = rendered.repaired, !rendered.operations.isEmpty {
+                    for operation in rendered.operations {
+                        self.log.commit(.addInpaint(operation))
+                    }
+                    self.storeTouchupHead(token: imageToken, operations: self.touchupPreviewOperations(), image: repaired)
+                    self.showTouchupPicture(
+                        picture: rendered.preview,
+                        spectrum: rendered.spectrum,
+                        width: rendered.width,
+                        height: rendered.height,
+                        tone: tone,
+                        folderJPEG: rendered.folderJPEG
                     )
-                    self.spectrumBins = rendered.spectrum
-                    self.proxyRenderCount += 1
-                } else {
-                    self.refreshPreview()
                 }
-                self.publishOpenPreview(folderJPEG: rendered.folderJPEG)
-            }
-            guard generation == self.touchupGeneration else { return }
-            let moreWaiting = !self.touchupQueue.waiting.isEmpty
-            if rendered.built == nil, !moreWaiting {
-                self.presentAlert(empty)
-            }
-            guard generation == self.touchupGeneration else { return }
-            // Let the picture land, and let a click already in the queue join, before the next render starts.
-            if moreWaiting {
-                Task { @MainActor in
-                    await Task.yield()
-                    guard generation == self.touchupGeneration else { return }
-                    self.advanceTouchupQueue()
-                }
+                self.settleTouchupQueue(generation: generation, failed: rendered.operations.isEmpty, empty: empty)
             } else {
+                let rendered = await Touchup.finishOffMain(
+                    image: base,
+                    work: work,
+                    tone: tone,
+                    displaySpaceName: displaySpaceName,
+                    priorOperations: prior,
+                    priorToken: imageToken,
+                    baseChain: baseChain,
+                    frameToken: imageToken
+                )
+                guard generation == self.touchupGeneration else { return }
+                if let built = rendered.built, let repaired = rendered.repaired {
+                    Touchup.store(
+                        chain: chain,
+                        width: rendered.width,
+                        height: rendered.height,
+                        maskPNG: built.operation.maskPNG,
+                        modelID: built.operation.modelID,
+                        image: repaired
+                    )
+                    self.log.commit(.addInpaint(built.operation))
+                    self.storeTouchupHead(token: imageToken, operations: self.touchupPreviewOperations(), image: repaired)
+                    self.showTouchupPicture(
+                        picture: rendered.preview,
+                        spectrum: rendered.spectrum,
+                        width: rendered.width,
+                        height: rendered.height,
+                        tone: tone,
+                        folderJPEG: rendered.folderJPEG
+                    )
+                }
+                self.settleTouchupQueue(generation: generation, failed: rendered.built == nil, empty: empty)
+            }
+        }
+    }
+
+    /// Spot clicks lined up behind the one already running. A scratch or a Dust pass stays for the next turn.
+    private func leadingSpotBatch(startingAt job: QueuedTouchup) -> [(CGPoint, Int)] {
+        guard job.work.isSpot else { return [] }
+        let taken = touchupQueue.takeLeadingSpots()
+        guard taken.count >= 2 else { return [] }
+        return taken.compactMap { item in
+            if case .spot(let point, let radius) = item.work { return (point, radius) }
+            return nil
+        }
+    }
+
+    private func showTouchupPicture(
+        picture: CGImage?,
+        spectrum: [Int],
+        width: Int,
+        height: Int,
+        tone: ToneState,
+        folderJPEG: Data?
+    ) {
+        if let picture, draftTone == tone {
+            preview = picture
+            rememberTouchupBitmapScale(
+                rasterWidth: CGFloat(width),
+                rasterHeight: CGFloat(height),
+                preview: picture
+            )
+            spectrumBins = spectrum
+            proxyRenderCount += 1
+            rememberShownTouchup()
+        } else {
+            refreshPreview()
+        }
+        publishOpenPreview(folderJPEG: folderJPEG)
+    }
+
+    /// Lets the picture land, and lets a click already in the list join, before the next repair starts.
+    private func settleTouchupQueue(generation: Int, failed: Bool, empty: String) {
+        guard generation == touchupGeneration else { return }
+        let moreWaiting = !touchupQueue.waiting.isEmpty
+        if failed, !moreWaiting {
+            presentAlert(empty)
+        }
+        guard generation == touchupGeneration else { return }
+        if moreWaiting {
+            Task { @MainActor in
+                await Task.yield()
+                guard generation == self.touchupGeneration else { return }
                 self.advanceTouchupQueue()
             }
+        } else {
+            advanceTouchupQueue()
         }
     }
 
@@ -2611,12 +3380,69 @@ final class EditorModel {
         beginRunningTouchup()
     }
 
+    /// Saves the picture now on screen for this repair list.
+    /// A click saves it before the repair starts, including when the raster is not ready yet.
+    private func rememberShownTouchup(allowWithoutImage: Bool = false) {
+        guard dustStrengthOverride == nil, scratchStrengthOverride == nil else { return }
+        guard let preview else { return }
+        let token = touchupImageToken()
+        let operations = touchupPreviewOperations()
+        guard operations.contains(where: { !$0.maskPNG.isEmpty }) else { return }
+        let image: CIImage?
+        if let head = touchupHead, head.operations == operations, (head.token == token || touchupFrameMatches()) {
+            image = head.image
+        } else if allowWithoutImage {
+            image = nil
+        } else {
+            return
+        }
+        touchupPictures.remember(TouchupShown(
+            token: token,
+            operations: operations,
+            image: image,
+            tone: draftTone,
+            preview: preview,
+            spectrum: spectrumBins
+        ))
+    }
+
+    /// Shows the picture from before the undone spots. Returns false when that picture was not kept.
+    private func restoreRememberedTouchup() -> Bool {
+        let token = touchupImageToken()
+        let operations = touchupPreviewOperations()
+        guard let frame = touchupPictures.frame(token: token, operations: operations) else { return false }
+        if let image = frame.image {
+            storeTouchupHead(token: token, operations: operations, image: image)
+        } else {
+            clearTouchupHead()
+        }
+        if frame.tone == draftTone || frame.image == nil {
+            preview = frame.preview
+            spectrumBins = frame.spectrum
+            rememberTouchupBitmapScale(
+                rasterWidth: frame.image?.extent.width ?? CGFloat(frame.preview.width),
+                rasterHeight: frame.image?.extent.height ?? CGFloat(frame.preview.height),
+                preview: frame.preview
+            )
+            proxyRenderCount += 1
+            return true
+        }
+        guard let image = frame.image else { return false }
+        paintPreview(from: image)
+        refreshSpectrumHistogram(using: image)
+        return true
+    }
+
     /// Drops a list that belongs to the photograph being left, undone, or reset.
+    /// Pictures already shown stay, so Undo can put the last speck back.
     private func cancelTouchupQueue() {
         touchupGeneration += 1
         touchupBusyGeneration = touchupGeneration
+        Touchup.abandonQueuedWork()
         stopTouchupQueue(restoreBanner: true)
-        touchupHead = nil
+        clearTouchupHead()
+        touchupMeter = nil
+        touchupMeterTicket = nil
     }
 
     private func stopTouchupQueue(restoreBanner: Bool) {
@@ -2675,6 +3501,8 @@ final class EditorModel {
         log = HistoryLog()
         cropSelection = nil
         touchupBitmapScaleReady = false
+        touchupPictures.removeAll()
+        Touchup.resetRasterCache()
         syncDraftsFromLog()
     }
 
@@ -3005,6 +3833,55 @@ final class EditorModel {
         publishOpenPreview()
     }
 
+    /// Path, geometry, and crop for the picture a repair list was painted on.
+    private struct TouchupFrame: Equatable {
+        var path: String
+        var geometry: GeometryState
+        var crop: NormRect?
+    }
+
+    private func currentTouchupFrame() -> TouchupFrame {
+        TouchupFrame(path: sourceFileURL?.path ?? "", geometry: draftGeometry, crop: log.state.crop)
+    }
+
+    private func storeTouchupHead(token: Int, operations: [InpaintOp], image: CIImage, frame: TouchupFrame? = nil) {
+        touchupHead = (token, operations, image)
+        touchupHeadFrame = frame ?? currentTouchupFrame()
+    }
+
+    private func clearTouchupHead() {
+        touchupHead = nil
+        touchupHeadFrame = nil
+    }
+
+    /// The stored frame still describes the pixels on screen. Sub-threshold geometry
+    /// noise does not, because those values never reach a filter.
+    private func touchupFrameMatches() -> Bool {
+        guard let painted = touchupHeadFrame else { return false }
+        let frame = currentTouchupFrame()
+        guard painted.path == frame.path, painted.crop == frame.crop else { return false }
+        return !Self.geometryChangesPixels(painted.geometry, frame.geometry)
+    }
+
+    private static func geometryChangesPixels(_ painted: GeometryState, _ current: GeometryState) -> Bool {
+        if painted.quarterTurns != current.quarterTurns { return true }
+        if abs(painted.straightenDegrees - current.straightenDegrees) > 1e-6 { return true }
+        if painted.verticalKeystone != current.verticalKeystone { return true }
+        if painted.horizontalKeystone != current.horizontalKeystone { return true }
+        if abs(painted.offsetX - current.offsetX) > 1e-9 { return true }
+        if abs(painted.offsetY - current.offsetY) > 1e-9 { return true }
+        if painted.corners != current.corners { return true }
+        if painted.lens != current.lens { return true }
+        if painted.sharpness != current.sharpness { return true }
+        return false
+    }
+
+    /// True when `touchupHead` is already this repair list on the current frame.
+    private func touchupHeadShows(_ operations: [InpaintOp], token: Int) -> Bool {
+        guard let head = touchupHead, sameRepairList(head.operations, operations) else { return false }
+        return head.token == token || touchupFrameMatches()
+    }
+
     private func geometryImage() -> CIImage? {
         guard let baseCI else { return nil }
         let shaped = GeometryPipeline.apply(base: baseCI, geometry: draftGeometry)
@@ -3016,25 +3893,33 @@ final class EditorModel {
     private func stage3Image() -> CIImage? {
         let token = touchupImageToken()
         let operations = touchupPreviewOperations()
-        if let head = touchupHead, head.token == token, head.operations == operations {
+        if touchupHeadShows(operations, token: token), let head = touchupHead {
             return head.image
         }
         guard let shaped = geometryImage() else { return nil }
-        if let head = touchupHead, head.token == token {
+        if let head = touchupHead, head.token == token || touchupFrameMatches() {
             if operations.count > head.operations.count,
-               Array(operations.prefix(head.operations.count)) == head.operations {
+               sameRepairList(Array(operations.prefix(head.operations.count)), head.operations) {
+                let suffix = Array(operations.dropFirst(head.operations.count))
+                if let stamped = Touchup.stampAfter(suffix, onto: head.image, frameToken: token) {
+                    storeTouchupHead(token: token, operations: operations, image: stamped)
+                    return stamped
+                }
                 var chain = token
                 for operation in head.operations where !operation.maskPNG.isEmpty {
                     chain = Touchup.advance(chain, operation)
                 }
-                let suffix = Array(operations.dropFirst(head.operations.count))
                 let image = InpaintPipeline.applyInteractive(base: head.image, operations: suffix, imageToken: chain)
-                touchupHead = (token, operations, image)
+                storeTouchupHead(token: token, operations: operations, image: image)
                 return image
             }
         }
+        if let stamped = Touchup.stampAfter(operations, onto: shaped, frameToken: token) {
+            storeTouchupHead(token: token, operations: operations, image: stamped)
+            return stamped
+        }
         let image = InpaintPipeline.applyInteractive(base: shaped, operations: operations, imageToken: token)
-        touchupHead = (token, operations, image)
+        storeTouchupHead(token: token, operations: operations, image: image)
         return image
     }
 
@@ -3049,17 +3934,38 @@ final class EditorModel {
         return operations
     }
 
+    /// The repairs already painted. Mask bytes are not compared: walking every PNG made a finished replay look new and start over.
+    private func sameRepairList(_ left: [InpaintOp], _ right: [InpaintOp]) -> Bool {
+        guard left.count == right.count else { return false }
+        for index in left.indices {
+            if left[index].id != right[index].id
+                || left[index].modelID != right[index].modelID
+                || left[index].featherPx != right[index].featherPx
+                || left[index].strength != right[index].strength {
+                return false
+            }
+        }
+        return true
+    }
+
     private func refreshPreview() {
         if showsVideo {
             videoPlayback?.setTone(draftTone)
             refreshSpectrumHistogram()
             return
         }
+        if scheduleBackgroundReplay() { return }
         guard let shaped = stage3Image() else {
             preview = nil
             spectrumBins = []
             return
         }
+        paintPreview(from: shaped)
+        refreshSpectrumHistogram()
+    }
+
+    /// Draws `shaped` with the current tone. The caller chooses whether the spectrum uses this frame.
+    private func paintPreview(from shaped: CIImage) {
         let longEdge = max(shaped.extent.width, shaped.extent.height)
         let toned = TonePipeline.apply(base: shaped, tone: draftTone, longEdge: longEdge)
         let extent = toned.extent.integral
@@ -3078,13 +3984,167 @@ final class EditorModel {
             )
         }
         proxyRenderCount += 1
-        refreshSpectrumHistogram()
+        rememberShownTouchup()
+    }
+
+    /// A photograph with saved repairs shows its geometry frame at once. The repairs are filled off the main thread.
+    /// Returns true when this call should not run those repairs on the main thread.
+    private func scheduleBackgroundReplay() -> Bool {
+        let operations = touchupPreviewOperations()
+        guard operations.contains(where: { !$0.maskPNG.isEmpty }) else { return false }
+        let token = touchupImageToken()
+        if touchupHeadShows(operations, token: token) {
+            return false
+        }
+        if let head = touchupHead, head.token == token || touchupFrameMatches(),
+           operations.count > head.operations.count,
+           sameRepairList(Array(operations.prefix(head.operations.count)), head.operations) {
+            return false
+        }
+        guard let shaped = geometryImage() else { return false }
+        if let stamped = Touchup.stampAfter(operations, onto: shaped, frameToken: token) {
+            storeTouchupHead(token: token, operations: operations, image: stamped)
+            return false
+        }
+        if preview == nil {
+            paintPreview(from: shaped)
+            refreshSpectrumHistogram(using: shaped)
+        }
+        if touchupBusy || touchupReplayInFlight {
+            touchupReplayAgain = true
+            return true
+        }
+        touchupReplayInFlight = true
+        let generation = openGeneration
+        let touchupTicket = touchupGeneration
+        let frame = currentTouchupFrame()
+        Task { @MainActor in
+            guard let replayed = await self.awaitTouchupReplay(
+                shaped: shaped,
+                operations: operations,
+                token: token,
+                generation: generation,
+                touchupTicket: touchupTicket
+            ) else {
+                self.touchupReplayInFlight = false
+                if self.touchupReplayAgain {
+                    self.touchupReplayAgain = false
+                    self.refreshPreview()
+                }
+                return
+            }
+            self.touchupReplayInFlight = false
+            let current = self.touchupPreviewOperations()
+            let sameRepairs = self.sameRepairList(current, operations)
+            self.touchupReplayAgain = false
+            // These repairs are done. A frame token that moved during the pass is not a new list.
+            // refreshPreview would start the same repairs and the bar would return to 0.
+            if sameRepairs {
+                self.storeTouchupHead(token: token, operations: current, image: replayed.image, frame: frame)
+                self.paintPreview(from: replayed.image)
+                self.refreshSpectrumHistogram(using: replayed.image)
+            } else {
+                self.refreshPreview()
+            }
+            self.hideTouchupMeter(replayed.meter)
+        }
+        return true
+    }
+
+    private func touchupRepairCount(_ operations: [InpaintOp]) -> Int {
+        operations.reduce(into: 0) { count, operation in
+            if !operation.maskPNG.isEmpty { count += 1 }
+        }
+    }
+
+    /// Several saved repairs get a bar. One repair stays quiet.
+    private func showTouchupMeter(operations: [InpaintOp]) -> Int {
+        let repairs = operations.filter { !$0.maskPNG.isEmpty }
+        touchupMeterSerial += 1
+        let serial = touchupMeterSerial
+        touchupMeterTicket = serial
+        let title: String
+        if repairs.allSatisfy({ $0.modelID == InpaintModel.dust }) {
+            title = "Removing dust"
+        } else if repairs.allSatisfy({ $0.modelID == InpaintModel.scratch }) {
+            title = "Repairing scratches"
+        } else {
+            title = "Repairing the photograph"
+        }
+        touchupMeter = TouchupMeter(title: title, done: 0, total: max(repairs.count, 1), fraction: nil)
+        return serial
+    }
+
+    private func noteTouchupMeter(fraction: Double, done: Int, total: Int, meter: Int) {
+        guard touchupMeterTicket == meter, var current = touchupMeter else { return }
+        guard fraction > 0 else { return }
+        if let shown = current.fraction, fraction + 0.0001 < shown { return }
+        current.total = max(total, 1)
+        current.done = min(current.total, max(current.done, done))
+        current.fraction = min(1, fraction)
+        touchupMeter = current
+    }
+
+    private func hideTouchupMeter(_ meter: Int) {
+        guard meter != 0, touchupMeterTicket == meter else { return }
+        touchupMeter = nil
+        touchupMeterTicket = nil
+    }
+
+    private func touchupProgress(meter: Int) -> Touchup.ProgressHandler {
+        let sink = TouchupMeterSink { [weak self] fraction, done, total in
+            MainActor.assumeIsolated {
+                self?.noteTouchupMeter(fraction: fraction, done: done, total: total, meter: meter)
+            }
+        }
+        return { fraction, done, total in
+            sink.report(fraction: fraction, done: done, total: total)
+        }
+    }
+
+    /// Rebuilds saved repairs away from the main thread. Several repairs show the bar before the read starts,
+    /// because that read can occupy the main thread and a bar drawn afterward would never move.
+    /// Nil when this photograph was replaced before the rebuild finished.
+    private func awaitTouchupReplay(
+        shaped: CIImage,
+        operations: [InpaintOp],
+        token: Int,
+        generation: Int,
+        touchupTicket: Int
+    ) async -> (image: CIImage, meter: Int)? {
+        let meter: Int
+        if touchupRepairCount(operations) >= 2 {
+            meter = showTouchupMeter(operations: operations)
+            try? await Task.sleep(nanoseconds: 80_000_000)
+            guard generation == openGeneration, touchupTicket == touchupGeneration else {
+                hideTouchupMeter(meter)
+                return nil
+            }
+        } else {
+            meter = 0
+        }
+        let progress: Touchup.ProgressHandler? = meter == 0 ? nil : touchupProgress(meter: meter)
+        guard let image = await Touchup.replay(
+            base: shaped,
+            operations: operations,
+            token: token,
+            progress: progress
+        ) else {
+            hideTouchupMeter(meter)
+            return nil
+        }
+        guard generation == openGeneration, touchupTicket == touchupGeneration else {
+            hideTouchupMeter(meter)
+            return nil
+        }
+        return (image, meter)
     }
 
     /// Luminance of the photograph before the Spectrum handles, so the graph stays put while a handle moves.
-    private func refreshSpectrumHistogram() {
+    private func refreshSpectrumHistogram(using shapedOverride: CIImage? = nil) {
         guard !spectrumDragActive else { return }
-        guard let shaped = videoPoster ?? stage3Image() else {
+        let shaped = shapedOverride ?? videoPoster ?? stage3Image()
+        guard let shaped else {
             spectrumBins = []
             return
         }
@@ -3192,6 +4252,10 @@ struct Chrome: View {
         .onAppear {
             browser.openFile = { url, _ in
                 model.openSecurityScopedFile(at: url, switchToImageTab: false)
+                UserDefaults.standard.set(false, forKey: "ZImager.serverShowsFolder")
+            }
+            browser.openCatalogFile = { url, uid, relative in
+                model.openCatalogPhoto(at: url, uid: uid, relativePath: relative)
                 UserDefaults.standard.set(false, forKey: "ZImager.serverShowsFolder")
             }
             browser.openVideo = { url in
@@ -3501,12 +4565,6 @@ struct Chrome: View {
                 .accessibilityIdentifier("Choose Library Base Folder")
             Button("Pair with Helper") { LibraryHost.pairWithHelper(browser: browser) }
                 .accessibilityIdentifier("Pair with Helper")
-            Button("Clean folder") {
-                Task { await browser.cleanDisplayFolder() }
-            }
-            .disabled(librarySection != "Photos" || browser.cleanBusy || browser.removalBusy || browser.dateBusy)
-            .accessibilityIdentifier("Clean folder")
-            .help("Removes catalog records in this folder whose files are gone and whose name and size match a photo that is still here. Photos on disk stay.")
         } label: {
             Image(systemName: "line.3.horizontal")
                 .font(.system(size: 13, weight: .medium))
@@ -3771,9 +4829,6 @@ struct Chrome: View {
                 .toolToggleBorder(active: model.canvasTool == .zoom)
                 .accessibilityAddTraits(model.canvasTool == .zoom ? .isSelected : [])
                 .help("Click zooms in. Option-click zooms out. Hold Space to pan.")
-            if diskMode {
-                RemoveObjectTool(model: model)
-            }
             Slider(
                 value: Binding(
                     get: { model.zoom.logarithmicPosition },

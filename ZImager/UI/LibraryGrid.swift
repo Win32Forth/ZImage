@@ -26,6 +26,13 @@ struct LibraryGrid: View {
                     libraryPushButton("Display Folder", identifier: "Display Folder") {
                         browser.chooseDisplayFolder(media: media ?? "photo")
                     }
+                    if live {
+                        libraryPushButton("Rescan", identifier: "Rescan Folder") {
+                            browser.rescanDisplayFolder()
+                        }
+                        .disabled(browser.rescanBusy || browser.removalBusy || browser.dateBusy || browser.cleanBusy)
+                        .help("Adds new files in this folder and its subfolders, and removes catalog records whose files are gone.")
+                    }
                     Text(browser.displayFolder)
                         .font(.system(size: 13))
                         .foregroundStyle(ChromePalette.ink)
@@ -36,6 +43,14 @@ struct LibraryGrid: View {
                 }
                 .padding(.horizontal, 16)
                 .padding(.top, 10)
+                if live, let meter = browser.rescanMeter {
+                    TouchupProgressBar(
+                        meter: meter,
+                        identifier: "Rescan progress",
+                        caption: rescanProgressCaption(meter)
+                    )
+                    .padding(.horizontal, 8)
+                }
             }
             PreviewSizeSlider(points: Binding(
                 get: { browser.previewPoints },
@@ -69,7 +84,7 @@ struct LibraryGrid: View {
             .modifier(KeptScroll(
                 visible: onScreen,
                 key: "\(media ?? "")|\(browser.displayFolder)",
-                holdOffset: browser.removalBusy || browser.dateBusy || browser.cleanBusy
+                holdOffset: browser.removalBusy || browser.dateBusy || browser.cleanBusy || browser.rescanBusy
             ))
         }
         .background(ChromePalette.panel)
@@ -213,7 +228,7 @@ struct LibraryGrid: View {
                 let targets = browser.libraryRemovalTargets(clicked: asset)
                 Task { await browser.removeFromLibrary(targets) }
             }
-            .disabled(browser.removalBusy || browser.dateBusy || browser.cleanBusy || browser.libraryRemovalTargets(clicked: asset).isEmpty)
+            .disabled(browser.removalBusy || browser.dateBusy || browser.cleanBusy || browser.rescanBusy || browser.libraryRemovalTargets(clicked: asset).isEmpty)
             Divider()
             Text(browser.sizeLabel(for: asset))
         }

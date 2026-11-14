@@ -10,6 +10,38 @@ struct CanvasSizeKey: PreferenceKey {
     }
 }
 
+struct TouchupProgressBar: View {
+    var meter: TouchupMeter
+    var identifier = "Touchup progress"
+    var caption: String?
+
+    private var line: String { caption ?? meter.caption }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(line)
+                .font(.system(size: 13))
+                .foregroundStyle(ChromePalette.ink)
+            if let fraction = meter.fraction {
+                ProgressView(value: fraction)
+                    .progressViewStyle(.linear)
+                    .tint(ChromePalette.toolActive)
+            } else {
+                ProgressView()
+                    .progressViewStyle(.linear)
+                    .tint(ChromePalette.toolActive)
+            }
+        }
+        .padding(8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(ChromePalette.panel)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(line)
+        .accessibilityIdentifier(identifier)
+        .allowsHitTesting(false)
+    }
+}
+
 struct CanvasView: View {
     @Bindable var model: EditorModel
     @State private var trackingPan = false
@@ -96,14 +128,23 @@ struct CanvasView: View {
                 }
             }
             .overlay(alignment: .top) {
-                if let banner = model.previewBanner {
-                    Text(banner)
-                        .font(.system(size: 13))
-                        .foregroundStyle(ChromePalette.ink)
-                        .padding(8)
-                        .frame(maxWidth: .infinity)
-                        .background(ChromePalette.panel)
+                VStack(spacing: 0) {
+                    if let banner = model.previewBanner {
+                        Text(banner)
+                            .font(.system(size: 13))
+                            .foregroundStyle(ChromePalette.ink)
+                            .padding(8)
+                            .frame(maxWidth: .infinity)
+                            .background(ChromePalette.panel)
+                    }
+                    if model.previewBanner != nil, model.touchupMeter != nil {
+                        ChromePalette.hairline.frame(height: 1)
+                    }
+                    if let meter = model.touchupMeter {
+                        TouchupProgressBar(meter: meter)
+                    }
                 }
+                .frame(maxWidth: .infinity)
             }
             .canvasHitTarget(model.videoPlayback == nil)
             .onContinuousHover { phase in
@@ -125,7 +166,7 @@ struct CanvasView: View {
                 syncCursor(in: geo.size)
             }
             .onChange(of: model.canvasTool) { _, tool in
-                if tool != .scratchMark { clearScratchStroke() }
+                if !tool.repairsByHand { clearScratchStroke() }
                 if !model.handIsActive { trackingPan = false }
                 syncCursor(in: geo.size)
             }
@@ -141,7 +182,7 @@ struct CanvasView: View {
                 NSCursor.arrow.set()
             }
             .cropDrag(model.videoPlayback == nil && model.canvasTool == .select, selectGesture(in: geo.size))
-            .cropDrag(model.videoPlayback == nil && model.canvasTool == .scratchMark && !model.handIsActive, scratchGesture(in: geo.size))
+            .cropDrag(model.videoPlayback == nil && model.canvasTool.repairsByHand && !model.handIsActive, repairGesture(in: geo.size))
             .cropDrag(model.videoPlayback == nil && model.handIsActive, panGesture(in: geo.size))
             .stillGesture(model.videoPlayback == nil, pinchGesture(in: geo.size))
             .stillGesture(model.videoPlayback == nil, zoomClickGesture(in: geo.size))
@@ -179,7 +220,7 @@ struct CanvasView: View {
     /// The circle and the gray scratch trail stay up for the whole drag, including after hover tracking ends.
     private var showsBrushChrome: Bool {
         guard model.preview != nil, !model.spaceDown else { return false }
-        guard model.canvasTool == .dustSpot || model.canvasTool == .scratchMark else { return false }
+        guard model.canvasTool.repairsByHand else { return false }
         return pointerInside || scratchDragging
     }
 
@@ -252,10 +293,16 @@ struct CanvasView: View {
             }
     }
 
-    private func scratchGesture(in viewSize: CGSize) -> some Gesture {
+    /// A press that stays inside this distance is a spot. A longer drag is a scratch.
+    private static let repairClickSlop: CGFloat = 8
+
+    private func repairGesture(in viewSize: CGSize) -> some Gesture {
         DragGesture(minimumDistance: 0)
             .onChanged { value in
-                guard model.canvasTool == .scratchMark, !model.spaceDown else { return }
+                guard model.canvasTool.repairsByHand, !model.spaceDown else { return }
+                hoverPoint = value.location
+                let travel = hypot(value.location.x - value.startLocation.x, value.location.y - value.startLocation.y)
+                guard travel >= Self.repairClickSlop else { return }
                 if !scratchDragging {
                     scratchDragging = true
                     scratchInk.dragging = true
@@ -272,19 +319,25 @@ struct CanvasView: View {
                 let now = Date().timeIntervalSinceReferenceDate
                 guard now - lastScratchPublish >= 1.0 / 40 else { return }
                 lastScratchPublish = now
-                hoverPoint = value.location
                 scratchEpoch += 1
             }
             .onEnded { value in
                 let point = value.location
+                hoverPoint = point
+                let dragged = scratchDragging
                 if scratchInk.points.last.map({ hypot($0.x - point.x, $0.y - point.y) > 1 }) ?? true {
                     scratchInk.points.append(point)
                 }
                 let points = scratchInk.points
-                hoverPoint = point
                 clearScratchStroke()
-                guard points.count >= 2 else { return }
-                model.scratchStroke(points, in: viewSize)
+                guard model.canvasTool.repairsByHand, !model.spaceDown else { return }
+                if !dragged {
+                    model.dustSpotClick(at: value.startLocation, in: viewSize)
+                    return
+                }
+                if !model.scratchStroke(points, in: viewSize) {
+                    model.dustSpotClick(at: value.startLocation, in: viewSize)
+                }
             }
     }
 
@@ -333,11 +386,7 @@ struct CanvasView: View {
                     model.removeObjectClick(at: value.location, in: viewSize)
                     return
                 }
-                if model.canvasTool == .dustSpot {
-                    model.dustSpotClick(at: value.location, in: viewSize)
-                    return
-                }
-                if model.canvasTool == .scratchMark {
+                if model.canvasTool.repairsByHand {
                     return
                 }
                 let flags = NSEvent.modifierFlags

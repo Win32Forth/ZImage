@@ -2,6 +2,7 @@ import CoreGraphics
 import CoreImage
 import ImageIO
 import PDFKit
+import UniformTypeIdentifiers
 import XCTest
 @testable import ZImager
 
@@ -173,6 +174,152 @@ final class ExportRoundTripTests: XCTestCase {
         XCTAssertTrue(ExportRequest.standard(.dng).panelCopy.contains("16-bit"))
         XCTAssertNil(ExportContainer.webp.imageIOType)
         XCTAssertNil(ExportContainer.jpegxl.imageIOType)
+    }
+
+    func testZflatMasterKeepsSixteenBitPixels() throws {
+        let image = try linearImage(width: 12, height: 8, fill: (0.2, 0.4, 0.6, 1))
+        let folder = try makeTempFolder("zflat-depth")
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let tiff = folder.appendingPathComponent("source.tiff")
+        var request = ExportRequest.standard(.tiff)
+        request.bitDepth = 16
+        try StillExporter.write(image: image, request: request, to: tiff, context: context)
+        let zflat = folder.appendingPathComponent("photo.zflat")
+        try FileManager.default.copyItem(at: tiff, to: zflat)
+        let loaded = try FlattenWriter.masterCGImage(zflat)
+        XCTAssertGreaterThanOrEqual(loaded.image.bitsPerComponent, 16)
+        XCTAssertEqual(loaded.image.width, 12)
+        XCTAssertEqual(loaded.image.height, 8)
+        let master = try FlattenWriter.masterImage(zflat)
+        XCTAssertEqual(Int(master.extent.width.rounded()), 12)
+        XCTAssertEqual(Int(master.extent.height.rounded()), 8)
+    }
+
+    func testZflatAppliesExifOrientation() throws {
+        let cg = try solidCGImage(width: 32, height: 16)
+        let folder = try makeTempFolder("zflat-orient")
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let tiff = folder.appendingPathComponent("source.tiff")
+        let destination = try XCTUnwrap(
+            CGImageDestinationCreateWithURL(tiff as CFURL, UTType.tiff.identifier as CFString, 1, nil)
+        )
+        CGImageDestinationAddImage(destination, cg, [
+            kCGImagePropertyOrientation: 6,
+        ] as CFDictionary)
+        XCTAssertTrue(CGImageDestinationFinalize(destination))
+        let zflat = folder.appendingPathComponent("photo.zflat")
+        try FileManager.default.copyItem(at: tiff, to: zflat)
+        let loaded = try FlattenWriter.masterCGImage(zflat)
+        XCTAssertEqual(loaded.image.width, 32)
+        XCTAssertEqual(loaded.image.height, 16)
+        XCTAssertEqual(loaded.orientation, 6)
+        let master = try FlattenWriter.masterImage(zflat)
+        XCTAssertEqual(Int(master.extent.width.rounded()), 16)
+        XCTAssertEqual(Int(master.extent.height.rounded()), 32)
+    }
+
+    func testSidecarIndexReturnsTheReadableFlattenedTIFF() throws {
+        let root = try makeTempFolder("zflat-index")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let edits = root.appendingPathComponent(".zimage/edits", isDirectory: true)
+        let day = root.appendingPathComponent("Photos/day", isDirectory: true)
+        try FileManager.default.createDirectory(at: edits, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: day, withIntermediateDirectories: true)
+        try writeCatalog(uid: "shortuid", relative: "Photos/scan.jpg", edits: edits)
+        try writeCatalog(uid: "longuid", relative: "Photos/day/scan.jpg", edits: edits)
+        let longTIFF = edits.appendingPathComponent("longuid.zflat")
+        try Data([0x49, 0x49, 0x2A, 0x00]).write(to: edits.appendingPathComponent("shortuid.zflat"))
+        try Data([0x49, 0x49, 0x2A, 0x00]).write(to: longTIFF)
+        let index = FlattenSidecarIndex()
+        let dayFile = day.appendingPathComponent("scan.jpg")
+        try Data([0xFF, 0xD8]).write(to: dayFile)
+        XCTAssertEqual(index.tiff(for: dayFile)?.lastPathComponent, "longuid.zflat")
+        let shortFile = root.appendingPathComponent("Photos/scan.jpg")
+        try Data([0xFF, 0xD8]).write(to: shortFile)
+        XCTAssertEqual(index.tiff(for: shortFile)?.lastPathComponent, "shortuid.zflat")
+        try FileManager.default.removeItem(at: longTIFF)
+        XCTAssertNil(index.tiff(for: dayFile))
+    }
+
+    func testRevertRemovesTheFlattenedTIFFAndClearsTheEditList() throws {
+        let edits = try makeTempFolder("zflat-revert")
+        defer { try? FileManager.default.removeItem(at: edits) }
+        let uid = "revertuid"
+        try writeCatalog(uid: uid, relative: "Photos/old.jpg", edits: edits)
+        let zflat = edits.appendingPathComponent(uid + ".zflat")
+        let zjpg = edits.appendingPathComponent(uid + ".zjpg")
+        let original = edits.appendingPathComponent("original.jpg")
+        try Data([0x49, 0x49, 0x2A, 0x00]).write(to: zflat)
+        try Data([0xFF, 0xD8, 0xFF, 0xD9]).write(to: zjpg)
+        try Data([0xFF, 0xD8]).write(to: original)
+        let preview = Data([0xFF, 0xD8, 0xFF, 0xDB])
+        try FlattenedMaster.revertToOriginal(
+            uid: uid,
+            editsFolder: edits,
+            previewJPEG: preview,
+            blake3: "new-digest",
+            byteSize: 42,
+            uti: "public.jpeg",
+            relativePath: "Photos/scan.jpg"
+        )
+        XCTAssertFalse(FileManager.default.fileExists(atPath: zflat.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: zjpg.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: original.path))
+        let document = try ZImgRaw.read(from: edits.appendingPathComponent(uid + ".zimg"))
+        XCTAssertEqual(document.history, HistoryLog())
+        XCTAssertEqual(document.history.commands.count, 0)
+        XCTAssertEqual(document.history.cursor, 0)
+        XCTAssertEqual(document.base.assetUID, uid)
+        XCTAssertEqual(document.base.blake3, "new-digest")
+        XCTAssertEqual(document.base.byteSize, 42)
+        XCTAssertEqual(document.base.relativePathHint, "Photos/scan.jpg")
+        XCTAssertEqual(document.previewJPEG, preview)
+        XCTAssertThrowsError(try FlattenedMaster.revertToOriginal(
+            uid: "",
+            editsFolder: edits,
+            previewJPEG: preview,
+            blake3: "new-digest",
+            byteSize: 42,
+            uti: "public.jpeg",
+            relativePath: "Photos/scan.jpg"
+        ))
+    }
+
+    private func makeTempFolder(_ name: String) throws -> URL {
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("zimage-\(name)-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        return folder
+    }
+
+    private func solidCGImage(width: Int, height: Int) throws -> CGImage {
+        let space = try XCTUnwrap(CGColorSpace(name: CGColorSpace.sRGB))
+        let context = try XCTUnwrap(CGContext(
+            data: nil,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: 0,
+            space: space,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ))
+        context.setFillColor(CGColor(srgbRed: 0.2, green: 0.4, blue: 0.6, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        return try XCTUnwrap(context.makeImage())
+    }
+
+    private func writeCatalog(uid: String, relative: String, edits: URL) throws {
+        let document = ZImgRaw.catalogRefDocument(
+            log: HistoryLog(),
+            blake3: "abc",
+            byteSize: 4,
+            uti: "public.jpeg",
+            assetUID: uid,
+            relativePathHint: relative,
+            previewJPEG: Data([0xFF, 0xD8, 0xFF, 0xD9])
+        )
+        let bytes = try ZImgRaw.encode(document)
+        try bytes.write(to: edits.appendingPathComponent(uid + ".zimg"))
     }
 
     private func linearImage(width: Int, height: Int, fill: (Float, Float, Float, Float)?) throws -> CIImage {

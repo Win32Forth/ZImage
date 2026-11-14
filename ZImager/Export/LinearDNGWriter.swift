@@ -28,7 +28,8 @@ nonisolated enum LinearDNGWriter {
         try file.write(to: url, options: .atomic)
     }
 
-    /// TIFF row 0 is the top. `CIContext.render` stores the lower-left pixel first, so each tile is flipped.
+    /// TIFF row 0 is the top. `CIContext.render(_:toBitmap:)` writes the top of `bounds`
+    /// at the first row of the buffer, so each tile is copied in that order.
     private static func linearSamples(
         _ image: CIImage,
         extent: CGRect,
@@ -58,10 +59,9 @@ nonisolated enum LinearDNGWriter {
                     )
                 }
                 for row in 0..<rows {
-                    let sourceRow = rows - 1 - row
                     let destRow = y + row
                     for col in 0..<cols {
-                        let source = (sourceRow * cols + col) * 4
+                        let source = (row * cols + col) * 4
                         let alpha = floats[source + 3]
                         let scale: Float = alpha > 0.0001 ? (1 / alpha) : 0
                         let dest = (destRow * width + (x + col)) * 6

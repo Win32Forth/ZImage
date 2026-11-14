@@ -253,6 +253,40 @@ struct FolderCleanCall: Equatable, Sendable {
     var error: String?
 }
 
+struct FolderScanStatus: Decodable, Equatable, Sendable {
+    var prefix: String
+    var runState: String
+    var phase: String
+    var done: Int
+    var total: Int
+    var added: Int
+    var removed: Int
+    var error: String?
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        prefix = try values.decodeIfPresent(String.self, forKey: .prefix) ?? ""
+        runState = try values.decodeIfPresent(String.self, forKey: .runState) ?? ""
+        phase = try values.decodeIfPresent(String.self, forKey: .phase) ?? ""
+        done = try values.decodeIfPresent(Int.self, forKey: .done) ?? 0
+        total = try values.decodeIfPresent(Int.self, forKey: .total) ?? 0
+        added = try values.decodeIfPresent(Int.self, forKey: .added) ?? 0
+        removed = try values.decodeIfPresent(Int.self, forKey: .removed) ?? 0
+        error = try values.decodeIfPresent(String.self, forKey: .error)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case prefix, runState, phase, done, total, added, removed, error
+    }
+}
+
+enum FolderScanCall: Equatable, Sendable {
+    case status(FolderScanStatus)
+    case unsupported
+    case busy
+    case offline
+}
+
 enum DuplicateCopy {
     static let keeper = "Keeper"
     static let emptyList = "This list shows copies gathered into Photos/_Duplicates. Find duplicates looks for matches. Start gathers the extra copies into this list."
@@ -984,6 +1018,48 @@ final class HelperClient {
             return FolderCleanCall(error: error)
         }
         throw HelperError.offline
+    }
+
+    /// Starts a catalog walk of one folder and its subfolders. The helper answers before the walk finishes.
+    func startFolderRescan(prefix: String) async -> FolderScanCall {
+        let body: Data
+        do {
+            body = try JSONSerialization.data(withJSONObject: ["prefix": prefix])
+        } catch {
+            return .offline
+        }
+        return await folderRescan(method: "POST", body: body)
+    }
+
+    func folderRescanStatus() async -> FolderScanCall {
+        await folderRescan(method: "GET", body: nil)
+    }
+
+    private func folderRescan(method: String, body: Data?) async -> FolderScanCall {
+        do {
+            let response = try await perform(
+                path: "/v1/folders/rescan",
+                method: method,
+                body: body,
+                authorize: true,
+                contentType: body == nil ? nil : "application/json"
+            )
+            if response.status == 200 {
+                if let status = try? JSONDecoder().decode(FolderScanStatus.self, from: response.body) {
+                    return .status(status)
+                }
+                return .offline
+            }
+            if response.status == 404 {
+                return .unsupported
+            }
+            if response.status == 409 {
+                return .busy
+            }
+            return .offline
+        } catch {
+            return .offline
+        }
     }
 
     func purgeAllDuplicates(confirm: String) async throws -> PurgeAllCall {

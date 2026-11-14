@@ -250,6 +250,22 @@ nonisolated enum ZImgRaw {
         return file
     }
 
+    /// Catalog identity from the header. The history and preview sections stay unread.
+    static func peekCatalogBase(at url: URL) -> ZImgBase? {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? handle.close() }
+        guard let prefix = try? handle.read(upToCount: 12),
+              prefix.count == 12,
+              prefix.prefix(8) == magic else { return nil }
+        let length = Int(u32(prefix, at: 8))
+        guard length >= 2, length < 1_000_000,
+              let headerBytes = try? handle.read(upToCount: length),
+              headerBytes.count == length,
+              let header = try? JSONDecoder().decode(ZImgHeader.self, from: headerBytes),
+              header.base.kind == .catalogRef else { return nil }
+        return header.base
+    }
+
     static func read(
         _ data: Data,
         schema: Int = VersionMigratorChain.currentSchema,

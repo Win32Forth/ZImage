@@ -426,6 +426,31 @@ func cleanFolderNotice(removed: Int, kept: Int) -> String {
     }
 }
 
+func rescanProgressCaption(_ meter: TouchupMeter) -> String {
+    if meter.total <= 0 {
+        if meter.done > 0 {
+            return "\(meter.title), \(DuplicateCopy.count(meter.done)) files"
+        }
+        return meter.title
+    }
+    return "\(meter.title), \(DuplicateCopy.count(meter.done)) of \(DuplicateCopy.count(meter.total))"
+}
+
+func rescanFinishedNotice(added: Int, removed: Int) -> String {
+    switch (added, removed) {
+    case (0, 0):
+        return "No files were added or removed."
+    case (_, 0):
+        return added == 1 ? "Added 1 file." : "Added \(added) files."
+    case (0, _):
+        return removed == 1 ? "Removed 1 deleted file." : "Removed \(removed) deleted files."
+    default:
+        let add = added == 1 ? "Added 1 file." : "Added \(added) files."
+        let drop = removed == 1 ? "Removed 1 deleted file." : "Removed \(removed) deleted files."
+        return add + " " + drop
+    }
+}
+
 /// The folder shown on the Photos tab. The share root is refused.
 enum DisplayFolder {
     static let root = "Photos"
@@ -468,6 +493,11 @@ final class LibraryBrowser {
     private(set) var dateBusy = false
     /// True while Clean folder is dropping leftover catalog rows.
     private(set) var cleanBusy = false
+    /// True while Rescan is walking the displayed folder.
+    private(set) var rescanBusy = false
+    /// The folder walk bar. Nil hides it.
+    private(set) var rescanMeter: TouchupMeter?
+    private var rescanGeneration = 0
     private(set) var rows: [LibraryAsset] = []
     private(set) var reviewRows: [LibraryAsset] = []
     private(set) var events: [LibraryEvent] = []
@@ -502,6 +532,8 @@ final class LibraryBrowser {
     var editedJPEG: [String: Data] = [:]
     var selectedEventUID: String?
     var openFile: (URL, String) -> Void
+    /// Opens a catalog still with its asset id, so a flattened TIFF can be the edit base immediately.
+    var openCatalogFile: ((URL, String, String) -> Void)?
     /// Double-click plays the movie here. The QuickTime menu item does not use this.
     var openVideo: ((URL) -> Void)?
     private var scopedRoot: URL?
@@ -547,6 +579,9 @@ final class LibraryBrowser {
         editedJPEG = [:]
         selectedEventUID = nil
         notice = nil
+        rescanGeneration += 1
+        rescanBusy = false
+        rescanMeter = nil
         reorg = nil
         reorgNotice = nil
         reorgPending = nil
@@ -651,7 +686,7 @@ final class LibraryBrowser {
 
     /// Writes the typed date on every selected file and moves each one into its date folder.
     func setCaptureDate(_ text: String) async {
-        guard !dateBusy, !removalBusy, !cleanBusy else { return }
+        guard !dateBusy, !removalBusy, !cleanBusy, !rescanBusy else { return }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let wire = LibraryItemMenu.captureRequest(trimmed) else {
             notice = "The date was not saved. Use YYYY-MM-DD or a four-digit year."
@@ -718,6 +753,95 @@ final class LibraryBrowser {
         } catch {
             notice = "Folder cleanup did not run."
         }
+    }
+
+    /// Catalogs the displayed folder and its subfolders, and deletes rows whose files are gone.
+    func rescanDisplayFolder() {
+        guard !rescanBusy, !removalBusy, !dateBusy, !cleanBusy else { return }
+        rescanBusy = true
+        rescanGeneration += 1
+        let generation = rescanGeneration
+        let folder = displayFolder
+        notice = nil
+        rescanMeter = TouchupMeter(title: "Rescanning \(folder)", done: 0, total: 0, fraction: nil)
+        Task { await runFolderRescan(generation: generation, folder: folder) }
+    }
+
+    private func runFolderRescan(generation: Int, folder: String) async {
+        switch await client.startFolderRescan(prefix: folder) {
+        case .unsupported:
+            finishRescan(generation: generation, notice: "This helper cannot rescan a folder yet.")
+        case .busy:
+            finishRescan(generation: generation, notice: "A folder rescan is already running.")
+        case .offline:
+            finishRescan(generation: generation, notice: "The folder was not rescanned.")
+        case .status:
+            await followFolderRescan(generation: generation, folder: folder)
+        }
+    }
+
+    private func followFolderRescan(generation: Int, folder: String) async {
+        var misses = 0
+        var lastAdded = -1
+        var lastRemoved = -1
+        var lastReload = Date.distantPast
+        while generation == rescanGeneration {
+            switch await client.folderRescanStatus() {
+            case .status(let status):
+                misses = 0
+                guard generation == rescanGeneration else { return }
+                applyRescanMeter(status, folder: folder)
+                let changed = status.added != lastAdded || status.removed != lastRemoved
+                if changed, displayFolder == folder, Date().timeIntervalSince(lastReload) > 2 {
+                    lastAdded = status.added
+                    lastRemoved = status.removed
+                    lastReload = Date()
+                    await reload(media: "photo")
+                }
+                if status.runState == "running" {
+                    try? await Task.sleep(for: .milliseconds(500))
+                    continue
+                }
+                if displayFolder == folder {
+                    await reload(media: "photo")
+                }
+                if status.runState == "failed" {
+                    let line = status.error == "prefix" ? "That folder cannot be rescanned." : "The folder was not rescanned."
+                    finishRescan(generation: generation, notice: line)
+                } else {
+                    finishRescan(generation: generation, notice: rescanFinishedNotice(added: status.added, removed: status.removed))
+                }
+                return
+            case .unsupported:
+                finishRescan(generation: generation, notice: "This helper cannot rescan a folder yet.")
+                return
+            case .busy, .offline:
+                misses += 1
+                if misses >= 5 {
+                    finishRescan(generation: generation, notice: "The folder was not rescanned.")
+                    return
+                }
+                try? await Task.sleep(for: .milliseconds(500))
+            }
+        }
+    }
+
+    private func applyRescanMeter(_ status: FolderScanStatus, folder: String) {
+        let prefix = status.prefix.isEmpty ? folder : status.prefix
+        let title = "Rescanning \(prefix)"
+        if status.total > 0 {
+            let fraction = min(1, max(0, Double(status.done) / Double(status.total)))
+            rescanMeter = TouchupMeter(title: title, done: status.done, total: status.total, fraction: fraction)
+        } else {
+            rescanMeter = TouchupMeter(title: title, done: status.done, total: 0, fraction: nil)
+        }
+    }
+
+    private func finishRescan(generation: Int, notice: String) {
+        guard generation == rescanGeneration else { return }
+        rescanMeter = nil
+        rescanBusy = false
+        self.notice = notice
     }
 
     func loadEvents() async {
@@ -1181,7 +1305,7 @@ final class LibraryBrowser {
 
     /// Journal-moves each file into Photos/_Removed, one at a time. A failure leaves that file in place.
     func removeFromLibrary(_ assets: [LibraryAsset]) async {
-        guard !assets.isEmpty, !removalBusy, !dateBusy, !cleanBusy else { return }
+        guard !assets.isEmpty, !removalBusy, !dateBusy, !cleanBusy, !rescanBusy else { return }
         removalBusy = true
         defer { removalBusy = false }
         var moved = 0
@@ -1514,6 +1638,10 @@ final class LibraryBrowser {
 
     func openInEditor(_ asset: LibraryAsset) {
         guard canOpenInEditor(asset), let url = fileURL(for: asset) else { return }
+        if let relative = asset.relPath, let openCatalogFile {
+            openCatalogFile(url, asset.uid, relative)
+            return
+        }
         EditorHandoff.openFile(url, with: openFile)
     }
 
@@ -1650,7 +1778,15 @@ final class LibraryBrowser {
         guard editedJPEG[asset.uid] == nil, let url = fileURL(for: asset) else { return }
         if let data = FolderPreviewCache.readEditedJPEG(for: url) {
             editedJPEG[asset.uid] = data
+            return
         }
+        let working = libraryRoot
+            .appendingPathComponent(".zimage", isDirectory: true)
+            .appendingPathComponent("edits", isDirectory: true)
+            .appendingPathComponent(asset.uid + ".zjpg")
+        guard FileManager.default.isReadableFile(atPath: working.path),
+              let data = FolderPreviewCache.storeEditedJPEG(fromWorkingFile: working, for: url) else { return }
+        editedJPEG[asset.uid] = data
     }
 
     private func loadThumbnails() async {

@@ -1,3 +1,4 @@
+import CoreGraphics
 import CoreImage
 import XCTest
 @testable import ZImager
@@ -156,6 +157,36 @@ final class TouchupTests: XCTestCase {
         XCTAssertEqual(repaired?.pixels[index(4, 4, width: width, height: height)] ?? 0, 0.62, accuracy: 0.02)
     }
 
+    /// Size slider of 16 px is a circle 16 px across, so the repair radius is 8.
+    func testSixteenPixelCircleReplaysInsideItsNeighborhood() throws {
+        let width = 800
+        let height = 600
+        var samples = flat(width: width, height: height, value: 0.55)
+        fill(rect: 398..<403, rows: 298..<303, samples: &samples, width: width, height: height, value: 0.02)
+        let built = try XCTUnwrap(Touchup.spot(
+            samples: samples,
+            width: width,
+            height: height,
+            bitmapPoint: CGPoint(x: 400, y: 300),
+            radius: 8
+        ))
+        let image = Touchup.ciImage(
+            samples,
+            width: width,
+            height: height,
+            extent: CGRect(x: 0, y: 0, width: width, height: height)
+        )
+        let output = Touchup.apply(base: image, operation: built.operation, chain: 1)
+        XCTAssertEqual(output.extent.integral.width, CGFloat(width))
+        XCTAssertEqual(output.extent.integral.height, CGFloat(height))
+        let read = try XCTUnwrap(Touchup.read(output))
+        let center = index(400, 300, width: width, height: height)
+        XCTAssertEqual(read.samples[center], built.pixels[center], accuracy: 0.02)
+        XCTAssertGreaterThan(read.samples[center], 0.25)
+        XCTAssertEqual(read.samples[index(4, 4, width: width, height: height)], 0.55, accuracy: 0.02)
+        XCTAssertEqual(read.samples[index(790, 590, width: width, height: height)], 0.55, accuracy: 0.02)
+    }
+
     func testSpotOnAWideFrameRepairsTheSpeckAndLeavesTheCorner() {
         let width = 400
         let height = 300
@@ -237,6 +268,130 @@ final class TouchupTests: XCTestCase {
         XCTAssertTrue(queue.add(QueuedTouchup(banner: "Removing the spot…", empty: "empty", work: .spot(.zero, 4))))
         XCTAssertEqual(queue.spotsRemaining, 1)
         XCTAssertEqual(queue.count, 2)
+        XCTAssertTrue(queue.takeLeadingSpots().isEmpty)
+        XCTAssertEqual(queue.spotsRemaining, 1)
+        XCTAssertEqual(queue.count, 2)
+    }
+
+    func testSpotQueueBatchesLeadingSpotsAndStopsAtAScratch() {
+        var queue = TouchupQueue()
+        XCTAssertTrue(queue.add(QueuedTouchup(banner: "Removing the spot…", empty: "empty", work: .spot(.zero, 8))))
+        for index in 1..<12 {
+            XCTAssertTrue(queue.add(QueuedTouchup(
+                banner: "Removing the spot…",
+                empty: "empty",
+                work: .spot(CGPoint(x: index * 20, y: 30), 8)
+            )))
+        }
+        XCTAssertTrue(queue.add(QueuedTouchup(
+            banner: "Removing the scratch…",
+            empty: "empty",
+            work: .scratch([.zero, CGPoint(x: 8, y: 8)], 6)
+        )))
+        XCTAssertEqual(queue.spotsRemaining, 12)
+        XCTAssertEqual(queue.count, 13)
+        let batch = queue.takeLeadingSpots()
+        XCTAssertEqual(batch.count, 12)
+        XCTAssertEqual(queue.spotsRemaining, 12)
+        XCTAssertEqual(queue.count, 13)
+        XCTAssertEqual(queue.waiting.count, 1)
+        XCTAssertTrue(queue.add(QueuedTouchup(banner: "Removing the spot…", empty: "empty", work: .spot(CGPoint(x: 9, y: 9), 8))))
+        XCTAssertEqual(queue.spotsRemaining, 13)
+        let next = queue.finishRunning()
+        XCTAssertEqual(queue.spotsRemaining, 1)
+        XCTAssertEqual(queue.count, 2)
+        guard let next else {
+            XCTFail("The scratch should be the job that runs after the spots")
+            return
+        }
+        guard case .scratch(_, _) = next.work else {
+            XCTFail("The scratch should be the job that runs after the spots")
+            return
+        }
+    }
+
+    /// Undo of the latest spot must get the picture from before that spot, not the one after it.
+    func testUndoPictureRestoresTheSpotBeforeTheLatest() {
+        var pictures = TouchupPictures(cap: 6)
+        let earlierOps = [spotOperation(1)]
+        let laterOps = earlierOps + [spotOperation(2)]
+        let earlier = TouchupShown(
+            token: 7,
+            operations: earlierOps,
+            image: solid(0.2, width: 8),
+            tone: .identity,
+            preview: onePixel(),
+            spectrum: [1]
+        )
+        let later = TouchupShown(
+            token: 7,
+            operations: laterOps,
+            image: solid(0.8, width: 12),
+            tone: .identity,
+            preview: onePixel(),
+            spectrum: [2]
+        )
+        pictures.remember(earlier)
+        pictures.remember(later)
+        let restored = pictures.frame(token: 7, operations: earlierOps)
+        XCTAssertEqual(restored?.image?.extent.width, 8)
+        XCTAssertEqual(restored?.spectrum, [1])
+        XCTAssertEqual(pictures.frame(token: 7, operations: laterOps)?.image?.extent.width, 12)
+
+        let screenOnly = TouchupShown(
+            token: 7,
+            operations: earlierOps,
+            image: nil,
+            tone: .identity,
+            preview: onePixel(),
+            spectrum: [3]
+        )
+        pictures.remember(screenOnly)
+        XCTAssertEqual(pictures.frame(token: 7, operations: earlierOps)?.image?.extent.width, 8)
+        XCTAssertEqual(pictures.frame(token: 7, operations: earlierOps)?.spectrum, [3])
+        XCTAssertEqual(pictures.count, 2)
+    }
+
+    func testUndoPictureDropsTheOldestWhenTheListIsFull() {
+        var pictures = TouchupPictures(cap: 2)
+        pictures.remember(shown(ops: [spotOperation(1)], width: 4))
+        pictures.remember(shown(ops: [spotOperation(1), spotOperation(2)], width: 5))
+        pictures.remember(shown(ops: [spotOperation(1), spotOperation(2), spotOperation(3)], width: 6))
+        XCTAssertEqual(pictures.count, 2)
+        XCTAssertNil(pictures.frame(token: 1, operations: [spotOperation(1)]))
+        XCTAssertEqual(
+            pictures.frame(token: 1, operations: [spotOperation(1), spotOperation(2), spotOperation(3)])?.image?.extent.width,
+            6
+        )
+    }
+
+    func testDustReplayProgressCountsFinishedRepairs() {
+        let reading = TouchupReplayScale.measure(doneBefore: 0, runCount: 30, jobDone: 0, jobTotal: 0, total: 30)
+        XCTAssertEqual(reading.done, 0)
+        XCTAssertEqual(reading.fraction, 0, accuracy: 0.0001)
+
+        let tenth = TouchupReplayScale.measure(doneBefore: 0, runCount: 30, jobDone: 10, jobTotal: 30, total: 30)
+        XCTAssertEqual(tenth.done, 10)
+        XCTAssertEqual(tenth.fraction, 10.0 / 30.0, accuracy: 0.0001)
+
+        let almost = TouchupReplayScale.measure(doneBefore: 0, runCount: 30, jobDone: 29, jobTotal: 30, total: 30)
+        XCTAssertEqual(almost.done, 29)
+
+        let finished = TouchupReplayScale.measure(doneBefore: 0, runCount: 30, jobDone: 30, jobTotal: 30, total: 30)
+        XCTAssertEqual(finished.done, 30)
+        XCTAssertEqual(finished.fraction, 1, accuracy: 0.0001)
+
+        let split = TouchupReplayScale.measure(doneBefore: 4, runCount: 8, jobDone: 1, jobTotal: 4, total: 12)
+        XCTAssertEqual(split.done, 6)
+        XCTAssertEqual(split.fraction, 0.5, accuracy: 0.0001)
+
+        let halfSpot = TouchupReplayScale.measure(doneBefore: 0, runCount: 30, jobDone: 1, jobTotal: 60, total: 30)
+        XCTAssertEqual(halfSpot.done, 0)
+        XCTAssertGreaterThan(halfSpot.fraction, 0)
+
+        let capped = TouchupReplayScale.measure(doneBefore: 28, runCount: 4, jobDone: 4, jobTotal: 4, total: 30)
+        XCTAssertEqual(capped.done, 30)
+        XCTAssertEqual(capped.fraction, 1, accuracy: 0.0001)
     }
 
     func testMissingStrengthDecodesAsFull() throws {
@@ -248,6 +403,312 @@ final class TouchupTests: XCTestCase {
         let decoded = try JSONDecoder().decode(InpaintOp.self, from: stripped)
         XCTAssertEqual(decoded.strength, 1)
         XCTAssertEqual(decoded.modelID, InpaintModel.scratch)
+    }
+
+    /// Two specks far apart on a frame larger than 256 px. Each is repaired, and the middle stays put.
+    func testDustRepairsSeparatedSpecksOnAWideFrame() throws {
+        let width = 800
+        let height = 600
+        var samples = flat(width: width, height: height, value: 0.55)
+        fill(rect: 48..<52, rows: 48..<52, samples: &samples, width: width, height: height, value: 0.02)
+        fill(rect: 700..<704, rows: 500..<504, samples: &samples, width: width, height: height, value: 0.02)
+        let built = try XCTUnwrap(Touchup.dust(samples: samples, width: width, height: height))
+        let near = index(50, 50, width: width, height: height)
+        let farSpeck = index(702, 502, width: width, height: height)
+        let middle = index(400, 300, width: width, height: height)
+        XCTAssertGreaterThan(built.pixels[near], 0.25)
+        XCTAssertGreaterThan(built.pixels[farSpeck], 0.25)
+        XCTAssertEqual(built.pixels[middle], 0.55, accuracy: 0.02)
+        XCTAssertEqual(built.pixels[index(790, 20, width: width, height: height)], 0.55, accuracy: 0.02)
+        let image = Touchup.ciImage(
+            samples,
+            width: width,
+            height: height,
+            extent: CGRect(x: 0, y: 0, width: width, height: height)
+        )
+        let output = Touchup.apply(base: image, operation: built.operation, chain: 11)
+        let read = try XCTUnwrap(Touchup.read(output))
+        XCTAssertEqual(read.samples[near], built.pixels[near], accuracy: 0.02)
+        XCTAssertEqual(read.samples[farSpeck], built.pixels[farSpeck], accuracy: 0.02)
+        XCTAssertEqual(read.samples[middle], 0.55, accuracy: 0.02)
+        XCTAssertEqual(output.extent.integral.width, CGFloat(width))
+        XCTAssertEqual(output.extent.integral.height, CGFloat(height))
+    }
+
+    /// A stroke longer than one tile. The middle and both ends lift, and a corner stays the original gray.
+    func testLongMarkedScratchRepairsEachPiece() throws {
+        let width = 640
+        let height = 240
+        var samples = flat(width: width, height: height, value: 0.5)
+        for x in 16..<624 {
+            let offset = index(x, 120, width: width, height: height)
+            samples[offset] = 0.02
+            samples[offset + 1] = 0.02
+            samples[offset + 2] = 0.02
+        }
+        let built = try XCTUnwrap(Touchup.markedScratch(
+            samples: samples,
+            width: width,
+            height: height,
+            from: CGPoint(x: 20, y: 120),
+            to: CGPoint(x: 620, y: 120),
+            radius: 6
+        ))
+        XCTAssertGreaterThan(built.pixels[index(80, 120, width: width, height: height)], 0.3)
+        XCTAssertGreaterThan(built.pixels[index(320, 120, width: width, height: height)], 0.3)
+        XCTAssertGreaterThan(built.pixels[index(560, 120, width: width, height: height)], 0.3)
+        XCTAssertEqual(built.pixels[index(8, 8, width: width, height: height)], 0.5, accuracy: 0.02)
+        let image = Touchup.ciImage(
+            samples,
+            width: width,
+            height: height,
+            extent: CGRect(x: 0, y: 0, width: width, height: height)
+        )
+        let output = Touchup.apply(base: image, operation: built.operation, chain: 12)
+        let read = try XCTUnwrap(Touchup.read(output))
+        let middle = index(320, 120, width: width, height: height)
+        XCTAssertEqual(read.samples[middle], built.pixels[middle], accuracy: 0.02)
+        XCTAssertEqual(read.samples[index(8, 8, width: width, height: height)], 0.5, accuracy: 0.02)
+        XCTAssertGreaterThan(read.samples[index(80, 120, width: width, height: height)], 0.3)
+        XCTAssertGreaterThan(read.samples[index(560, 120, width: width, height: height)], 0.3)
+    }
+
+    /// Twelve specks far enough apart that each repair is its own patch. Replaying them together matches repairing each one.
+    func testADozenSpotsRepairTogether() throws {
+        let width = 800
+        let height = 600
+        var samples = flat(width: width, height: height, value: 0.55)
+        var points: [CGPoint] = []
+        for row in 0..<3 {
+            for column in 0..<4 {
+                let x = 80 + column * 200
+                let y = 80 + row * 220
+                points.append(CGPoint(x: x, y: y))
+                fill(rect: (x - 2)..<(x + 2), rows: (y - 2)..<(y + 2), samples: &samples, width: width, height: height, value: 0.02)
+            }
+        }
+        var operations: [InpaintOp] = []
+        var centers: [Int] = []
+        var expected: [Float] = []
+        for point in points {
+            let built = try XCTUnwrap(Touchup.spot(
+                samples: samples,
+                width: width,
+                height: height,
+                bitmapPoint: point,
+                radius: 8
+            ))
+            operations.append(built.operation)
+            let center = index(Int(point.x), Int(point.y), width: width, height: height)
+            centers.append(center)
+            expected.append(built.pixels[center])
+            XCTAssertGreaterThan(built.pixels[center], 0.25)
+        }
+        let image = Touchup.ciImage(
+            samples,
+            width: width,
+            height: height,
+            extent: CGRect(x: 0, y: 0, width: width, height: height)
+        )
+        let output = InpaintPipeline.applyInteractive(base: image, operations: operations, imageToken: 12)
+        let read = try XCTUnwrap(Touchup.read(output))
+        for index in centers.indices {
+            XCTAssertEqual(read.samples[centers[index]], expected[index], accuracy: 0.02)
+            XCTAssertGreaterThan(read.samples[centers[index]], 0.25)
+        }
+        XCTAssertEqual(read.samples[self.index(4, 4, width: width, height: height)], 0.55, accuracy: 0.02)
+        XCTAssertEqual(read.samples[self.index(790, 20, width: width, height: height)], 0.55, accuracy: 0.02)
+        XCTAssertEqual(output.extent.integral.width, CGFloat(width))
+        XCTAssertEqual(output.extent.integral.height, CGFloat(height))
+    }
+
+    /// A faded repair stays between the photograph and the full fill, including when a full spot sits beside it.
+    func testFadedDustStaysBetweenThePhotoAndTheRepair() throws {
+        let width = 800
+        let height = 400
+        var samples = flat(width: width, height: height, value: 0.55)
+        fill(rect: 98..<102, rows: 198..<202, samples: &samples, width: width, height: height, value: 0.02)
+        fill(rect: 698..<702, rows: 198..<202, samples: &samples, width: width, height: height, value: 0.02)
+        let first = try XCTUnwrap(Touchup.spot(
+            samples: samples, width: width, height: height, bitmapPoint: CGPoint(x: 100, y: 200), radius: 8
+        ))
+        let second = try XCTUnwrap(Touchup.spot(
+            samples: samples, width: width, height: height, bitmapPoint: CGPoint(x: 700, y: 200), radius: 8
+        ))
+        var faded = second.operation
+        faded.strength = 0.5
+        let image = Touchup.ciImage(
+            samples,
+            width: width,
+            height: height,
+            extent: CGRect(x: 0, y: 0, width: width, height: height)
+        )
+        let output = InpaintPipeline.applyInteractive(base: image, operations: [first.operation, faded], imageToken: 4)
+        let read = try XCTUnwrap(Touchup.read(output))
+        let near = index(100, 200, width: width, height: height)
+        let far = index(700, 200, width: width, height: height)
+        XCTAssertEqual(read.samples[near], first.pixels[near], accuracy: 0.02)
+        XCTAssertGreaterThan(read.samples[far], samples[far] + 0.05)
+        XCTAssertGreaterThan(second.pixels[far] - read.samples[far], 0.08)
+    }
+
+    func testUndoPastesTheSmallPatchAndLeavesTheRest() throws {
+        let width = 32
+        let height = 24
+        let before = flat(width: width, height: height, value: 0.2)
+        var first = before
+        let near = index(4, 2, width: width, height: height)
+        first[near] = 0.85
+        first[near + 1] = 0.15
+        first[near + 2] = 0.4
+        var second = first
+        let far = index(20, 18, width: width, height: height)
+        second[far] = 0.05
+        second[far + 1] = 0.7
+        second[far + 2] = 0.9
+        var firstPatch = try XCTUnwrap(Touchup.makePatch(
+            before: before,
+            after: first,
+            width: width,
+            height: height,
+            rasterWidth: width,
+            rasterHeight: height
+        ))
+        var secondPatch = try XCTUnwrap(Touchup.makePatch(
+            before: first,
+            after: second,
+            width: width,
+            height: height,
+            rasterWidth: width,
+            rasterHeight: height
+        ))
+        XCTAssertEqual(firstPatch.tiles.count, 1)
+        XCTAssertEqual(firstPatch.tiles[0].minX, 4)
+        XCTAssertEqual(firstPatch.tiles[0].minY, 2)
+        XCTAssertEqual(firstPatch.tiles[0].width, 1)
+        XCTAssertEqual(firstPatch.tiles[0].height, 1)
+        XCTAssertEqual(secondPatch.tiles[0].minX, 20)
+        XCTAssertEqual(secondPatch.tiles[0].minY, 18)
+        firstPatch.frameToken = 11
+        secondPatch.frameToken = 11
+        let firstOp = InpaintOp(
+            id: UUID(),
+            maskPNG: Data([1]),
+            modelID: InpaintModel.dust,
+            featherPx: 2,
+            patch: firstPatch
+        )
+        let secondOp = InpaintOp(
+            id: UUID(),
+            maskPNG: Data([2]),
+            modelID: InpaintModel.dust,
+            featherPx: 2,
+            patch: secondPatch
+        )
+        let base = Touchup.ciImage(
+            before,
+            width: width,
+            height: height,
+            extent: CGRect(x: 0, y: 0, width: width, height: height)
+        )
+        let both = try XCTUnwrap(Touchup.stampAfter([firstOp, secondOp], onto: base, frameToken: 11))
+        let bothRead = try XCTUnwrap(Touchup.read(both))
+        XCTAssertEqual(bothRead.samples[near], 0.85, accuracy: 0.02)
+        XCTAssertEqual(bothRead.samples[near + 1], 0.15, accuracy: 0.02)
+        XCTAssertEqual(bothRead.samples[far], 0.05, accuracy: 0.02)
+        XCTAssertEqual(bothRead.samples[0], 0.2, accuracy: 0.02)
+        let undone = try XCTUnwrap(Touchup.stampBefore([secondOp], onto: both, frameToken: 11))
+        let undoneRead = try XCTUnwrap(Touchup.read(undone))
+        XCTAssertEqual(undoneRead.samples[near], 0.85, accuracy: 0.02)
+        XCTAssertEqual(undoneRead.samples[far], 0.2, accuracy: 0.02)
+        XCTAssertEqual(undoneRead.samples[0], 0.2, accuracy: 0.02)
+        let cleared = try XCTUnwrap(Touchup.stampBefore([firstOp], onto: undone, frameToken: 11))
+        let clearedRead = try XCTUnwrap(Touchup.read(cleared))
+        XCTAssertEqual(clearedRead.samples[near], 0.2, accuracy: 0.02)
+        XCTAssertNil(Touchup.stampAfter([firstOp], onto: base, frameToken: 99))
+        let bare = InpaintOp(id: UUID(), maskPNG: Data([1]), modelID: InpaintModel.dust, featherPx: 2)
+        XCTAssertNil(Touchup.stampAfter([bare], onto: base, frameToken: 11))
+        let encoded = try JSONEncoder().encode(EditCommand.addInpaint(firstOp))
+        let decoded = try JSONDecoder().decode(EditCommand.self, from: encoded)
+        guard case .addInpaint(let roundTrip) = decoded else {
+            XCTFail("Expected the repair")
+            return
+        }
+        XCTAssertEqual(roundTrip.patch?.tiles.count, 1)
+        XCTAssertEqual(roundTrip.patch?.tiles[0].minX, 4)
+        XCTAssertEqual(roundTrip.patch?.frameToken, 11)
+        let old = try JSONEncoder().encode(bare)
+        let oldText = String(data: old, encoding: .utf8) ?? ""
+        XCTAssertFalse(oldText.contains("\"patch\""))
+        let oldDecoded = try JSONDecoder().decode(InpaintOp.self, from: old)
+        XCTAssertNil(oldDecoded.patch)
+    }
+
+    func testAWideChangeKeepsSeparateSmallPictures() throws {
+        let width = 400
+        let height = 40
+        let before = flat(width: width, height: height, value: 0.3)
+        var after = before
+        let left = index(2, 3, width: width, height: height)
+        let right = index(320, 8, width: width, height: height)
+        after[left] = 0.9
+        after[right] = 0.1
+        let patch = try XCTUnwrap(Touchup.makePatch(
+            before: before,
+            after: after,
+            width: width,
+            height: height,
+            rasterWidth: width,
+            rasterHeight: height
+        ))
+        XCTAssertEqual(patch.tiles.count, 2)
+        XCTAssertEqual(patch.tiles[0].minX, 2)
+        XCTAssertEqual(patch.tiles[0].minY, 3)
+        XCTAssertEqual(patch.tiles[0].width, 1)
+        XCTAssertEqual(patch.tiles[0].height, 1)
+        XCTAssertEqual(patch.tiles[1].minX, 320)
+        XCTAssertEqual(patch.tiles[1].minY, 8)
+        XCTAssertEqual(patch.tiles[1].width, 1)
+        XCTAssertEqual(patch.tiles[1].height, 1)
+    }
+
+    private func spotOperation(_ mark: Int) -> InpaintOp {
+        let id = UUID(uuidString: String(format: "00000000-0000-0000-0000-%012d", mark))!
+        return InpaintOp(id: id, maskPNG: Data([UInt8(mark)]), modelID: InpaintModel.dust, featherPx: 2)
+    }
+
+    private func solid(_ value: CGFloat, width: Int) -> CIImage {
+        CIImage(color: CIColor(red: value, green: 0, blue: 0, alpha: 1))
+            .cropped(to: CGRect(x: 0, y: 0, width: width, height: width))
+    }
+
+    private func onePixel() -> CGImage {
+        let bytes: [UInt8] = [0, 0, 0, 255]
+        let provider = CGDataProvider(data: Data(bytes) as CFData)!
+        return CGImage(
+            width: 1,
+            height: 1,
+            bitsPerComponent: 8,
+            bitsPerPixel: 32,
+            bytesPerRow: 4,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+            provider: provider,
+            decode: nil,
+            shouldInterpolate: false,
+            intent: .defaultIntent
+        )!
+    }
+
+    private func shown(ops: [InpaintOp], width: Int) -> TouchupShown {
+        TouchupShown(
+            token: 1,
+            operations: ops,
+            image: solid(0.4, width: width),
+            tone: .identity,
+            preview: onePixel(),
+            spectrum: []
+        )
     }
 
     private func flat(width: Int, height: Int, value: Float) -> [Float] {

@@ -38,4 +38,11 @@ nonisolated enum LocalEditStore {
     static func fileURL(digest: String) throws -> URL {
         try folder().appendingPathComponent(digest + ".zimg")
     }
+
+    /// Drops the Mac copy after the library has the same edits. A photo that is not in the catalog keeps its file here.
+    static func discard(digest: String) {
+        SavedEditBookmarks.remove(digest: digest)
+        guard let url = try? fileURL(digest: digest) else { return }
+        try? FileManager.default.removeItem(at: url)
+    }
 }

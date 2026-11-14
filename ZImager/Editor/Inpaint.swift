@@ -79,23 +79,91 @@ nonisolated enum InpaintPipeline {
 
     /// Interactive fill. A missing model uses the stub. The stored command is still the mask, not the pixels.
     /// `imageToken` is the geometry and file under the masks. Tone is applied later and is not part of it.
+    /// Full-strength dust spots in a row share one read and fill together. A lower Amount stays on its own step.
     static func applyInteractive(
         base: CIImage,
         operations: [InpaintOp],
         imageToken: Int = 0,
-        context: CIContext? = nil
+        context: CIContext? = nil,
+        isCancelled: @escaping @Sendable () -> Bool = { false },
+        progress: Touchup.ProgressHandler? = nil
     ) -> CIImage {
         var image = base
         var chain = imageToken
-        for operation in operations where !operation.maskPNG.isEmpty {
-            if InpaintModel.isTouchup(operation.modelID) {
+        var index = 0
+        let total = operations.reduce(into: 0) { count, operation in
+            if !operation.maskPNG.isEmpty { count += 1 }
+        }
+        var done = 0
+        progress?(0, 0, total)
+        while index < operations.count {
+            // A cancelled dust run must stop here. Later repairs would otherwise fill on the unrepaired photo.
+            if isCancelled() { return base }
+            let operation = operations[index]
+            if operation.maskPNG.isEmpty {
+                index += 1
+                continue
+            }
+            if repairsTogether(operation) {
+                var end = index + 1
+                while end < operations.count, repairsTogether(operations[end]) {
+                    end += 1
+                }
+                let run = Array(operations[index..<end])
+                if run.count >= 2 {
+                    let doneBefore = done
+                    let filled = Touchup.applyDustRun(
+                        base: image,
+                        operations: run,
+                        context: context,
+                        isCancelled: isCancelled
+                    ) { jobDone, jobTotal in
+                        let step = TouchupReplayScale.measure(
+                            doneBefore: doneBefore,
+                            runCount: run.count,
+                            jobDone: jobDone,
+                            jobTotal: jobTotal,
+                            total: total
+                        )
+                        progress?(step.fraction, step.done, total)
+                    }
+                    guard let filled else { return base }
+                    image = filled
+                } else {
+                    image = Touchup.apply(base: image, operation: operation, chain: chain, context: context)
+                }
+                for step in run {
+                    chain = Touchup.advance(chain, step)
+                }
+                done += run.count
+                if total > 0 {
+                    progress?(Double(done) / Double(total), done, total)
+                }
+                index = end
+            } else if InpaintModel.isTouchup(operation.modelID) {
                 image = Touchup.apply(base: image, operation: operation, chain: chain, context: context)
+                chain = Touchup.advance(chain, operation)
+                done += 1
+                if total > 0 {
+                    progress?(Double(done) / Double(total), done, total)
+                }
+                index += 1
             } else {
                 image = StubInpainter.composite(base: image, maskPNG: operation.maskPNG, featherPx: operation.featherPx)
+                chain = Touchup.advance(chain, operation)
+                done += 1
+                if total > 0 {
+                    progress?(Double(done) / Double(total), done, total)
+                }
+                index += 1
             }
-            chain = Touchup.advance(chain, operation)
         }
         return image
+    }
+
+    /// Dust at full strength. Several of these in a row can share one picture.
+    private static func repairsTogether(_ operation: InpaintOp) -> Bool {
+        operation.modelID == InpaintModel.dust && operation.strength >= 0.999 && !operation.maskPNG.isEmpty
     }
 
     /// Crop padded by the larger of 32 px and half the box, clipped to the image.

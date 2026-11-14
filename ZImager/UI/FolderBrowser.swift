@@ -323,6 +323,21 @@ nonisolated enum FolderPreviewCache {
         }
     }
 
+    /// Folder-sized JPEG of a flattened working file. The full TIFF is left unread.
+    static func storeEditedJPEG(fromWorkingFile working: URL, for source: URL) -> Data? {
+        guard let image = try? thumbnail(for: working) else { return nil }
+        let url = editedURL(for: source)
+        do {
+            try gate.sync {
+                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+                try writeJPEG(image, to: url)
+            }
+        } catch {
+            return nil
+        }
+        return try? Data(contentsOf: url)
+    }
+
     static func removeEditedJPEG(for source: URL) {
         try? FileManager.default.removeItem(at: editedURL(for: source))
     }

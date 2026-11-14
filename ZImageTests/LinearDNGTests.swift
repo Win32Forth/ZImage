@@ -53,6 +53,40 @@ final class LinearDNGTests: XCTestCase {
         XCTAssertTrue(notice.contains(LinearDNGWriter.adobeNotice))
     }
 
+    /// A frame taller than one export tile stays upright, including across the tile boundary.
+    func testLinearDNGKeepsEachTileUpright() throws {
+        let width = 8
+        let height = 600
+        let image = try verticalRamp(width: width, height: height)
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("zimage-linear-upright-\(UUID().uuidString).dng")
+        try? FileManager.default.removeItem(at: url)
+        try StillExporter.write(image: image, request: .standard(.dng), to: url, context: context)
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let data = try Data(contentsOf: url)
+        let root = directory(data, at: Int(u32(data, 4)))
+        XCTAssertEqual(root.values[257], UInt32(height))
+        let strip = Int(root.values[273] ?? 0)
+        func red(_ row: Int) -> Int {
+            Int(u16(data, strip + row * width * 6))
+        }
+        XCTAssertGreaterThan(red(0), 50_000)
+        XCTAssertLessThan(red(height - 1), 8_000)
+        XCTAssertGreaterThan(red(511), red(512))
+        XCTAssertLessThan(red(511) - red(512), 1_000)
+    }
+
+    /// White at the top of the frame, black at the bottom. Core Image y points up.
+    private func verticalRamp(width: Int, height: Int) throws -> CIImage {
+        let filter = try XCTUnwrap(CIFilter(name: "CILinearGradient"))
+        filter.setValue(CIVector(x: 0, y: 0), forKey: "inputPoint0")
+        filter.setValue(CIVector(x: 0, y: CGFloat(height)), forKey: "inputPoint1")
+        filter.setValue(CIColor(red: 0, green: 0, blue: 0, alpha: 1), forKey: "inputColor0")
+        filter.setValue(CIColor(red: 1, green: 1, blue: 1, alpha: 1), forKey: "inputColor1")
+        let image = try XCTUnwrap(filter.outputImage)
+        return image.cropped(to: CGRect(x: 0, y: 0, width: CGFloat(width), height: CGFloat(height)))
+    }
+
     private func patch(width: Int, height: Int) throws -> CIImage {
         let bytesPerRow = width * 8
         var data = Data(count: height * bytesPerRow)

@@ -72,6 +72,17 @@ type Server struct {
 	// Folder the app is showing. The startup walk reads this and does not store it in the catalog.
 	focusMu     sync.Mutex
 	focusPrefix string
+
+	// One folder rescan. The walk uses the write connection between startup batches.
+	folderMu      sync.Mutex
+	folderRun     string
+	folderPrefix  string
+	folderPhase   string
+	folderDone    int
+	folderTotal   int
+	folderAdded   int
+	folderRemoved int
+	folderErr     string
 }
 
 // SetPass stores the startup task. The call does no catalog work.
@@ -212,6 +223,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/v1/duplicates/scan", s.guard(true, s.duplicateScan))
 	mux.HandleFunc("/v1/focus", s.guard(true, s.focus))
 	mux.HandleFunc("/v1/folders/clean", s.guard(true, s.cleanFolder))
+	mux.HandleFunc("/v1/folders/rescan", s.guard(true, s.rescanFolder))
 	mux.HandleFunc("/v1/duplicates", s.guard(true, s.duplicates))
 	mux.HandleFunc("/v1/assets/{uid}/thumbnail", s.guard(true, s.assetThumbnail))
 	mux.HandleFunc("/v1/assets/{uid}/facts", s.guard(true, s.assetFacts))

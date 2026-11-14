@@ -1,7 +1,7 @@
 import Foundation
 
 /// Sets the six basic tone sliders from a photograph's luminance.
-/// Texture, clarity, dehaze, color, and the other sliders stay as they are.
+/// Texture, details, clarity, dehaze, color, and the other sliders stay as they are.
 nonisolated enum ToneAuto {
     struct Levels: Equatable, Sendable {
         var black: Double
@@ -39,12 +39,21 @@ nonisolated enum ToneAuto {
     /// Replaces Exposure, Contrast, Highlights, Shadows, Whites, and Blacks.
     static func applying(_ levels: Levels, to tone: ToneState) -> ToneState {
         var next = tone
-        next.exposureEV = clamp(exposure(mid: levels.mid), -1.5, 1.5)
-        next.contrast = clamp(contrast(black: levels.black, white: levels.white), -0.45, 0.5)
+        let ev = clamp(exposure(mid: levels.mid, highlight: levels.highlight), -1.5, 3)
+        next.exposureEV = ev
+        next.contrast = clamp(
+            contrast(black: levels.black, white: levels.white, mid: levels.mid, exposureEV: ev),
+            -0.45,
+            0.5
+        )
         next.highlights = clamp(highlights(white: levels.white), -0.8, 0)
         next.shadows = clamp(shadows(black: levels.black, shadow: levels.shadow), 0, 0.55)
         next.whites = clamp(whites(white: levels.white), -0.2, 0.7)
-        next.blacks = clamp(blacks(black: levels.black, white: levels.white, shadow: levels.shadow), -0.75, 0.15)
+        next.blacks = clamp(
+            blacks(black: levels.black, white: levels.white, shadow: levels.shadow, mid: levels.mid),
+            -0.75,
+            0.15
+        )
         return next
     }
 
@@ -59,17 +68,33 @@ nonisolated enum ToneAuto {
     }
 
     /// Stops toward a mid gray of 0.45. The value is photographic exposure, so it uses linear light.
-    private static func exposure(mid: Double) -> Double {
+    /// A dark frame can rise by as much as 3 stops. The 85th percentile stops that rise
+    /// before the bright part of the picture is pushed through white.
+    private static func exposure(mid: Double, highlight: Double) -> Double {
         let target = linear(0.45)
         let current = max(linear(mid), 0.002)
-        return log2(target / current)
+        var ev = log2(target / current)
+        if ev > 0 {
+            let ceiling = linear(0.92)
+            let bright = max(linear(highlight), 0.002)
+            ev = min(ev, max(0, log2(ceiling / bright)))
+        }
+        return ev
     }
 
-    private static func contrast(black: Double, white: Double) -> Double {
+    /// Positive contrast pivots around linear 0.5, which is a bright gray on screen.
+    /// That pivot pulls a dark photograph down, so the exposure lift is kept only
+    /// when the median stays at least as light after the contrast gain.
+    private static func contrast(black: Double, white: Double, mid: Double, exposureEV: Double) -> Double {
         let span = white - black
-        if span < 0.55 { return min(0.45, (0.75 - span) * 0.8) }
-        if span > 0.92 { return max(-0.35, (0.92 - span) * 1.5) }
-        return 0
+        let opened = span < 0.55 ? min(0.45, (0.75 - span) * 0.8) : 0.0
+        let closed = span > 0.92 ? max(-0.35, (0.92 - span) * 1.5) : 0.0
+        let proposed = opened != 0 ? opened : closed
+        if proposed <= 0 { return proposed }
+        let gained = min(1, max(0, linear(mid) * pow(2, exposureEV)))
+        let out = (gained - 0.5) * ToneMaps.contrastInput(proposed) + 0.5
+        if out < gained - 0.0001 { return 0 }
+        return proposed
     }
 
     /// Highlight recovery only. A positive Highlights slider does not change the picture.
@@ -89,7 +114,11 @@ nonisolated enum ToneAuto {
         return 0
     }
 
-    private static func blacks(black: Double, white: Double, shadow: Double) -> Double {
+    private static func blacks(black: Double, white: Double, shadow: Double, mid: Double) -> Double {
+        if mid < 0.45 {
+            if black < 0.005, shadow < 0.06 { return 0.12 }
+            return 0
+        }
         if black > 0.06, white > black + 0.4 { return -(black - 0.02) * 4 }
         if black < 0.005, shadow < 0.06 { return 0.12 }
         return 0

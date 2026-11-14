@@ -144,7 +144,6 @@ struct ZImagerApp: App {
                 Button("Remove Dust") { model.removeDust() }
                 Button("Remove Scratches") { model.removeScratches() }
                 Button("Spot") { model.toggleCanvasTool(.dustSpot) }
-                Button("Scratch") { model.toggleCanvasTool(.scratchMark) }
             }
             CommandGroup(after: .pasteboard) {
                 Button("Copy settings") { copySettingsCommand() }

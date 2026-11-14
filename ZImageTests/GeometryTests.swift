@@ -147,6 +147,50 @@ final class GeometryTests: XCTestCase {
         XCTAssertEqual(decoded, .identity)
     }
 
+    func testOlderGeometryWithoutOffsetStaysAtZero() throws {
+        let data = try JSONEncoder().encode(GeometryState.identity)
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        object.removeValue(forKey: "offsetX")
+        object.removeValue(forKey: "offsetY")
+        let stripped = try JSONSerialization.data(withJSONObject: object)
+        let decoded = try JSONDecoder().decode(GeometryState.self, from: stripped)
+        XCTAssertEqual(decoded.offsetX, 0)
+        XCTAssertEqual(decoded.offsetY, 0)
+        XCTAssertEqual(decoded, .identity)
+    }
+
+    func testOffsetSlidesThePictureInsideTheSameBox() {
+        let box = CGRect(x: 0, y: 0, width: 8, height: 8)
+        let black = CIImage(color: CIColor(red: 0, green: 0, blue: 0, alpha: 1)).cropped(to: box)
+        let column = CIImage(color: CIColor(red: 1, green: 1, blue: 1, alpha: 1))
+            .cropped(to: CGRect(x: 0, y: 0, width: 1, height: 8))
+        let row = CIImage(color: CIColor(red: 1, green: 1, blue: 1, alpha: 1))
+            .cropped(to: CGRect(x: 0, y: 0, width: 8, height: 1))
+        let marked = column.composited(over: row.composited(over: black))
+        var geometry = GeometryState.identity
+        geometry.offsetX = 0.5
+        geometry.offsetY = 0.5
+        let slid = GeometryPipeline.apply(base: marked, geometry: geometry)
+        XCTAssertEqual(slid.extent, marked.extent)
+
+        let context = TonePipeline.makeContext()
+        let movedColumn = pixel(slid, x: 4, y: 6, context: context)
+        let movedRow = pixel(slid, x: 6, y: 4, context: context)
+        let movedBlack = pixel(slid, x: 6, y: 6, context: context)
+        let vacated = pixel(slid, x: 0, y: 0, context: context)
+        XCTAssertGreaterThan(movedColumn.0, 200)
+        XCTAssertGreaterThan(movedRow.0, 200)
+        XCTAssertLessThan(movedBlack.0, 20)
+        XCTAssertEqual(movedBlack.3, 255)
+        XCTAssertEqual(vacated.3, 0)
+    }
+
+    private func pixel(_ image: CIImage, x: Int, y: Int, context: CIContext) -> (UInt8, UInt8, UInt8, UInt8) {
+        let crop = image.cropped(to: CGRect(x: x, y: y, width: 1, height: 1))
+        let bytes = TonePipeline.rgba8(of: crop, context: context)
+        return (bytes[0], bytes[1], bytes[2], bytes[3])
+    }
+
     @MainActor
     func testEachGeometryActionIsOneHistoryCommand() {
         let model = EditorModel()

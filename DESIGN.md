@@ -4,8 +4,8 @@
 | --- | --- |
 | Product | ZImage |
 | Author | Thomas Zimmer |
-| Date | 2026-11-10 |
-| Status | ZImager 1.7.2 |
+| Date | 2026-11-14 |
+| Status | ZImager 1.8.0 |
 | Platform | Native macOS app, Apple Silicon, deployment target macOS 26.0. The build machine is an M5. The catalog and the reorganization state live on a Synology DS423. |
 | Repository | `ZImager/` is the only Mac app. `ZImageTests/` hosts on it. `Helper/` is the Go source. `README.md` says how to build and how to install the helper. |
 
@@ -17,7 +17,11 @@ Pass 2 is the catalog for the personal library on that Synology share. Its helpe
 
 The edited-document format is a versioned container, extension `.zimg`, nicknamed ZImage RAW in the product language. It stores a parametric edit log, not a second copy of every original. The million originals stay in their camera formats. In Pass 2, SQLite is not opened over SMB. A small Go helper on the DS423 is the only database writer. The Mac talks to it with an authenticated LAN API. Interactive edits run on a display-sized GPU proxy. Full resolution is a tiled export path.
 
-As of 2026-11-10 the app is ZImager 1.7.2 (`ZImager/`, bundle id `com.Win32Forth.ZImager`). Disk is the editor. Server is the library, in the same window. The separate ZImage and ZImage Library targets, schemes, and source folders are removed. Tests host on ZImager. The keychain group stays `X5YCJL3LJ8.com.Win32Forth.ZImage`. Saved edit bookmarks stay in `com.Win32Forth.ZImage.editBookmarks`. The sandbox is off. The deployment target is macOS 26.0. The Release archive builds arm64 only. `STATUS.md` records what has landed. The paragraphs below keep the original plan, including choices that the code has since filled in.
+As of 2026-11-14 the app is ZImager 1.8.0 (`ZImager/`, bundle id `com.Win32Forth.ZImager`). Disk is the editor. Server is the library, in the same window. The separate ZImage and ZImage Library targets, schemes, and source folders are removed. Tests host on ZImager. The keychain group stays `X5YCJL3LJ8.com.Win32Forth.ZImage`. Saved edit bookmarks stay in `com.Win32Forth.ZImage.editBookmarks`. The sandbox is off. The deployment target is macOS 26.0. The Release archive builds arm64 only. `STATUS.md` records what has landed. The paragraphs below keep the original plan, including choices that the code has since filled in.
+
+1.8.0 makes Spot and Scratch removal fast enough to flatten a heavy repair list. Each repair stores a small before picture and a small after picture of the pixels that changed. Undo pastes the before picture. Redo pastes the after picture. The next spot starts from the picture already on screen. Spot and Scratch are one tool: a click repairs a spot, and a drag repairs a scratch. The automatic Dust and Scratches buttons are unchanged. Flatten writes a full-size LZW TIFF with the extension `.zflat` next to the `.zimg` on the library share. A photograph with 112 spot and scratch removals flattened in under a minute. Export reads that TIFF, so a flattened photograph exports almost at once. The original file stays as it is. Flatten keeps the JPEG sidecar and the `.zimg`. Flatten again overwrites the TIFF and clears the edit list. Revert, on the Flatten dialog, restores the original when a flattened TIFF is already there. Rescan, beside Display Folder, walks the open folder and its subfolders, removes catalog rows for files that are gone, and cleans the folder. The Clean folder menu item is removed. The helper source includes Rescan. The disk image does not include the helper. Stop the DSM task before replacing the binary. A DNG export writes each tile upright. The PDF page picker puts Cancel and Open page beside the title, and a double-click opens the page. The Remove object button stays hidden in Disk and in Server.
+
+1.7.5 puts Texture, Clarity, Details, and Sharpness at the bottom of the Tone panel, under a one-point hairline. Details is new. It is a Tone amount from −1 to 1, default 0, and uses the shared unsharp mask at radius coefficient 8, between texture (1.5) and clarity (30). Sharpness stays stored on `GeometryState` and still runs in the geometry stage. The Tone slider writes that field, and it is off while a video is open. X offset and Y offset sit in Geometry just under Horizontal. Each runs from −1 to 1. They translate the adjusted photograph by that fraction of the frame, then crop back to the same frame. Positive X moves it right. Positive Y moves it up. Uncovered pixels stay clear, so the canvas shows through. Older geometry and tone records omit the new fields and decode as 0. Auto leaves Details, Texture, and Clarity alone. The helper is unchanged.
 
 1.7.2 plays a video in the image view. A double-click in Disk folder view or the Server Photos grid opens it there, with the system play, pause, and scrub bar. Tone, the spectrum, Temperature, Tint, and Auto grade the frames while they play. Export writes that grade into a new MPEG-4 movie and leaves the original file unchanged. The grade is not written into a `.zimg` or the folder JPEG. Geometry, Spot, Scratch, and the eyedropper stay off while a video is open. Open with QuickTime Player stays on the right-click menu. Horizon measures the two clicks in the pixels of the picture on screen, so a wide or tall photo is not treated as a square. A scratch stroke continues the picture from both sides of the brush. The Spot and Scratch Size slider runs from 8 to 200 preview pixels. The helper is unchanged.
 
@@ -25,7 +29,7 @@ As of 2026-11-10 the app is ZImager 1.7.2 (`ZImager/`, bundle id `com.Win32Forth
 
 1.7.0 removed the old apps, and the app runs on macOS 26. The vendored libjxl and libwebp binaries declare a minimum of macOS 26.0. 1.6.0 remains in the app: Spectrum above Tone, Auto and Reset on the Tone title, folder Export and Print, Edit-menu Copy settings and Paste settings, View-menu Folder View and Edit View, and arrow keys between photos. Server Remove from library moves files into `Photos/_Removed`. Set date moves each selected file into its date folder through `POST /v1/assets/{uid}/place`. Clean folder, in the Server three-bar menu, calls `POST /v1/folders/clean` and drops catalog rows whose files are gone when another file in that folder has the same name and size. It does not delete a file.
 
-Reorganize, Review, and Duplicates do not work yet. Using them can lose photos. Leave those controls alone in 1.7.2. Do not press Start, Pause, Continue, Find duplicates, or Delete all duplicates.
+Reorganize, Review, and Duplicates do not work yet. Using them can lose photos. Leave those controls alone in 1.8.0. Do not press Start, Pause, Continue, Find duplicates, or Delete all duplicates.
 
 Server mode needs `zimage-helper` on the Synology. The Mac disk image does not include that program. Build the static ARM64 binary from `Helper/`, copy it to `PhotoVideoAudio/.zimage/bin/zimage-helper`, and start it from DSM Task Scheduler as a non-admin user with `GOMEMLIMIT=160MiB`. The steps are in `README.md`. Stop the task before replacing the binary. Do not open `catalog.db` from the Mac.
 
@@ -365,6 +369,8 @@ struct GeometryState: Codable, Equatable {
     var straightenDegrees: Double  // -45...45
     var verticalKeystone: Double   // -1...1
     var horizontalKeystone: Double // -1...1
+    var offsetX: Double            // -1...1, fraction of width, positive moves right
+    var offsetY: Double            // -1...1, fraction of height, positive moves up
     var corners: CornerPin?        // four normalized points, optional
     var lens: LensSetting
     var sharpness: Double          // -1...1, default 0
@@ -380,7 +386,8 @@ struct LensSetting: Codable, Equatable {
 
 - ⌘R rotates 90° clockwise. ⌘⌥R rotates 90° counter-clockwise. Each push is its own command. Pixels that were not upright in camera come back this way. `CIAffineTransform` with a 90° multiple, then the rest of the stack.
 - Straighten is `CIStraightenFilter` with `straightenDegrees`. A horizon tool takes two clicks and measures `atan2(dy, dx)` in the pixels of the picture on screen, so a wide or tall frame is not treated as a square. That tilt is written back, clamped to ±45°, because the bitmap angle and the filter share a sign. If the line is steeper than 45°, the tool applies one quarter-turn toward upright and then the residual, still clamped.
-- Sharpness is −1...1, default 0, and sits in the Geometry panel. It runs after the transforms, on that stage’s output, before the crop. Zero omits the filter. Positive is `CIUnsharpMask` with intensity equal to the slider and radius `1 × longEdge / 2560`. Negative mixes a blur of that radius. A geometry record saved before this field decodes as 0. Double-click returns the knob to the middle, which is 0.
+- Sharpness is −1...1, default 0. The slider sits at the bottom of Tone, under Texture, Clarity, and Details. The value stays on `GeometryState`. It runs after the transforms and the offset, on that stage’s output, before the crop. Zero omits the filter. Positive is `CIUnsharpMask` with intensity equal to the slider and radius `1 × longEdge / 2560`. Negative mixes a blur of that radius. A geometry record saved before this field decodes as 0. Double-click returns the knob to the middle, which is 0. The slider is off while a video is open.
+- X offset and Y offset are −1...1, default 0, and sit in Geometry just under Horizontal. They slide the adjusted photograph inside the frame that stage already produced, then crop back to that frame. Positive X moves it right. Positive Y moves it up. The uncovered part is clear. A geometry record saved before these fields decodes as 0. Double-click returns each knob to the middle.
 - Keystone builds a homography that moves the top and bottom edges (vertical) or the left and right edges (horizontal) while the center stays fixed, rendered with `CIPerspectiveTransform`. Four-corner mode stores the pins and uses the same filter. Output is cropped to the destination quad's bounding rect intersected with valid samples so the canvas stays finite.
 - Lens profiles are a compiled table, not Lensfun. Choosing a profile copies its coefficients into `LensSetting`. After that the sliders are manual and the profile id remains as a label until the user picks another profile.
 
@@ -426,7 +433,7 @@ The user named the deep preset with an older word. The app label is African. Tha
 
 ### Object removal
 
-Tool name: Remove object. Gesture: one click.
+Tool name: Remove object. Gesture: one click. The image toolbar hides this button in Disk and in Server.
 
 Selection uses Vision's `GenerateForegroundInstanceMaskRequest` (`VNGenerateForegroundInstanceMaskRequest`), run on the proxy scaled so the request long edge is at most 2048. The observation is an `InstanceMaskObservation` (`VNInstanceMaskObservation`) whose mask labels foreground instances. Hit-test the label under the click. If several instances contain the point, choose the one with the smallest area. Cap instance generation at 16. If the SDK that macOS 27.3 headers expose only returns per-instance masks, generate those at the observation's native mask resolution and test the click pixel. Do not generate masks at 100 MP.
 
@@ -575,7 +582,7 @@ v1 tries ImageIO / `CIRAWFilter` for these extensions: `.raf`, `.arw`, `.dng`, `
 3. If ImageIO decodes that JPEG, open it with `decode_support = preview_only` and a persistent banner: "Sigma X3F preview only. Full Foveon decode is not available."
 4. Otherwise `decode_support = unsupported` and a visible error. The catalog row remains. The mover may still place the file by date. The editor does not pretend the preview is the raw.
 
-PDF import uses PDFKit. `PDFDocument` page picker shows page thumbnails. The default selection is page 1. Nothing flattens the document silently. The chosen page is rendered to a bitmap whose long edge is at most 8192. That cap is the edit base for the PDF, recorded on the document so export does not invent resolution. PDF export writes the rendered image as a one-page PDF. It does not re-wrap the original multi-page file.
+PDF import uses PDFKit. `PDFDocument` page picker shows page thumbnails. The default selection is page 1. Cancel and Open page sit beside the Choose a page label. A double-click on a thumbnail opens that page. Nothing flattens the document silently. The chosen page is rendered to a bitmap whose long edge is at most 8192. That cap is the edit base for the PDF, recorded on the document so export does not invent resolution. PDF export writes the rendered image as a one-page PDF. It does not re-wrap the original multi-page file.
 
 ### User interface
 
@@ -1188,7 +1195,7 @@ Rollback of code is git. Rollback of a move that already reached `done` is not a
 
 A DSM update can delete the Task Scheduler entry even when the binary on the data volume survives. The Mac offline banner names the recovery: open DSM Task Scheduler and confirm the boot task still runs `.zimage/bin/zimage-helper`. That is an operator step, not something the app can fix from the laptop.
 
-Install outline. `README.md` has the same steps for someone who is not reading this plan. The 1.7.2 disk image does not contain the helper. Set date's file move and Clean folder need this helper. Stop the DSM task before replacing the binary.
+Install outline. `README.md` has the same steps for someone who is not reading this plan. The 1.8.0 disk image does not contain the helper. Rescan is in this helper source. Set date's file move and Rescan need this helper. Stop the DSM task before replacing the binary.
 
 1. On the Mac, from `Helper/`: `GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o zimage-helper ./cmd/zimage-helper`.
 2. Stop the DSM task if it is already running. Copy the binary to `PhotoVideoAudio/.zimage/bin/zimage-helper` over SMB and set mode 0700. Do not copy over a running binary.

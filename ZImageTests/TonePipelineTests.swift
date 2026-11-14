@@ -120,6 +120,27 @@ final class TonePipelineTests: XCTestCase {
         XCTAssertLessThan(meanRGB(after), meanRGB(before))
     }
 
+    func testPositiveDetailsRaisesEdgeEnergy() {
+        let step = grayStep(width: 32, height: 16)
+        var tone = ToneState.identity
+        tone.details = 1
+        let sharp = TonePipeline.apply(base: step, tone: tone, longEdge: 2560)
+        let context = TonePipeline.makeContext()
+        let before = edgeEnergy(TonePipeline.rgba8(of: step, context: context), width: 32)
+        let after = edgeEnergy(TonePipeline.rgba8(of: sharp, context: context), width: 32)
+        XCTAssertGreaterThan(after, before)
+    }
+
+    func testOlderToneWithoutDetailsStaysAtZero() throws {
+        let data = try JSONEncoder().encode(ToneState.identity)
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        object.removeValue(forKey: "details")
+        let stripped = try JSONSerialization.data(withJSONObject: object)
+        let decoded = try JSONDecoder().decode(ToneState.self, from: stripped)
+        XCTAssertEqual(decoded.details, 0)
+        XCTAssertEqual(decoded, .identity)
+    }
+
     func testNegativeTextureSoftensACheckerboard() {
         let checker = checkerboard(width: 32, height: 32)
         var tone = ToneState.identity
@@ -204,6 +225,27 @@ final class TonePipelineTests: XCTestCase {
             }
         }
         return energy
+    }
+
+    private func grayStep(width: Int, height: Int) -> CIImage {
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        let context = CGContext(
+            data: nil,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: 0,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        )!
+        for y in 0..<height {
+            for x in 0..<width {
+                let shade: CGFloat = x < width / 2 ? 0.35 : 0.65
+                context.setFillColor(CGColor(red: shade, green: shade, blue: shade, alpha: 1))
+                context.fill(CGRect(x: x, y: y, width: 1, height: 1))
+            }
+        }
+        return CIImage(cgImage: context.makeImage()!)
     }
 
     private func checkerboard(width: Int, height: Int) -> CIImage {

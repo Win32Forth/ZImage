@@ -32,8 +32,23 @@ struct InspectorGeometry: View {
                     slider("Horizontal", value: model.draftGeometry.horizontalKeystone, range: -1...1, readout: String(format: "%+.2f", model.draftGeometry.horizontalKeystone)) { value in
                         model.nudgeGeometry("Horizontal") { $0.horizontalKeystone = value }
                     }
-                    slider("Sharpness", value: model.draftGeometry.sharpness, range: -1...1, readout: String(format: "%+.2f", model.draftGeometry.sharpness)) { value in
-                        model.nudgeGeometry("Sharpness") { $0.sharpness = value }
+                    slider(
+                        "X offset",
+                        value: model.draftGeometry.offsetX,
+                        range: -1...1,
+                        readout: String(format: "%+.2f", model.draftGeometry.offsetX),
+                        help: "Moves the photograph to the right inside its frame. Double-click the knob to return it to the middle."
+                    ) { value in
+                        model.nudgeGeometry("X offset") { $0.offsetX = value }
+                    }
+                    slider(
+                        "Y offset",
+                        value: model.draftGeometry.offsetY,
+                        range: -1...1,
+                        readout: String(format: "%+.2f", model.draftGeometry.offsetY),
+                        help: "Moves the photograph up inside its frame. Double-click the knob to return it to the middle."
+                    ) { value in
+                        model.nudgeGeometry("Y offset") { $0.offsetY = value }
                     }
                     Toggle("Corner pin", isOn: Binding(
                         get: { model.draftGeometry.corners != nil },
@@ -87,6 +102,7 @@ struct InspectorGeometry: View {
         value: Double,
         range: ClosedRange<Double>,
         readout: String,
+        help: String? = nil,
         set: @escaping (Double) -> Void
     ) -> some View {
         InspectorFieldRow(title: title, readout: readout) {
@@ -109,7 +125,7 @@ struct InspectorGeometry: View {
             )
             .inspectorControlHeight()
             .accessibilityLabel(title)
-            .help(SliderReset.resets(title: title) ? "Double-click the knob to return it to the middle." : "")
+            .help(help ?? (SliderReset.resets(title: title) ? "Double-click the knob to return it to the middle." : ""))
         }
     }
 

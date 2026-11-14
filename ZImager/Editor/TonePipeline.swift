@@ -33,7 +33,7 @@ nonisolated enum ToneMaps {
         min(1, max(0.5, 0.75 + 0.25 * whites))
     }
 
-    /// `coefficient × longEdge / 2560`. Sharpness uses 1, texture 1.5, clarity 30, dehaze 32.
+    /// `coefficient × longEdge / 2560`. Sharpness uses 1, texture 1.5, details 8, clarity 30, dehaze 32.
     static func scaledRadius(longEdge: Double, coefficient: Double) -> Double {
         coefficient * longEdge / 2560
     }
@@ -194,7 +194,7 @@ final class DehazeKernel: CIImageProcessorKernel {
 }
 
 /// Stage 4 of the fixed render order: exposure, highlight/shadow, tone curve,
-/// color controls, vibrance, temperature and tint, texture, clarity, dehaze, skin cube.
+/// color controls, vibrance, temperature and tint, texture, details, clarity, dehaze, skin cube.
 /// Identity controls are omitted. The context working format is `CIFormat.RGBAh`
 /// and the working color space is extended linear Display P3.
 nonisolated enum TonePipeline {
@@ -260,6 +260,12 @@ nonisolated enum TonePipeline {
             image,
             amount: tone.texture,
             radius: ToneMaps.scaledRadius(longEdge: edge, coefficient: 1.5),
+            extent: extent
+        )
+        image = detail(
+            image,
+            amount: tone.details,
+            radius: ToneMaps.scaledRadius(longEdge: edge, coefficient: 8),
             extent: extent
         )
         image = detail(
@@ -331,7 +337,7 @@ nonisolated enum TonePipeline {
 
     /// Positive amount is an unsharp mask. Negative amount mixes in a blur.
     /// Zero omits the filter. `radius` is the coefficient already scaled by long edge.
-    /// Geometry sharpness uses this with coefficient 1. Texture uses 1.5 and clarity 30.
+    /// Geometry sharpness uses this with coefficient 1. Texture uses 1.5, details 8, and clarity 30.
     static func detail(_ image: CIImage, amount: Double, radius: Double, extent: CGRect) -> CIImage {
         if amount == 0 || radius <= 0 { return image }
         if amount > 0 {

@@ -10,8 +10,14 @@ struct PDFPagePicker: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Choose a page")
-                .font(.system(size: 15, weight: .semibold))
+            HStack(alignment: .center, spacing: 12) {
+                Text("Choose a page")
+                    .font(.system(size: 15, weight: .semibold))
+                Spacer(minLength: 12)
+                Button("Cancel", action: onCancel)
+                Button("Open page", action: onOpen)
+                    .keyboardShortcut(.defaultAction)
+            }
             Text("Page \(pageIndex + 1) of \(document.pageCount)")
                 .font(.system(size: 13))
                 .foregroundStyle(ChromePalette.muted)
@@ -23,12 +29,6 @@ struct PDFPagePicker: View {
                 }
                 .padding(.vertical, 4)
             }
-            HStack(spacing: 12) {
-                Button("Cancel", action: onCancel)
-                Button("Open page", action: onOpen)
-                    .keyboardShortcut(.defaultAction)
-                Spacer()
-            }
         }
         .padding(16)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -38,31 +38,38 @@ struct PDFPagePicker: View {
     }
 
     private func pageButton(_ index: Int) -> some View {
-        Button {
-            pageIndex = index
-        } label: {
-            VStack(spacing: 6) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 4)
-                        .fill(Color.white)
-                    if let page = document.page(at: index) {
-                        Image(nsImage: page.thumbnail(of: CGSize(width: 120, height: 160), for: .mediaBox))
-                            .resizable()
-                            .aspectRatio(contentMode: .fit)
-                            .padding(6)
-                    }
+        VStack(spacing: 6) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 4)
+                    .fill(Color.white)
+                if let page = document.page(at: index) {
+                    Image(nsImage: page.thumbnail(of: CGSize(width: 120, height: 160), for: .mediaBox))
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                        .padding(6)
                 }
-                .frame(width: 140, height: 160)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 4)
-                        .stroke(index == pageIndex ? Color(red: 184 / 255, green: 90 / 255, blue: 18 / 255) : ChromePalette.hairline, lineWidth: index == pageIndex ? 3 : 1)
-                )
-                Text("Page \(index + 1)")
-                    .font(.system(size: 12))
-                    .foregroundStyle(ChromePalette.ink)
             }
+            .frame(width: 140, height: 160)
+            .overlay(
+                RoundedRectangle(cornerRadius: 4)
+                    .stroke(index == pageIndex ? Color(red: 184 / 255, green: 90 / 255, blue: 18 / 255) : ChromePalette.hairline, lineWidth: index == pageIndex ? 3 : 1)
+            )
+            Text("Page \(index + 1)")
+                .font(.system(size: 12))
+                .foregroundStyle(ChromePalette.ink)
         }
-        .buttonStyle(.plain)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            pageIndex = index
+        }
+        .onTapGesture(count: 2) {
+            pageIndex = index
+            onOpen()
+        }
+        .accessibilityElement(children: .combine)
         .accessibilityLabel("Page \(index + 1)")
+        .accessibilityAddTraits(.isButton)
+        .accessibilityAddTraits(index == pageIndex ? .isSelected : [])
+        .help("Double-click to open this page.")
     }
 }

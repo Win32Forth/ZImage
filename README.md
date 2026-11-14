@@ -1,6 +1,6 @@
 # ZImage
 
-ZImager 1.7.2 is the app. It is one window. Disk is the editor. Server is the library. The separate ZImage editor and ZImage Library are no longer in this project.
+ZImager 1.8.0 is the app. It is one window. Disk is the editor. Server is the library. The separate ZImage editor and ZImage Library are no longer in this project.
 
 `DESIGN.md` is the plan. `STATUS.md` is the iteration log, newest first.
 
@@ -9,6 +9,30 @@ ZImager 1.7.2 is the app. It is one window. Disk is the editor. Server is the li
 Reorganize, Review, and Duplicates do not work yet. Using them can lose photos. Leave those controls alone. Do not press Start, Pause, Continue, Find duplicates, or Delete all duplicates.
 
 Disk, and Server browsing of a folder, are the parts to use. Rotate, paste, export, print, and the image adjustments save the photo and rebuild its preview.
+
+## What 1.8.0 changes
+
+Spot and Scratch removal is much faster. Each repair keeps a small before picture and a small after picture of the pixels that changed. Undo pastes the before picture. Redo pastes the after picture. The rest of the photograph stays. The next spot starts from the picture already on screen, so moving from spot to spot is almost immediate.
+
+Spot and Scratch are one tool. A click repairs a spot. A drag repairs a scratch. The automatic Dust and Scratches buttons are the same as before.
+
+Flatten writes a full-size LZW TIFF beside the edit file, with the extension `.zflat`. A photograph with 112 spot and scratch removals flattened in under a minute. Export of that flattened photograph reads the TIFF, so it finishes almost at once. The original file stays as it is. Flatten keeps the JPEG sidecar and the `.zimg`. Flatten again overwrites the TIFF and clears the edit list. Revert, on the Flatten dialog, restores the original when a flattened TIFF is already there.
+
+Rescan sits beside Display Folder. It walks that folder and its subfolders, drops catalog rows for files that are gone, and cleans the folder. The Clean folder menu item is removed. A slow rescan shows a progress bar. Rescan is in the helper source. The disk image does not include the helper. Stop the DSM task before you replace that binary.
+
+A DNG export writes each tile upright. The PDF page picker puts Cancel and Open page beside the title, and a double-click opens the page. The Remove object button is hidden in Disk and in Server.
+
+Tone ends with Texture, Clarity, Details, and Sharpness. Geometry has X offset and Y offset under Horizontal. Auto lifts a dark photograph.
+
+1.7.5, 1.7.2, 1.7.1, 1.7.0, and 1.6.0 behavior below is still in this app. This build is Apple Silicon and runs on macOS 26.
+
+## What 1.7.5 changes
+
+Tone ends with a thin line, then Texture, Clarity, Details, and Sharpness. Details is a new slider between Clarity and Sharpness. Sharpness moved there from Geometry. Its saved value is unchanged.
+
+Geometry has X offset and Y offset just under Horizontal. They slide the adjusted photograph inside its frame. Positive X moves it right. Positive Y moves it up. The frame stays the same size.
+
+Auto lifts a dark photograph. The Remove object button is hidden in Disk and in Server. The helper for those panels is unchanged. 1.7.2 behavior below is still in this app.
 
 ## What 1.7.2 changes
 
@@ -46,7 +70,7 @@ Clean folder is in the Server three-bar menu. It removes catalog records in the 
 
 ## Install ZImager
 
-The disk image is `Releases/ZImager-1.7.2-macOS.dmg`. It contains `ZImager.app` and `README.txt`.
+The disk image is `Releases/ZImager-1.8.0-macOS.dmg`. It contains `ZImager.app` and `README.txt`.
 
 1. Open the disk image.
 2. Drag **ZImager.app** into Applications.
@@ -60,7 +84,7 @@ After that, double-click ZImager and it will run. ZImager is built on this Mac w
 
 Skip this if you only use Disk.
 
-Server mode needs `zimage-helper` running on the NAS. The disk image does not include it. The Mac never opens `catalog.db`. Stop the DSM task before you replace the binary.
+Server mode needs `zimage-helper` running on the NAS. The disk image does not include it. The Mac never opens `catalog.db`. The 1.8.0 helper source adds Rescan. Stop the DSM task before you replace the binary.
 
 1. On a Mac, from `Helper/` in this repo:
 

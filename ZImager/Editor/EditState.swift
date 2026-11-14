@@ -32,6 +32,8 @@ nonisolated struct ToneState: Codable, Equatable, Sendable {
     var blacks: Double = 0
     var texture: Double = 0
     var clarity: Double = 0
+    /// −1...1. A medium unsharp mask, between texture and clarity. Zero omits the filter.
+    var details: Double = 0
     var dehaze: Double = 0
     var vibrance: Double = 0
     var saturation: Double = 0
@@ -55,6 +57,7 @@ nonisolated struct ToneState: Codable, Equatable, Sendable {
         blacks: Double = 0,
         texture: Double = 0,
         clarity: Double = 0,
+        details: Double = 0,
         dehaze: Double = 0,
         vibrance: Double = 0,
         saturation: Double = 0,
@@ -74,6 +77,7 @@ nonisolated struct ToneState: Codable, Equatable, Sendable {
         self.blacks = blacks
         self.texture = texture
         self.clarity = clarity
+        self.details = details
         self.dehaze = dehaze
         self.vibrance = vibrance
         self.saturation = saturation
@@ -95,6 +99,7 @@ nonisolated struct ToneState: Codable, Equatable, Sendable {
         case blacks
         case texture
         case clarity
+        case details
         case dehaze
         case vibrance
         case saturation
@@ -117,6 +122,7 @@ nonisolated struct ToneState: Codable, Equatable, Sendable {
         blacks = try container.decode(Double.self, forKey: .blacks)
         texture = try container.decode(Double.self, forKey: .texture)
         clarity = try container.decode(Double.self, forKey: .clarity)
+        details = try container.decodeIfPresent(Double.self, forKey: .details) ?? 0
         dehaze = try container.decode(Double.self, forKey: .dehaze)
         vibrance = try container.decode(Double.self, forKey: .vibrance)
         saturation = try container.decode(Double.self, forKey: .saturation)
@@ -139,6 +145,7 @@ nonisolated struct ToneState: Codable, Equatable, Sendable {
         try container.encode(blacks, forKey: .blacks)
         try container.encode(texture, forKey: .texture)
         try container.encode(clarity, forKey: .clarity)
+        try container.encode(details, forKey: .details)
         try container.encode(dehaze, forKey: .dehaze)
         try container.encode(vibrance, forKey: .vibrance)
         try container.encode(saturation, forKey: .saturation)
@@ -177,6 +184,10 @@ nonisolated struct GeometryState: Codable, Equatable, Sendable {
     var straightenDegrees: Double = 0
     var verticalKeystone: Double = 0
     var horizontalKeystone: Double = 0
+    /// −1...1. Fraction of the frame width. Positive moves the photograph right.
+    var offsetX: Double = 0
+    /// −1...1. Fraction of the frame height. Positive moves the photograph up.
+    var offsetY: Double = 0
     var corners: CornerPin? = nil
     var lens: LensSetting = .identity
     /// −1...1. Zero omits the filter. Positive is a fine unsharp mask.
@@ -191,12 +202,16 @@ nonisolated struct GeometryState: Codable, Equatable, Sendable {
         horizontalKeystone: Double = 0,
         corners: CornerPin? = nil,
         lens: LensSetting = .identity,
-        sharpness: Double = 0
+        sharpness: Double = 0,
+        offsetX: Double = 0,
+        offsetY: Double = 0
     ) {
         self.quarterTurns = quarterTurns
         self.straightenDegrees = straightenDegrees
         self.verticalKeystone = verticalKeystone
         self.horizontalKeystone = horizontalKeystone
+        self.offsetX = offsetX
+        self.offsetY = offsetY
         self.corners = corners
         self.lens = lens
         self.sharpness = sharpness
@@ -207,6 +222,8 @@ nonisolated struct GeometryState: Codable, Equatable, Sendable {
         case straightenDegrees
         case verticalKeystone
         case horizontalKeystone
+        case offsetX
+        case offsetY
         case corners
         case lens
         case sharpness
@@ -218,6 +235,8 @@ nonisolated struct GeometryState: Codable, Equatable, Sendable {
         straightenDegrees = try container.decode(Double.self, forKey: .straightenDegrees)
         verticalKeystone = try container.decode(Double.self, forKey: .verticalKeystone)
         horizontalKeystone = try container.decode(Double.self, forKey: .horizontalKeystone)
+        offsetX = try container.decodeIfPresent(Double.self, forKey: .offsetX) ?? 0
+        offsetY = try container.decodeIfPresent(Double.self, forKey: .offsetY) ?? 0
         corners = try container.decodeIfPresent(CornerPin.self, forKey: .corners)
         lens = try container.decode(LensSetting.self, forKey: .lens)
         sharpness = try container.decodeIfPresent(Double.self, forKey: .sharpness) ?? 0
@@ -229,10 +248,33 @@ nonisolated struct GeometryState: Codable, Equatable, Sendable {
         try container.encode(straightenDegrees, forKey: .straightenDegrees)
         try container.encode(verticalKeystone, forKey: .verticalKeystone)
         try container.encode(horizontalKeystone, forKey: .horizontalKeystone)
+        try container.encode(offsetX, forKey: .offsetX)
+        try container.encode(offsetY, forKey: .offsetY)
         try container.encodeIfPresent(corners, forKey: .corners)
         try container.encode(lens, forKey: .lens)
         try container.encode(sharpness, forKey: .sharpness)
     }
+}
+
+/// One changed rectangle. `beforePNG` is the photograph under the repair. `afterPNG` is the repair.
+/// Both are 16-bit device RGB, top row first, and cover only the pixels that changed.
+nonisolated struct RepairTile: Codable, Equatable, Sendable {
+    var beforePNG: Data
+    var afterPNG: Data
+    var minX: Int
+    var minY: Int
+    var width: Int
+    var height: Int
+}
+
+/// The small pictures Undo and Redo paste. `frameToken` is the geometry and file they were taken from.
+nonisolated struct RepairPatch: Codable, Equatable, Sendable {
+    var tiles: [RepairTile]
+    var rasterWidth: Int
+    var rasterHeight: Int
+    var frameToken: Int
+    /// Strength the after picture was built at. A later Amount change does not match it.
+    var strength: Double
 }
 
 nonisolated struct InpaintOp: Codable, Equatable, Identifiable, Sendable {
@@ -242,13 +284,16 @@ nonisolated struct InpaintOp: Codable, Equatable, Identifiable, Sendable {
     var featherPx: Int
     /// 1 keeps the whole repair. 0 leaves the photo untouched. Older files omit this and mean 1.
     var strength: Double
+    /// Present for repairs made after this picture was kept. Older repairs omit it and are filled again.
+    var patch: RepairPatch?
 
-    init(id: UUID, maskPNG: Data, modelID: String, featherPx: Int, strength: Double = 1) {
+    init(id: UUID, maskPNG: Data, modelID: String, featherPx: Int, strength: Double = 1, patch: RepairPatch? = nil) {
         self.id = id
         self.maskPNG = maskPNG
         self.modelID = modelID
         self.featherPx = featherPx
         self.strength = min(1, max(0, strength))
+        self.patch = patch
     }
 
     static func empty(id: UUID = UUID()) -> InpaintOp {
@@ -261,6 +306,7 @@ nonisolated struct InpaintOp: Codable, Equatable, Identifiable, Sendable {
         case modelID
         case featherPx
         case strength
+        case patch
     }
 
     init(from decoder: Decoder) throws {
@@ -271,7 +317,8 @@ nonisolated struct InpaintOp: Codable, Equatable, Identifiable, Sendable {
             maskPNG: try container.decode(Data.self, forKey: .maskPNG),
             modelID: try container.decode(String.self, forKey: .modelID),
             featherPx: try container.decode(Int.self, forKey: .featherPx),
-            strength: decodedStrength
+            strength: decodedStrength,
+            patch: try container.decodeIfPresent(RepairPatch.self, forKey: .patch)
         )
     }
 
@@ -282,6 +329,7 @@ nonisolated struct InpaintOp: Codable, Equatable, Identifiable, Sendable {
         try container.encode(modelID, forKey: .modelID)
         try container.encode(featherPx, forKey: .featherPx)
         try container.encode(strength, forKey: .strength)
+        try container.encodeIfPresent(patch, forKey: .patch)
     }
 }
 

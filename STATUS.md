@@ -14,6 +14,36 @@ Each entry uses this shape:
 - Scope: design section or PR name
 - Notes: facts, decisions, and the next step
 
+## 2026-11-14 — ZImager 1.8.0
+
+- Status: done
+- Scope: ZImager 1.8.0. Spot and Scratch speed, Flatten, export from the flattened TIFF, Revert, and Rescan.
+- Notes: Marketing version 1.8.0 is on the ZImager target. The test target stays 1.0. `CURRENT_PROJECT_VERSION` stays 1. Each Spot or Scratch repair stores a small before picture and a small after picture. Undo pastes the before picture. Redo pastes the after picture. The next repair starts from the picture on screen. A click is a spot. A drag is a scratch. Flatten of a photograph with 112 spot and scratch removals finished in under a minute. Export of that flattened photograph reads the `.zflat` TIFF and finishes almost at once. Revert on the Flatten dialog restores the original when a flattened TIFF is present. Rescan sits beside Display Folder, walks that folder and its subfolders, drops catalog rows for files that are gone, and cleans the folder. The Clean folder menu item is removed. The disk image is `Releases/ZImager-1.8.0-macOS.dmg`, sha256 `410f5679f4a499246cb62b5135e1454ff694e7c197b7d49ff2c37284b3fdaf1a`, and it does not include the helper. Stop the DSM task before replacing the helper so Server Rescan uses the new binary. Do not open `catalog.db` from the Mac. Reorganize, Review, and Duplicates still do not work and can lose photos. Leave them alone. Release builds arm64 only. The deployment target stays macOS 26.0.
+
+## 2026-11-13 — Remove object stays off the Disk toolbar
+
+- Status: done
+- Scope: Image toolbar. The helper is unchanged.
+- Notes: The Remove object button is hidden in Disk, as it already was in Server. Quit ZImager and rerun the scheme.
+
+## 2026-11-13 — PDF page buttons sit with the title
+
+- Status: done
+- Scope: PDF page picker. The helper is unchanged.
+- Notes: Cancel and Open page sit beside Choose a page. A double-click on a thumbnail selects that page and opens it. Quit ZImager and rerun the scheme.
+
+## 2026-11-13 — ZImager 1.7.5 detail sliders and frame offset
+
+- Status: done
+- Scope: Tone and Geometry panels. The helper is unchanged.
+- Notes: Marketing version 1.7.5 is on the ZImager target. The test target stays 1.0. `CURRENT_PROJECT_VERSION` stays 1. Tone ends with a hairline, then Texture, Clarity, Details, and Sharpness. Details is a new tone amount at radius coefficient 8. Sharpness still lives on the geometry record. X offset and Y offset sit under Horizontal and slide the adjusted photograph inside its frame. Positive X moves it right. Positive Y moves it up. Older edit files decode the new fields as 0. Auto still leaves those sliders alone, and it still lifts a dark photograph. These panel changes ship in ZImager 1.8.0.
+
+## 2026-11-10 — Auto lifts a dark photograph
+
+- Status: done
+- Scope: Tone Auto. The helper is unchanged.
+- Notes: Auto still aims the middle of the picture at a mid gray. Contrast is left alone when raising it would darken that middle, because the contrast control pivots around linear 0.5, a bright gray. Exposure can rise by as much as 3 stops, and the 85th percentile keeps that rise from pushing the bright part through white. Blacks are not pulled down while the middle is below the target. Press Auto again to see the lighter picture. Quit ZImager and rerun the scheme.
+
 ## 2026-11-10 — ZImager 1.7.2
 
 - Status: done

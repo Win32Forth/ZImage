@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Dust and scratch repair. Spot and Scratch stay on until they are clicked again.
+/// Dust and scratch repair. Spot stays on until it is clicked again.
 struct InspectorTouchup: View {
     @Bindable var model: EditorModel
     @Binding var collapsed: Bool
@@ -24,18 +24,11 @@ struct InspectorTouchup: View {
             HStack(spacing: 8) {
                 Button("Spot") { model.toggleCanvasTool(.dustSpot) }
                     .buttonStyle(LibraryPushButtonStyle())
-                    .toolToggleBorder(active: model.canvasTool == .dustSpot)
+                    .toolToggleBorder(active: model.canvasTool.repairsByHand)
                     .disabled(model.proxy == nil)
                     .accessibilityIdentifier("Spot")
-                    .accessibilityAddTraits(model.canvasTool == .dustSpot ? .isSelected : [])
-                    .help("Cover a speck with the circle and click it. More clicks wait in a list of \(TouchupQueue.cap). Click Spot again to leave.")
-                Button("Scratch") { model.toggleCanvasTool(.scratchMark) }
-                    .buttonStyle(LibraryPushButtonStyle())
-                    .toolToggleBorder(active: model.canvasTool == .scratchMark)
-                    .disabled(model.proxy == nil)
-                    .accessibilityIdentifier("Scratch")
-                    .accessibilityAddTraits(model.canvasTool == .scratchMark ? .isSelected : [])
-                    .help("Drag the circle along a scratch. Click Scratch again to leave.")
+                    .accessibilityAddTraits(model.canvasTool.repairsByHand ? .isSelected : [])
+                    .help("Click a speck. Drag along a scratch. More clicks wait in a list of \(TouchupQueue.cap). Click Spot again to leave.")
             }
             if let left = model.touchupSpotsLeftLabel {
                 Text(left)

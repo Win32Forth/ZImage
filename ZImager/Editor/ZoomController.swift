@@ -14,6 +14,11 @@ nonisolated enum CanvasTool: String, Equatable, Sendable {
     case dustSpot
     case scratchMark
 
+    /// Spot and Scratch are one brush. A click repairs a speck. A drag follows a scratch.
+    var repairsByHand: Bool {
+        self == .dustSpot || self == .scratchMark
+    }
+
     /// Zoom tool: a click zooms in, and Option-click zooms out.
     /// Hand: Command-click zooms in. Command-Option-click zooms out.
     /// Option is the key to the right of the right-hand Command key.

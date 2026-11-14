@@ -240,7 +240,8 @@ nonisolated enum StillExporter {
         state: EditState = .identity,
         request: ExportRequest,
         to url: URL,
-        context: CIContext
+        context: CIContext,
+        progress: (@Sendable (Int, Int) -> Void)? = nil
     ) throws {
         try InpaintPipeline.validateForExport(state)
         let extent = image.extent.integral
@@ -257,7 +258,7 @@ nonisolated enum StillExporter {
             if request.container == .dng {
                 try LinearDNGWriter.write(image: image, to: url, context: context)
             } else {
-                let rendered = try rasterize(image, request: request, context: context)
+                let rendered = try rasterize(image, request: request, context: context, progress: progress)
                 if request.container == .pdf {
                     try writePDF(rendered, to: url)
                 } else if request.container == .webp {
@@ -329,11 +330,32 @@ nonisolated enum StillExporter {
         return (data, width, height)
     }
 
-    private static func rasterize(_ image: CIImage, request: ExportRequest, context: CIContext) throws -> CGImage {
+    /// The rendered frame. `progress` counts finished tiles.
+    static func rendered(
+        image: CIImage,
+        request: ExportRequest,
+        context: CIContext,
+        progress: (@Sendable (Int, Int) -> Void)? = nil
+    ) throws -> CGImage {
+        try rasterize(image, request: request, context: context, progress: progress)
+    }
+
+    /// Writes an already rendered frame. TIFF uses the request's compression and depth.
+    static func write(_ image: CGImage, request: ExportRequest, to url: URL) throws {
+        try writeImageIO(image, request: request, to: url)
+    }
+
+    private static func rasterize(
+        _ image: CIImage,
+        request: ExportRequest,
+        context: CIContext,
+        progress: (@Sendable (Int, Int) -> Void)? = nil
+    ) throws -> CGImage {
         let spec = colorSpec(for: request)
         let extent = image.extent.integral
         let width = Int(extent.width)
         let height = Int(extent.height)
+        let tiles = tileCount(extent)
         if width <= tileEdge && height <= tileEdge {
             guard let rendered = context.createCGImage(
                 image,
@@ -343,6 +365,7 @@ nonisolated enum StillExporter {
             ) else {
                 throw ExportError.cannotEncode(request.container.title)
             }
+            progress?(1, max(tiles, 1))
             return rendered
         }
         guard let canvas = CGContext(
@@ -357,6 +380,7 @@ nonisolated enum StillExporter {
             throw ExportError.cannotEncode(request.container.title)
         }
         canvas.interpolationQuality = .none
+        var finished = 0
         var y = extent.minY
         while y < extent.maxY {
             let tileHeight = min(CGFloat(tileEdge), extent.maxY - y)
@@ -378,6 +402,8 @@ nonisolated enum StillExporter {
                     width: tileWidth,
                     height: tileHeight
                 ))
+                finished += 1
+                progress?(finished, tiles)
                 x += tileWidth
             }
             y += tileHeight
@@ -386,6 +412,25 @@ nonisolated enum StillExporter {
             throw ExportError.cannotEncode(request.container.title)
         }
         return gathered
+    }
+
+    private static func tileCount(_ extent: CGRect) -> Int {
+        guard extent.width >= 1, extent.height >= 1 else { return 1 }
+        var count = 0
+        var y = extent.minY
+        while y < extent.maxY {
+            let tileHeight = min(CGFloat(tileEdge), extent.maxY - y)
+            var x = extent.minX
+            while x < extent.maxX {
+                let tileWidth = min(CGFloat(tileEdge), extent.maxX - x)
+                count += 1
+                if x + tileWidth >= extent.maxX { break }
+                x += tileWidth
+            }
+            if y + tileHeight >= extent.maxY { break }
+            y += tileHeight
+        }
+        return max(count, 1)
     }
 
     private static func colorSpec(for request: ExportRequest) -> (format: CIFormat, colorSpace: CGColorSpace, bits: Int, bitmapInfo: UInt32) {

@@ -9,15 +9,35 @@ nonisolated struct PrintRaster: @unchecked Sendable {
 
 /// Writes each selected still into a folder. The original file is never the destination.
 nonisolated enum FolderExportWorker {
-    static func toned(base: CIImage, state: EditState, tokenPath: String) -> CIImage {
+    static func toned(
+        base: CIImage,
+        state: EditState,
+        tokenPath: String,
+        context: CIContext? = nil,
+        progress: Touchup.ProgressHandler? = nil
+    ) -> CIImage {
         let shaped = CropRect.apply(GeometryPipeline.apply(base: base, geometry: state.geometry), crop: state.crop)
         let filled = InpaintPipeline.applyInteractive(
             base: shaped,
             operations: state.inpaints,
-            imageToken: Touchup.imageToken(path: tokenPath, geometry: state.geometry, crop: state.crop)
+            imageToken: Touchup.imageToken(path: tokenPath, geometry: state.geometry, crop: state.crop),
+            context: context,
+            progress: progress
         )
         let longEdge = max(filled.extent.width, filled.extent.height)
         return TonePipeline.apply(base: filled, tone: state.tone, longEdge: max(longEdge, 1))
+    }
+
+    /// The flattened TIFF, then edits made after that flatten.
+    static func tonedFlattened(
+        tiff: URL,
+        state: EditState,
+        tokenPath: String,
+        context: CIContext,
+        progress: Touchup.ProgressHandler? = nil
+    ) throws -> CIImage {
+        let base = try FlattenWriter.masterImage(tiff)
+        return toned(base: base, state: state, tokenPath: tokenPath, context: context, progress: progress)
     }
 
     static func write(
@@ -35,13 +55,64 @@ nonisolated enum FolderExportWorker {
         }
     }
 
+    /// Writes the flattened TIFF into `folder`. A TIFF that will not load fails this file.
+    static func write(
+        flattened tiff: URL,
+        file: URL,
+        folder: URL,
+        request: ExportRequest,
+        state: EditState
+    ) -> Bool {
+        guard let destination = destination(for: file, folder: folder, ext: request.fileExtension) else {
+            return false
+        }
+        return write(flattened: tiff, state: state, tokenPath: file.path, request: request, to: destination)
+    }
+
+    static func write(
+        flattened tiff: URL,
+        state: EditState,
+        tokenPath: String,
+        request: ExportRequest,
+        to destination: URL,
+        progress: (@Sendable (Int, Int) -> Void)? = nil,
+        repairProgress: Touchup.ProgressHandler? = nil
+    ) -> Bool {
+        if destination.standardizedFileURL.resolvingSymlinksInPath()
+            == tiff.standardizedFileURL.resolvingSymlinksInPath() {
+            return false
+        }
+        let context = TonePipeline.makeContext()
+        do {
+            let image = try tonedFlattened(
+                tiff: tiff,
+                state: state,
+                tokenPath: tokenPath,
+                context: context,
+                progress: repairProgress
+            )
+            try StillExporter.write(
+                image: image,
+                state: state,
+                request: request,
+                to: destination,
+                context: context,
+                progress: progress
+            )
+            return true
+        } catch {
+            return false
+        }
+    }
+
     /// Opens the still, applies its saved settings, and writes `stem.extension` into `folder`.
-    /// A session log wins. Otherwise the `.zimg` stored for this file. An unedited photo exports as it is.
+    /// A flattened `.zflat` is the source when that file is present. A session log wins over the stored `.zimg`.
     static func write(
         file: URL,
         folder: URL,
         request: ExportRequest,
-        session: HistoryLog?
+        session: HistoryLog?,
+        sidecars: FlattenSidecarIndex = FlattenSidecarIndex()
     ) -> Bool {
         let started = file.startAccessingSecurityScopedResource()
         defer {
@@ -58,10 +129,13 @@ nonisolated enum FolderExportWorker {
         } else {
             return false
         }
-        guard let proxy = try? ProxyRenderer.open(url: file),
-              let destination = destination(for: file, folder: folder, ext: request.fileExtension) else {
+        guard let destination = destination(for: file, folder: folder, ext: request.fileExtension) else {
             return false
         }
+        if let tiff = sidecars.tiff(for: file) {
+            return write(flattened: tiff, state: state, tokenPath: file.path, request: request, to: destination)
+        }
+        guard let proxy = try? ProxyRenderer.open(url: file) else { return false }
         let image = toned(base: CIImage(cgImage: proxy.image), state: state, tokenPath: file.path)
         let context = TonePipeline.makeContext()
         return write(image: image, state: state, request: request, to: destination, context: context)

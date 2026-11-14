@@ -35,11 +35,16 @@ struct ToneSliderSpec: Identifiable {
         ToneSliderSpec(title: "Shadows", range: -1...1, keyPath: \.shadows, readout: .hundredth),
         ToneSliderSpec(title: "Whites", range: -1...1, keyPath: \.whites, readout: .hundredth),
         ToneSliderSpec(title: "Blacks", range: -1...1, keyPath: \.blacks, readout: .hundredth),
-        ToneSliderSpec(title: "Texture", range: -1...1, keyPath: \.texture, readout: .hundredth),
-        ToneSliderSpec(title: "Clarity", range: -1...1, keyPath: \.clarity, readout: .hundredth),
         ToneSliderSpec(title: "Dehaze", range: 0...1, keyPath: \.dehaze, readout: .hundredth),
         ToneSliderSpec(title: "Vibrance", range: -1...1, keyPath: \.vibrance, readout: .hundredth),
         ToneSliderSpec(title: "Saturation", range: -1...1, keyPath: \.saturation, readout: .hundredth),
+    ]
+
+    /// Local contrast. These sit under a hairline, with Sharpness drawn after them.
+    static let detail: [ToneSliderSpec] = [
+        ToneSliderSpec(title: "Texture", range: -1...1, keyPath: \.texture, readout: .hundredth),
+        ToneSliderSpec(title: "Clarity", range: -1...1, keyPath: \.clarity, readout: .hundredth),
+        ToneSliderSpec(title: "Details", range: -1...1, keyPath: \.details, readout: .hundredth),
     ]
 
     static let color: [ToneSliderSpec] = [
@@ -70,6 +75,11 @@ struct InspectorTone: View {
                         .disabled(!model.canResetPhoto)
                         .accessibilityIdentifier("Reset")
                         .help("Returns this photograph to the start. Redo brings each change back, one at a time.")
+                    Button("Flatten") { model.confirmFlatten() }
+                        .buttonStyle(LibraryPushButtonStyle())
+                        .disabled(!model.canFlattenPhoto)
+                        .accessibilityIdentifier("Flatten")
+                        .help("Writes a full-size TIFF beside the edits and uses that file from then on.")
                 },
                 toggle: { collapsed.toggle() }
             )
@@ -78,6 +88,14 @@ struct InspectorTone: View {
                     ForEach(ToneSliderSpec.tone) { spec in
                         ToneSliderControl(model: model, spec: spec)
                     }
+                    Rectangle()
+                        .fill(ChromePalette.hairline)
+                        .frame(height: 1)
+                        .accessibilityHidden(true)
+                    ForEach(ToneSliderSpec.detail) { spec in
+                        ToneSliderControl(model: model, spec: spec)
+                    }
+                    sharpnessSlider
                 }
             }
         }
@@ -86,6 +104,36 @@ struct InspectorTone: View {
         .background(ChromePalette.panel)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("Tone")
+    }
+
+    /// Sharpness stays on the geometry record. The slider is here so it sits with the other detail controls.
+    /// A video does not run geometry, so the slider is off while one is open.
+    private var sharpnessSlider: some View {
+        InspectorFieldRow(title: "Sharpness", readout: String(format: "%+.2f", model.draftGeometry.sharpness)) {
+            InspectorSlider(
+                value: model.draftGeometry.sharpness,
+                range: -1...1,
+                onChange: { value in
+                    model.nudgeGeometry("Sharpness") { $0.sharpness = value }
+                },
+                onEditingChanged: { editing in
+                    if editing {
+                        model.beginGeometryDrag()
+                    } else {
+                        model.endGeometryDrag()
+                    }
+                },
+                onReset: {
+                    model.beginGeometryDrag()
+                    model.nudgeGeometry("Sharpness") { $0.sharpness = 0 }
+                    model.endGeometryDrag()
+                }
+            )
+            .inspectorControlHeight()
+            .accessibilityLabel("Sharpness")
+            .help("Double-click the knob to return it to the middle.")
+        }
+        .disabled(model.showsVideo)
     }
 }
 
