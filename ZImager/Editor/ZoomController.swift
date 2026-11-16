@@ -13,6 +13,7 @@ nonisolated enum CanvasTool: String, Equatable, Sendable {
     case select
     case dustSpot
     case scratchMark
+    case redEye
 
     /// Spot and Scratch are one brush. A click repairs a speck. A drag follows a scratch.
     var repairsByHand: Bool {
@@ -29,7 +30,7 @@ nonisolated enum CanvasTool: String, Equatable, Sendable {
         case .hand:
             guard command else { return nil }
             return option ? .zoomOut : .zoomIn
-        case .horizon, .eyedropper, .removeObject, .select, .dustSpot, .scratchMark:
+        case .horizon, .eyedropper, .removeObject, .select, .dustSpot, .scratchMark, .redEye:
             return nil
         }
     }

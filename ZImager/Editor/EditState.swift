@@ -406,6 +406,9 @@ nonisolated enum EditCommand: Codable, Equatable, Sendable {
             if op.modelID == InpaintModel.scratch {
                 return "Scratches"
             }
+            if op.modelID == InpaintModel.redEye {
+                return "Red eye"
+            }
             if op.modelID == InpaintModel.colorSelection {
                 return "Remove object, color selection"
             }

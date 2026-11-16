@@ -113,6 +113,85 @@ final class TouchupTests: XCTestCase {
         XCTAssertGreaterThan(spot?.pixels[index(21, 19, width: width, height: height)] ?? 0, 0.25)
     }
 
+    func testRedEyeClickDarkensThePupilAndLeavesTheCatchlight() throws {
+        let width = 96
+        let height = 96
+        var samples = flat(width: width, height: height, value: 0.45)
+        // Skin-like surround. Red is high, but green and blue are too high to be a pupil.
+        for row in 0..<height {
+            for x in 0..<width {
+                let offset = index(x, row, width: width, height: height)
+                samples[offset] = 0.78
+                samples[offset + 1] = 0.50
+                samples[offset + 2] = 0.48
+            }
+        }
+        paintDisk(cx: 48, cy: 48, radius: 10, red: 0.72, green: 0.16, blue: 0.14, samples: &samples, width: width)
+        let catchlight = index(48, 48, width: width, height: height)
+        samples[catchlight] = 0.98
+        samples[catchlight + 1] = 0.97
+        samples[catchlight + 2] = 0.96
+        // A lip-colored disk must stay red when the click is on the eye, and a click on it does nothing.
+        paintDisk(cx: 12, cy: 80, radius: 6, red: 0.70, green: 0.33, blue: 0.39, samples: &samples, width: width)
+
+        let built = try XCTUnwrap(Touchup.redEye(
+            samples: samples,
+            width: width,
+            height: height,
+            bitmapPoint: CGPoint(x: 48, y: 40)
+        ))
+        let pupil = index(48, 40, width: width, height: height)
+        XCTAssertLessThan(built.pixels[pupil], 0.25)
+        XCTAssertEqual(built.pixels[pupil + 1], samples[pupil + 1], accuracy: 0.02)
+        XCTAssertGreaterThan(built.pixels[catchlight], 0.9)
+        XCTAssertEqual(built.pixels[catchlight + 1], samples[catchlight + 1], accuracy: 0.02)
+        // Radius 10 grown by 20% includes y=59 and y=60. Those skin pixels take the pupil's dark color.
+        let ring = index(48, 59, width: width, height: height)
+        XCTAssertLessThan(built.pixels[ring], 0.25)
+        XCTAssertLessThan(built.pixels[ring + 1], 0.30)
+        let ringEdge = index(48, 60, width: width, height: height)
+        XCTAssertLessThan(built.pixels[ringEdge], 0.25)
+        let outside = index(48, 62, width: width, height: height)
+        XCTAssertGreaterThan(built.pixels[outside], 0.7)
+        let lip = index(12, 80, width: width, height: height)
+        XCTAssertEqual(built.pixels[lip], samples[lip], accuracy: 0.02)
+        let corner = index(90, 8, width: width, height: height)
+        XCTAssertEqual(built.pixels[corner], samples[corner], accuracy: 0.02)
+        XCTAssertEqual(built.operation.modelID, InpaintModel.redEye)
+        XCTAssertEqual(EditCommand.addInpaint(built.operation).historyTitle, "Red eye")
+        XCTAssertFalse(InpaintModel.needsLama(InpaintModel.redEye))
+
+        let missed = Touchup.redEye(
+            samples: samples,
+            width: width,
+            height: height,
+            bitmapPoint: CGPoint(x: 12, y: 80)
+        )
+        XCTAssertNil(missed)
+
+        let beside = try XCTUnwrap(Touchup.redEye(
+            samples: samples,
+            width: width,
+            height: height,
+            bitmapPoint: CGPoint(x: 48, y: 64)
+        ))
+        XCTAssertLessThan(beside.pixels[pupil], 0.25)
+
+        let image = Touchup.ciImage(
+            samples,
+            width: width,
+            height: height,
+            extent: CGRect(x: 0, y: 0, width: width, height: height)
+        )
+        let applied = Touchup.apply(base: image, operation: built.operation, chain: 1)
+        let read = try XCTUnwrap(Touchup.read(applied))
+        let replayed = index(48, 40, width: read.width, height: read.height)
+        XCTAssertLessThan(read.samples[replayed], 0.3)
+        XCTAssertGreaterThan(read.samples[index(48, 48, width: read.width, height: read.height)], 0.9)
+        XCTAssertLessThan(read.samples[index(48, 59, width: read.width, height: read.height)], 0.35)
+        XCTAssertGreaterThan(read.samples[index(48, 62, width: read.width, height: read.height)], 0.7)
+    }
+
     func testScratchContinuesBothSidesWithoutPaintingAColumn() {
         let width = 120
         let height = 90
@@ -720,6 +799,33 @@ final class TouchupTests: XCTestCase {
             samples[index * 4 + 3] = 1
         }
         return samples
+    }
+
+    private func paintDisk(
+        cx: Int,
+        cy: Int,
+        radius: Int,
+        red: Float,
+        green: Float,
+        blue: Float,
+        samples: inout [Float],
+        width: Int
+    ) {
+        let reach = radius * radius
+        let count = samples.count / 4
+        let height = count / width
+        for row in 0..<height {
+            for x in 0..<width {
+                let dx = x - cx
+                let dy = row - cy
+                if dx * dx + dy * dy > reach { continue }
+                let offset = index(x, row, width: width, height: height)
+                samples[offset] = red
+                samples[offset + 1] = green
+                samples[offset + 2] = blue
+                samples[offset + 3] = 1
+            }
+        }
     }
 
     private func fill(rect: Range<Int>, rows: Range<Int>, samples: inout [Float], width: Int, height: Int, value: Float) {

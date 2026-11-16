@@ -14,6 +14,12 @@ Each entry uses this shape:
 - Scope: design section or PR name
 - Notes: facts, decisions, and the next step
 
+## 2026-11-16 — ZImager 1.8.1
+
+- Status: done
+- Scope: ZImager 1.8.1. Red-eye correction on the Touchup panel. The helper is unchanged. No disk image.
+- Notes: Marketing version 1.8.1 is on the ZImager target. The test target stays 1.0. `CURRENT_PROJECT_VERSION` stays 1. Red Eye sits to the right of Scratches. Click the red of each pupil. Each click is a history step titled Red eye. The black center is about 20% larger than the red that was found, and that ring is filled with the pupil's dark color. A catchlight stays. A click on skin or lips does nothing. The repair uses model id `touchup-redeye-v1` and does not need LaMa. There is no disk image yet. The last disk image is `Releases/ZImager-1.8.0-macOS.dmg`. Reorganize, Review, and Duplicates still do not work and can lose photos. Leave them alone.
+
 ## 2026-11-14 — ZImager 1.8.0
 
 - Status: done

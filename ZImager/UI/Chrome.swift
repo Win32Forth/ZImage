@@ -3039,6 +3039,15 @@ final class EditorModel {
         )
     }
 
+    func redEyeClick(at viewPoint: CGPoint, in viewSize: CGSize) {
+        guard let bitmap = touchupBitmap(at: viewPoint, in: viewSize) else { return }
+        enqueueTouchup(
+            banner: "Correcting red eye…",
+            empty: "No red eye under that click. Click the red of the pupil.",
+            work: .redEye(bitmap)
+        )
+    }
+
     /// `viewPoints` are the drag, in canvas coordinates. A short drag does not add a history step.
     /// Returns false when the stroke is too short to be a scratch.
     @discardableResult

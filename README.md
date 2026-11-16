@@ -1,6 +1,6 @@
 # ZImage
 
-ZImager 1.8.0 is the app. It is one window. Disk is the editor. Server is the library. The separate ZImage editor and ZImage Library are no longer in this project.
+ZImager 1.8.1 is the app. It is one window. Disk is the editor. Server is the library. The separate ZImage editor and ZImage Library are no longer in this project.
 
 `DESIGN.md` is the plan. `STATUS.md` is the iteration log, newest first.
 
@@ -9,6 +9,12 @@ ZImager 1.8.0 is the app. It is one window. Disk is the editor. Server is the li
 Reorganize, Review, and Duplicates do not work yet. Using them can lose photos. Leave those controls alone. Do not press Start, Pause, Continue, Find duplicates, or Delete all duplicates.
 
 Disk, and Server browsing of a folder, are the parts to use. Rotate, paste, export, print, and the image adjustments save the photo and rebuild its preview.
+
+## What 1.8.1 changes
+
+Red Eye sits to the right of Scratches on the Touchup panel, and on the menu beside Remove Scratches. Click Red Eye, then click the red of each pupil. Click Red Eye again to leave. Each eye is its own history step, titled Red eye. The black center is about 20% larger than the red the click found, so the red ring around the pupil is included. That ring is filled with the pupil's dark color. A white catchlight stays. A click on skin or lips does nothing.
+
+The helper is unchanged. There is no disk image for 1.8.1 yet. 1.8.0 behavior below is still in this app.
 
 ## What 1.8.0 changes
 
@@ -70,7 +76,7 @@ Clean folder is in the Server three-bar menu. It removes catalog records in the 
 
 ## Install ZImager
 
-The disk image is `Releases/ZImager-1.8.0-macOS.dmg`. It contains `ZImager.app` and `README.txt`.
+The disk image is `Releases/ZImager-1.8.0-macOS.dmg`. It contains `ZImager.app` and `README.txt`. 1.8.1 is not in that image yet.
 
 1. Open the disk image.
 2. Drag **ZImager.app** into Applications.

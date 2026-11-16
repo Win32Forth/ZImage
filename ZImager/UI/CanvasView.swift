@@ -210,6 +210,10 @@ struct CanvasView: View {
             return
         }
         popHandCursor()
+        if model.canvasTool == .redEye {
+            NSCursor.crosshair.set()
+            return
+        }
         guard model.canvasTool == .select, let image = model.preview else {
             NSCursor.arrow.set()
             return
@@ -384,6 +388,12 @@ struct CanvasView: View {
                 }
                 if model.canvasTool == .removeObject {
                     model.removeObjectClick(at: value.location, in: viewSize)
+                    return
+                }
+                if model.canvasTool == .redEye {
+                    if !model.spaceDown {
+                        model.redEyeClick(at: value.location, in: viewSize)
+                    }
                     return
                 }
                 if model.canvasTool.repairsByHand {

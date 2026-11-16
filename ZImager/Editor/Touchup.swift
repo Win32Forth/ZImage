@@ -172,6 +172,7 @@ nonisolated enum TouchupWork: Sendable {
     case scratches
     case spot(CGPoint, Int)
     case scratch([CGPoint], Int)
+    case redEye(CGPoint)
 
     var isSpot: Bool {
         if case .spot = self { return true }
@@ -186,7 +187,7 @@ nonisolated struct QueuedTouchup: Sendable {
     var work: TouchupWork
 }
 
-/// Outstanding Dust, Scratches, Spot, and Scratch repairs. The running job counts toward `cap`.
+/// Outstanding Dust, Scratches, Red Eye, Spot, and Scratch repairs. The running job counts toward `cap`.
 nonisolated struct TouchupQueue: Sendable {
     static let cap = 64
 
@@ -354,6 +355,8 @@ nonisolated enum Touchup {
             built = spot(samples: samples, width: width, height: height, bitmapPoint: point, radius: radius)
         case .scratch(let points, let radius):
             built = markedScratch(samples: samples, width: width, height: height, points: points, radius: radius)
+        case .redEye(let point):
+            built = redEye(samples: samples, width: width, height: height, bitmapPoint: point)
         }
         guard var built else { return nil }
         built.operation.patch = makePatch(
@@ -1138,6 +1141,28 @@ nonisolated enum Touchup {
         return built(mask: mask, samples: samples, width: width, height: height, modelID: InpaintModel.scratch)
     }
 
+    /// `bitmapPoint` is top-left. The click has to land on the red of the pupil, or within a few pixels of it.
+    static func redEye(
+        samples: [Float],
+        width: Int,
+        height: Int,
+        bitmapPoint: CGPoint
+    ) -> TouchupBuilt? {
+        guard let mask = TouchupEngine.redEyeMask(
+            samples: samples,
+            width: width,
+            height: height,
+            bitmapPoint: bitmapPoint
+        ) else { return nil }
+        let png = TouchupEngine.maskPNG(mask, width: width, height: height)
+        guard !png.isEmpty else { return nil }
+        let pixels = TouchupEngine.correctRedEye(samples: samples, mask: mask, width: width, height: height)
+        return TouchupBuilt(
+            operation: InpaintOp(id: UUID(), maskPNG: png, modelID: InpaintModel.redEye, featherPx: 1),
+            pixels: pixels
+        )
+    }
+
     /// Mixes a cached repair back over the photo. Strength 0 returns the photo unchanged.
     /// `chain` identifies the image this mask was built from. It does not include this step's strength.
     static func apply(base: CIImage, operation: InpaintOp, chain: Int, context: CIContext? = nil) -> CIImage {
@@ -1158,6 +1183,13 @@ nonisolated enum Touchup {
         let repaired: CIImage
         if let cached = TouchupCache.shared.image(for: key) {
             repaired = cached
+        } else if operation.modelID == InpaintModel.redEye {
+            guard let mask = TouchupEngine.bottomMask(operation.maskPNG, width: width, height: height),
+                  let painted = paintRedEye(base: base, mask: mask, context: renderContext) else {
+                return base
+            }
+            repaired = painted
+            TouchupCache.shared.store(key, repaired)
         } else if let mask = TouchupEngine.bottomMask(operation.maskPNG, width: width, height: height) {
             let scratch = operation.modelID == InpaintModel.scratch
             let patches = TouchupEngine.localPatches(mask: mask, width: width, height: height, scratch: scratch)
@@ -1277,6 +1309,36 @@ nonisolated enum Touchup {
         var extent: CGRect
         var mask: [UInt8]
         var scratch: Bool
+    }
+
+    /// Pulls the red out of the masked pupil. The rest of the photograph is not read.
+    private static func paintRedEye(base: CIImage, mask: [UInt8], context: CIContext) -> CIImage? {
+        let extent = base.extent.integral
+        let width = Int(extent.width)
+        let height = Int(extent.height)
+        guard width > 1, height > 1,
+              let patch = TouchupEngine.workPatch(mask: mask, width: width, height: height, scratch: true) else {
+            return nil
+        }
+        let crop = CGRect(
+            x: extent.minX + CGFloat(patch.minX),
+            y: extent.maxY - CGFloat(patch.minY + patch.height),
+            width: CGFloat(patch.width),
+            height: CGFloat(patch.height)
+        )
+        guard let raster = read(base.cropped(to: crop), context: context),
+              raster.width == patch.width, raster.height == patch.height else {
+            return nil
+        }
+        let localMask = TouchupEngine.cropMask(mask, width: width, patch: patch)
+        let pixels = TouchupEngine.correctRedEye(
+            samples: raster.samples,
+            mask: localMask,
+            width: raster.width,
+            height: raster.height
+        )
+        let tile = ciImage(pixels, width: raster.width, height: raster.height, extent: raster.extent)
+        return tile.composited(over: base).cropped(to: extent)
     }
 
     private static func repairCrop(
@@ -1626,6 +1688,338 @@ private nonisolated enum TouchupEngine {
         }
         let grown = dilate(mask, width: width, height: height, radius: 1)
         return grown.contains(255) ? grown : nil
+    }
+
+    /// Flash red-eye is red with both other channels low. Skin and lips are red too, but their
+    /// green and blue stay much higher, so a click on a cheek does not qualify.
+    private enum RedEyeGate {
+        static let minRed: Float = 0.20
+        static let maxOther: Float = 0.36
+        static let minRatio: Float = 1.7
+        static let minGap: Float = 0.12
+        static let fringeRatio: Float = 1.5
+        static let fringeGap: Float = 0.08
+        static let fringeOther: Float = 0.32
+        /// Linear growth of the black center past the red the click found, so the fill covers the red ring.
+        static let pupilScale: Float = 1.2
+    }
+
+    static func redEyeMask(
+        samples: [Float],
+        width: Int,
+        height: Int,
+        bitmapPoint: CGPoint
+    ) -> [UInt8]? {
+        guard width > 1, height > 1, samples.count >= width * height * 4,
+              let point = rasterPoint(bitmapPoint, width: width, height: height) else {
+            return nil
+        }
+        let grow = max(28, min(120, min(width, height) / 18))
+        let snap = 18
+        guard let seed = reddestPupil(
+            samples: samples,
+            width: width,
+            height: height,
+            x: point.x,
+            y: point.y,
+            radius: snap
+        ) else { return nil }
+
+        var mask = [UInt8](repeating: 0, count: width * height)
+        var queue = [seed]
+        var head = 0
+        mask[seed] = 255
+        var count = 1
+        let seedX = seed % width
+        let seedY = seed / width
+        let reach = grow * grow
+        let limit = min(80_000, max(400, grow * grow))
+        var minX = seedX
+        var maxX = seedX
+        var minY = seedY
+        var maxY = seedY
+        while head < queue.count && count < limit {
+            let current = queue[head]
+            head += 1
+            let x = current % width
+            let y = current / width
+            for step in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
+                let nx = x + step.0
+                let ny = y + step.1
+                guard nx >= 0, ny >= 0, nx < width, ny < height else { continue }
+                let dx = nx - seedX
+                let dy = ny - seedY
+                if dx * dx + dy * dy > reach { continue }
+                let next = ny * width + nx
+                if mask[next] != 0 { continue }
+                let offset = next * 4
+                guard isPupilRed(samples[offset], samples[offset + 1], samples[offset + 2]) else { continue }
+                mask[next] = 255
+                count += 1
+                queue.append(next)
+                if nx < minX { minX = nx }
+                if nx > maxX { maxX = nx }
+                if ny < minY { minY = ny }
+                if ny > maxY { maxY = ny }
+            }
+        }
+        let boxWidth = maxX - minX + 1
+        let boxHeight = maxY - minY + 1
+        guard count >= 8, max(boxWidth, boxHeight) <= min(boxWidth, boxHeight) * 3 else { return nil }
+
+        var rim = mask
+        let x0 = max(0, minX - 1)
+        let y0 = max(0, minY - 1)
+        let x1 = min(width - 1, maxX + 1)
+        let y1 = min(height - 1, maxY + 1)
+        for y in y0...y1 {
+            for x in x0...x1 {
+                let index = y * width + x
+                if mask[index] != 0 { continue }
+                let dx = x - seedX
+                let dy = y - seedY
+                if dx * dx + dy * dy > reach { continue }
+                let touches = neighborIsSet(mask, width: width, height: height, x: x, y: y)
+                guard touches else { continue }
+                let offset = index * 4
+                guard isPupilFringe(samples[offset], samples[offset + 1], samples[offset + 2]) else { continue }
+                rim[index] = 255
+            }
+        }
+        return enlargePupil(rim, width: width, height: height)
+    }
+
+    /// Grows the black center about 20% from its centroid. Each new pixel is kept only when the
+    /// mask pixel closer to the center is already set, so the shape scales and a catchlight hole stays open.
+    private static func enlargePupil(_ mask: [UInt8], width: Int, height: Int) -> [UInt8] {
+        var sumX = 0
+        var sumY = 0
+        var count = 0
+        var minX = width
+        var minY = height
+        var maxX = 0
+        var maxY = 0
+        for y in 0..<height {
+            let row = y * width
+            for x in 0..<width where mask[row + x] != 0 {
+                sumX += x
+                sumY += y
+                count += 1
+                if x < minX { minX = x }
+                if x > maxX { maxX = x }
+                if y < minY { minY = y }
+                if y > maxY { maxY = y }
+            }
+        }
+        guard count > 0 else { return mask }
+        let scale = RedEyeGate.pupilScale
+        let centerX = Float(sumX) / Float(count)
+        let centerY = Float(sumY) / Float(count)
+        let span = max(maxX - minX, maxY - minY) + 1
+        let pad = Int((Float(span) * (scale - 1)).rounded(.up)) + 2
+        let x0 = max(0, minX - pad)
+        let y0 = max(0, minY - pad)
+        let x1 = min(width - 1, maxX + pad)
+        let y1 = min(height - 1, maxY + pad)
+        let holes = pupilHoles(mask, width: width, minX: minX, minY: minY, maxX: maxX, maxY: maxY)
+        var grown = mask
+        for y in y0...y1 {
+            for x in x0...x1 {
+                let index = y * width + x
+                if grown[index] != 0 || holes.contains(index) { continue }
+                let sx = centerX + (Float(x) - centerX) / scale
+                let sy = centerY + (Float(y) - centerY) / scale
+                let ix = Int(sx.rounded())
+                let iy = Int(sy.rounded())
+                guard ix >= 0, iy >= 0, ix < width, iy < height else { continue }
+                if mask[iy * width + ix] != 0 {
+                    grown[index] = 255
+                }
+            }
+        }
+        return grown
+    }
+
+    /// Unset pixels inside the pupil that cannot reach the box edge. A catchlight is one of these.
+    private static func pupilHoles(
+        _ mask: [UInt8],
+        width: Int,
+        minX: Int,
+        minY: Int,
+        maxX: Int,
+        maxY: Int
+    ) -> Set<Int> {
+        var seen = Set<Int>()
+        var queue: [Int] = []
+        func consider(_ x: Int, _ y: Int) {
+            let index = y * width + x
+            if mask[index] != 0 || seen.contains(index) { return }
+            seen.insert(index)
+            queue.append(index)
+        }
+        for x in minX...maxX {
+            consider(x, minY)
+            consider(x, maxY)
+        }
+        for y in minY...maxY {
+            consider(minX, y)
+            consider(maxX, y)
+        }
+        var head = 0
+        while head < queue.count {
+            let current = queue[head]
+            head += 1
+            let x = current % width
+            let y = current / width
+            for step in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
+                let nx = x + step.0
+                let ny = y + step.1
+                guard nx >= minX, ny >= minY, nx <= maxX, ny <= maxY else { continue }
+                let next = ny * width + nx
+                if mask[next] != 0 || seen.contains(next) { continue }
+                seen.insert(next)
+                queue.append(next)
+            }
+        }
+        var holes = Set<Int>()
+        for y in minY...maxY {
+            let row = y * width
+            for x in minX...maxX {
+                let index = row + x
+                if mask[index] == 0, !seen.contains(index) {
+                    holes.insert(index)
+                }
+            }
+        }
+        return holes
+    }
+
+    /// The red core loses only its extra red. The ring around that core is painted with the core's
+    /// dark color on every channel, so it becomes part of the black center. A catchlight is not in the mask.
+    static func correctRedEye(samples: [Float], mask: [UInt8], width: Int, height: Int) -> [Float] {
+        var output = samples
+        let count = width * height
+        guard width > 1, height > 1, mask.count >= count, samples.count >= count * 4 else { return output }
+        let fill = pupilFill(samples: samples, mask: mask, width: width, height: height)
+        let alpha = blurMask(mask, width: width, height: height, radius: 1)
+        for index in 0..<count {
+            var amount = alpha[index]
+            if amount <= 0.001 { continue }
+            let offset = index * 4
+            let red = samples[offset]
+            let green = samples[offset + 1]
+            let blue = samples[offset + 2]
+            let inMask = mask[index] != 0
+            if inMask {
+                amount = 1
+            } else {
+                guard isPupilFringe(red, green, blue) else { continue }
+                amount = min(amount, 0.65)
+            }
+            if inMask, let fill, !isPupilRed(red, green, blue) {
+                output[offset] = red + (fill.red - red) * amount
+                output[offset + 1] = green + (fill.green - green) * amount
+                output[offset + 2] = blue + (fill.blue - blue) * amount
+            } else {
+                let limit = min(green, blue)
+                let corrected = min(red, limit)
+                output[offset] = red + (corrected - red) * amount
+            }
+            output[offset + 3] = samples[offset + 3] == 0 ? 1 : samples[offset + 3]
+        }
+        return output
+    }
+
+    /// Median corrected color of the red core. Ring pixels blend toward this instead of their own green and blue.
+    private static func pupilFill(
+        samples: [Float],
+        mask: [UInt8],
+        width: Int,
+        height: Int
+    ) -> (red: Float, green: Float, blue: Float)? {
+        var reds: [Float] = []
+        var greens: [Float] = []
+        var blues: [Float] = []
+        let count = width * height
+        for index in 0..<count where mask[index] != 0 {
+            let offset = index * 4
+            let red = samples[offset]
+            let green = samples[offset + 1]
+            let blue = samples[offset + 2]
+            guard isPupilRed(red, green, blue) else { continue }
+            reds.append(min(red, min(green, blue)))
+            greens.append(green)
+            blues.append(blue)
+        }
+        guard !reds.isEmpty else { return nil }
+        return (medianChannel(reds), medianChannel(greens), medianChannel(blues))
+    }
+
+    private static func medianChannel(_ values: [Float]) -> Float {
+        let sorted = values.sorted()
+        let mid = sorted.count / 2
+        if sorted.count % 2 == 1 { return sorted[mid] }
+        return (sorted[mid - 1] + sorted[mid]) * 0.5
+    }
+
+    private static func isPupilRed(_ red: Float, _ green: Float, _ blue: Float) -> Bool {
+        let other = max(green, blue)
+        guard red > RedEyeGate.minRed, other < RedEyeGate.maxOther else { return false }
+        guard red > other * RedEyeGate.minRatio else { return false }
+        return red - other > RedEyeGate.minGap
+    }
+
+    private static func isPupilFringe(_ red: Float, _ green: Float, _ blue: Float) -> Bool {
+        let other = max(green, blue)
+        guard red > 0.15, other < RedEyeGate.fringeOther else { return false }
+        guard red > other * RedEyeGate.fringeRatio else { return false }
+        return red - other > RedEyeGate.fringeGap
+    }
+
+    private static func reddestPupil(
+        samples: [Float],
+        width: Int,
+        height: Int,
+        x: Int,
+        y: Int,
+        radius: Int
+    ) -> Int? {
+        var bestIndex: Int?
+        var bestScore: Float = -1
+        let reach = radius * radius
+        let y0 = max(0, y - radius)
+        let y1 = min(height - 1, y + radius)
+        let x0 = max(0, x - radius)
+        let x1 = min(width - 1, x + radius)
+        for row in y0...y1 {
+            for column in x0...x1 {
+                let dx = column - x
+                let dy = row - y
+                if dx * dx + dy * dy > reach { continue }
+                let offset = (row * width + column) * 4
+                let red = samples[offset]
+                let green = samples[offset + 1]
+                let blue = samples[offset + 2]
+                guard isPupilRed(red, green, blue) else { continue }
+                let score = (red - max(green, blue)) - Float(dx * dx + dy * dy) * 0.0008
+                if score > bestScore {
+                    bestScore = score
+                    bestIndex = row * width + column
+                }
+            }
+        }
+        return bestIndex
+    }
+
+    private static func neighborIsSet(_ mask: [UInt8], width: Int, height: Int, x: Int, y: Int) -> Bool {
+        for step in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
+            let nx = x + step.0
+            let ny = y + step.1
+            if nx >= 0, ny >= 0, nx < width, ny < height, mask[ny * width + nx] != 0 {
+                return true
+            }
+        }
+        return false
     }
 
     static func markedScratchMask(

@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Dust and scratch repair. Spot stays on until it is clicked again.
+/// Dust, scratch, and red-eye repair. Spot and Red Eye stay on until clicked again.
 struct InspectorTouchup: View {
     @Bindable var model: EditorModel
     @Binding var collapsed: Bool
@@ -20,6 +20,13 @@ struct InspectorTouchup: View {
                     .disabled(model.proxy == nil)
                     .accessibilityIdentifier("Scratches")
                     .help("Finds scratches and blends them into the surrounding photo.")
+                Button("Red Eye") { model.toggleCanvasTool(.redEye) }
+                    .buttonStyle(LibraryPushButtonStyle())
+                    .toolToggleBorder(active: model.canvasTool == .redEye)
+                    .disabled(model.proxy == nil)
+                    .accessibilityIdentifier("Red Eye")
+                    .accessibilityAddTraits(model.canvasTool == .redEye ? .isSelected : [])
+                    .help("Click the red in each eye. Click Red Eye again to leave.")
             }
             HStack(spacing: 8) {
                 Button("Spot") { model.toggleCanvasTool(.dustSpot) }

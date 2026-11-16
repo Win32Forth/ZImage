@@ -17,13 +17,14 @@ nonisolated enum InpaintModel {
     static let colorSelection = "color-selection"
     static let dust = "touchup-dust-v1"
     static let scratch = "touchup-scratch-v1"
+    static let redEye = "touchup-redeye-v1"
     static let bundledResource = "lama-big-coreml-v1"
 
     static func isTouchup(_ modelID: String) -> Bool {
-        modelID == dust || modelID == scratch
+        modelID == dust || modelID == scratch || modelID == redEye
     }
 
-    /// Object removal still needs the LaMa file. Dust and scratch repair do not.
+    /// Object removal still needs the LaMa file. Dust, scratch, and red-eye repair do not.
     static func needsLama(_ modelID: String) -> Bool {
         !isTouchup(modelID)
     }
@@ -62,7 +63,7 @@ nonisolated enum InpaintPipeline {
         return bundle.url(forResource: InpaintModel.bundledResource, withExtension: "mlpackage")
     }
 
-    /// Export refuses object removal when the LaMa file is absent. Dust and scratch repair export without it.
+    /// Export refuses object removal when the LaMa file is absent. Dust, scratch, and red-eye repair export without it.
     static func validateForExport(_ state: EditState) throws {
         let needsModel = state.inpaints.contains { InpaintModel.needsLama($0.modelID) }
         if !needsModel { return }

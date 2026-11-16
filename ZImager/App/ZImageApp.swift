@@ -143,6 +143,7 @@ struct ZImagerApp: App {
                     .keyboardShortcut("e", modifiers: [])
                 Button("Remove Dust") { model.removeDust() }
                 Button("Remove Scratches") { model.removeScratches() }
+                Button("Red Eye") { model.toggleCanvasTool(.redEye) }
                 Button("Spot") { model.toggleCanvasTool(.dustSpot) }
             }
             CommandGroup(after: .pasteboard) {
