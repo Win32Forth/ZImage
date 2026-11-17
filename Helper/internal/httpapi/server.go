@@ -449,6 +449,10 @@ func (s *Server) assets(w http.ResponseWriter, r *http.Request) {
 		query += " AND rel_path LIKE ? ESCAPE '\\'"
 		args = append(args, likeContains(text))
 	}
+	if name := q.Get("name"); name != "" {
+		query += " AND rel_path LIKE ? ESCAPE '\\'"
+		args = append(args, likeContains(name))
+	}
 	switch q.Get("media") {
 	case "":
 	case "video":

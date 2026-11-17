@@ -38,8 +38,15 @@ struct LibraryGrid: View {
                         .foregroundStyle(ChromePalette.ink)
                         .lineLimit(1)
                         .truncationMode(.middle)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                         .accessibilityIdentifier("Display folder name")
-                    Spacer(minLength: 0)
+                    FolderNameFilterBar(
+                        query: $browser.nameQuery,
+                        filterActive: !browser.nameFilter.isEmpty,
+                        prefix: "Server",
+                        find: { browser.applyNameFilter() },
+                        clear: { browser.clearNameFilter() }
+                    )
                 }
                 .padding(.horizontal, 16)
                 .padding(.top, 10)
@@ -72,6 +79,12 @@ struct LibraryGrid: View {
             if browser.session.isEmptyOffline {
                 LibraryEmptyState()
                     .padding(16)
+            } else if browser.rows.isEmpty && !browser.nameFilter.isEmpty {
+                Text("No photos match that name.")
+                    .font(.system(size: 13))
+                    .foregroundStyle(ChromePalette.muted)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    .padding(16)
             }
             ScrollView {
                 LazyVGrid(columns: columns, spacing: 16) {
@@ -83,7 +96,7 @@ struct LibraryGrid: View {
             }
             .modifier(KeptScroll(
                 visible: onScreen,
-                key: "\(media ?? "")|\(browser.displayFolder)",
+                key: "\(media ?? "")|\(browser.displayFolder)|\(browser.folderPage)",
                 holdOffset: browser.removalBusy || browser.dateBusy || browser.cleanBusy || browser.rescanBusy
             ))
         }
@@ -92,14 +105,18 @@ struct LibraryGrid: View {
             guard live else { return }
             browser.deleteKey()
         }
-        .task(id: "\(media ?? "")|\(browser.displayFolder)|\(live)") {
+        .task(id: "\(media ?? "")|\(browser.displayFolder)|\(browser.nameFilter)|\(live)") {
             guard live else { return }
             await browser.showFocus()
             await browser.reload(media: media)
             while !Task.isCancelled {
                 if await browser.previewVisibleOne() { continue }
                 let consumed = await browser.checkpointOne()
-                if !browser.awaitsPreviews && !consumed { return }
+                if !browser.awaitsPreviews && !consumed {
+                    // The next page has its own squares. This walk stays up so they fill in.
+                    await browser.waitForAnotherFolderPage()
+                    continue
+                }
                 try? await Task.sleep(for: .seconds(2))
                 if Task.isCancelled { return }
                 if browser.awaitsPreviews {

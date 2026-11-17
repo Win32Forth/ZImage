@@ -757,13 +757,21 @@ final class HelperClient {
 
     /// `photo` omits videos. `video` is the movie list, earliest capture day first.
     /// `under` limits the page to paths that contain that folder. The running helper treats `q` as a path search.
-    func assets(media: String?, under folder: String? = nil) async throws -> LibraryPage {
+    /// One call returns at most 200 rows. `cursor` asks for the next page.
+    /// `name` is honored only by a helper that knows it. Callers still match the file name themselves.
+    func assets(media: String?, under folder: String? = nil, name: String? = nil, cursor: String? = nil) async throws -> LibraryPage {
         var items: [URLQueryItem] = []
         if let media {
             items.append(URLQueryItem(name: "media", value: media))
         }
         if let folder, let needle = DisplayFolder.needle(folder) {
             items.append(URLQueryItem(name: "q", value: needle))
+        }
+        if let name, !name.isEmpty {
+            items.append(URLQueryItem(name: "name", value: name))
+        }
+        if let cursor, !cursor.isEmpty {
+            items.append(URLQueryItem(name: "cursor", value: cursor))
         }
         items.append(URLQueryItem(name: "limit", value: "200"))
         var parts = URLComponents()
@@ -1251,12 +1259,27 @@ final class LibrarySession {
         self.client = client
     }
 
-    /// Stills and videos for one folder. Each request stays within the helper's page of 200.
-    func refreshPhotosAndVideos(under folder: String?) async {
+    func markReachable() {
+        hasPage = true
+        banner = nil
+        isEmptyOffline = false
+        writesEnabled = true
+    }
+
+    /// Stills and videos for one folder. With no name, each list is the helper's first page of 200.
+    /// A name keeps reading pages until the folder is exhausted, then keeps file names that contain it.
+    func refreshPhotosAndVideos(under folder: String?, name: String? = nil) async {
         do {
-            let photos = try await client.assets(media: "photo", under: folder)
-            let videos = try await client.assets(media: "video", under: folder)
-            rows = (photos.rows + videos.rows).sorted { left, right in
+            let photos: [LibraryAsset]
+            let videos: [LibraryAsset]
+            if let name, !name.isEmpty {
+                photos = try await collect(media: "photo", under: folder, name: name)
+                videos = try await collect(media: "video", under: folder, name: name)
+            } else {
+                photos = try await client.assets(media: "photo", under: folder).rows
+                videos = try await client.assets(media: "video", under: folder).rows
+            }
+            rows = (photos + videos).sorted { left, right in
                 (left.relPath ?? left.uid).localizedStandardCompare(right.relPath ?? right.uid) == .orderedAscending
             }
             hasPage = true
@@ -1264,14 +1287,19 @@ final class LibrarySession {
             isEmptyOffline = false
             writesEnabled = true
         } catch {
-            await refresh(media: "photo", under: folder)
+            await refresh(media: "photo", under: folder, name: name)
         }
     }
 
-    func refresh(media: String? = nil, under folder: String? = nil) async {
+    func refresh(media: String? = nil, under folder: String? = nil, name: String? = nil) async {
         do {
-            let page = try await client.assets(media: media, under: folder)
-            rows = page.rows
+            let pageRows: [LibraryAsset]
+            if let name, !name.isEmpty {
+                pageRows = try await collect(media: media, under: folder, name: name)
+            } else {
+                pageRows = try await client.assets(media: media, under: folder).rows
+            }
+            rows = pageRows
             hasPage = true
             banner = nil
             isEmptyOffline = false
@@ -1304,5 +1332,27 @@ final class LibrarySession {
                 rows = []
             }
         }
+    }
+
+    /// Follows the helper cursor until the folder ends. Each page is at most 200 rows.
+    /// The file name is matched here because the helper now running ignores `name`.
+    private func collect(media: String?, under folder: String?, name: String) async throws -> [LibraryAsset] {
+        var cursor: String?
+        var matched: [LibraryAsset] = []
+        var seenCursors: Set<String> = []
+        var seenUIDs: Set<String> = []
+        for _ in 0..<2_000 {
+            if Task.isCancelled { break }
+            let page = try await client.assets(media: media, under: folder, name: name, cursor: cursor)
+            for row in page.rows {
+                let file = FolderNameFilter.fileName(in: row.relPath ?? "")
+                guard FolderNameFilter.matches(file, query: name), seenUIDs.insert(row.uid).inserted else { continue }
+                matched.append(row)
+            }
+            let next = page.nextCursor
+            if next.isEmpty || page.rows.isEmpty || !seenCursors.insert(next).inserted { break }
+            cursor = next
+        }
+        return matched
     }
 }

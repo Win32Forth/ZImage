@@ -229,12 +229,13 @@ final class LibraryGridTests: XCTestCase {
             openFile: { _, _ in }
         )
         fake.enqueue(.success(HelperResponse(status: 200, body: page)))
+        fake.enqueue(.success(HelperResponse(status: 200, body: Data(#"{"rows":[],"nextCursor":""}"#.utf8))))
         await browser.reload(media: "photo")
         fake.enqueue(.success(HelperResponse(status: 200, body: Data("{}".utf8))))
         fake.enqueue(.success(HelperResponse(status: 200, body: Data([0xFF, 0xD8]))))
         let made = await browser.previewVisibleOne()
         XCTAssertTrue(made)
-        XCTAssertEqual(fake.paths, ["/v1/assets", "/v1/assets/aa-first/facts", "/v1/assets/aa-first/thumbnail"])
+        XCTAssertEqual(fake.paths, ["/v1/assets", "/v1/assets", "/v1/assets/aa-first/facts", "/v1/assets/aa-first/thumbnail"])
         XCTAssertEqual(browser.rows[0].thumbRel, ".zimage/cache/thumbs/aa/aa-first.jpg")
         XCTAssertNil(browser.rows[1].thumbRel)
         XCTAssertNotNil(browser.cells["aa-first"]?.imageData)
@@ -383,24 +384,281 @@ final class LibraryGridTests: XCTestCase {
             libraryRoot: URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true),
             openFile: { _, _ in }
         )
+        let empty = Data(#"{"rows":[],"nextCursor":""}"#.utf8)
         fake.enqueue(.success(HelperResponse(status: 200, body: page)))
         await browser.reload(media: "video")
         XCTAssertEqual(browser.rows.map(\.uid), ["earlier", "later", "undated"])
         fake.enqueue(.success(HelperResponse(status: 200, body: page)))
+        fake.enqueue(.success(HelperResponse(status: 200, body: empty)))
         await browser.reload(media: "photo")
         XCTAssertEqual(browser.rows.map(\.uid), ["still"])
         XCTAssertEqual(queryValue("media", fake.urls[0]), "video")
         XCTAssertEqual(queryValue("q", fake.urls[0]), "Photos/")
         XCTAssertEqual(queryValue("media", fake.urls[1]), "photo")
         XCTAssertEqual(queryValue("q", fake.urls[1]), "Photos/")
+        XCTAssertEqual(queryValue("media", fake.urls[2]), "video")
         browser.displayFolder = "Photos/2026"
         fake.enqueue(.success(HelperResponse(status: 200, body: page)))
+        fake.enqueue(.success(HelperResponse(status: 200, body: empty)))
         await browser.reload(media: "photo")
-        XCTAssertEqual(queryValue("q", fake.urls[2]), "Photos/2026/")
+        XCTAssertEqual(queryValue("media", fake.urls[3]), "photo")
+        XCTAssertEqual(queryValue("q", fake.urls[3]), "Photos/2026/")
         fake.enqueue(.success(HelperResponse(status: 200, body: page)))
         await browser.reload(media: "video")
-        XCTAssertEqual(queryValue("media", fake.urls[3]), "video")
-        XCTAssertEqual(queryValue("q", fake.urls[3]), "Photos/2026/")
+        XCTAssertEqual(queryValue("media", fake.urls[5]), "video")
+        XCTAssertEqual(queryValue("q", fake.urls[5]), "Photos/2026/")
+    }
+
+    func testNameFilterIsSentWithTheDisplayedFolder() async throws {
+        let page = Data(#"{"rows":[],"nextCursor":""}"#.utf8)
+        let fake = GridFakeListener()
+        let browser = LibraryBrowser(
+            client: HelperClient(credentials: HelperCredentials(host: "192.168.1.20", pin: Data([1]), token: "t")) { request in
+                try await fake.send(request)
+            },
+            libraryRoot: URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true),
+            openFile: { _, _ in }
+        )
+        browser.displayFolder = "Photos/2026"
+        browser.nameQuery = " Red "
+        browser.applyNameFilter()
+        fake.enqueue(.success(HelperResponse(status: 200, body: page)))
+        fake.enqueue(.success(HelperResponse(status: 200, body: page)))
+        await browser.reload(media: "photo")
+        XCTAssertEqual(browser.nameFilter, "Red")
+        XCTAssertEqual(queryValue("q", fake.urls[0]), "Photos/2026/")
+        XCTAssertEqual(queryValue("name", fake.urls[0]), "Red")
+        XCTAssertEqual(queryValue("media", fake.urls[0]), "photo")
+        XCTAssertEqual(queryValue("name", fake.urls[1]), "Red")
+        XCTAssertEqual(queryValue("media", fake.urls[1]), "video")
+        browser.clearNameFilter()
+        XCTAssertEqual(browser.nameQuery, "")
+        XCTAssertEqual(browser.nameFilter, "")
+    }
+
+    func testNameFilterReadsPagesAfterTheFirstTwoHundred() async throws {
+        func page(_ rows: String, cursor: String) -> Data {
+            Data(#"{"rows":[\#(rows)],"nextCursor":"\#(cursor)"}"#.utf8)
+        }
+        func row(_ uid: String, _ path: String, _ ext: String, _ kind: String) -> String {
+            #"{"uid":"\#(uid)","relPath":"\#(path)","ext":"\#(ext)","mediaClass":"\#(kind)","isKeeper":false,"pinned":false}"#
+        }
+        let fake = GridFakeListener()
+        let browser = LibraryBrowser(
+            client: HelperClient(credentials: HelperCredentials(host: "192.168.1.20", pin: Data([1]), token: "t")) { request in
+                try await fake.send(request)
+            },
+            libraryRoot: URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true),
+            openFile: { _, _ in }
+        )
+        browser.displayFolder = "Photos/2026"
+        browser.nameQuery = "Red"
+        browser.applyNameFilter()
+        fake.enqueue(.success(HelperResponse(status: 200, body: page(
+            [
+                row("stored", "Photos/Stored/keep.jpg", "jpg", "image"),
+                row("other", "Photos/2026/portrait.jpg", "jpg", "image"),
+            ].joined(separator: ","),
+            cursor: "200"
+        ))))
+        fake.enqueue(.success(HelperResponse(status: 200, body: page(
+            [
+                row("redeye", "Photos/2026/Red eye test.jpg", "jpg", "image"),
+                row("redtwo", "Photos/2026/red-eye-2.jpg", "jpg", "image"),
+            ].joined(separator: ","),
+            cursor: ""
+        ))))
+        fake.enqueue(.success(HelperResponse(status: 200, body: page(
+            [
+                row("redclip", "Photos/2026/red-eye.mov", "mov", "video"),
+                row("clip", "Photos/2026/clip.mov", "mov", "video"),
+            ].joined(separator: ","),
+            cursor: ""
+        ))))
+        await browser.reload(media: "photo")
+        XCTAssertEqual(Set(browser.rows.map(\.uid)), ["redeye", "redtwo", "redclip"])
+        XCTAssertEqual(fake.urls.count, 3)
+        XCTAssertEqual(queryValue("name", fake.urls[0]), "Red")
+        XCTAssertNil(queryValue("cursor", fake.urls[0]))
+        XCTAssertEqual(queryValue("cursor", fake.urls[1]), "200")
+        XCTAssertEqual(queryValue("media", fake.urls[1]), "photo")
+        XCTAssertEqual(queryValue("media", fake.urls[2]), "video")
+        XCTAssertNil(browser.notice)
+        XCTAssertFalse(browser.showsFolderPager)
+
+        browser.clearNameFilter()
+        fake.enqueue(.success(HelperResponse(status: 200, body: page(
+            row("portrait", "Photos/2026/portrait.jpg", "jpg", "image"),
+            cursor: "999"
+        ))))
+        fake.enqueue(.success(HelperResponse(status: 200, body: page("", cursor: ""))))
+        fake.enqueue(.success(HelperResponse(status: 200, body: page("", cursor: ""))))
+        await browser.reload(media: "photo")
+        XCTAssertEqual(fake.urls.count, 6)
+        XCTAssertNil(queryValue("cursor", fake.urls[3]))
+        XCTAssertEqual(queryValue("cursor", fake.urls[4]), "999")
+        XCTAssertEqual(queryValue("media", fake.urls[5]), "video")
+        XCTAssertEqual(browser.rows.map(\.uid), ["portrait"])
+        XCTAssertFalse(browser.showsFolderPager)
+    }
+
+    func testServerFolderPagerStepsThroughPhotosPastTwoHundred() async throws {
+        func row(_ uid: String, _ path: String, _ ext: String, _ kind: String) -> String {
+            #"{"uid":"\#(uid)","relPath":"\#(path)","ext":"\#(ext)","mediaClass":"\#(kind)","isKeeper":false,"pinned":false}"#
+        }
+        func page(_ rows: String, cursor: String) -> Data {
+            Data(#"{"rows":[\#(rows)],"nextCursor":"\#(cursor)"}"#.utf8)
+        }
+        let first = (0..<200).map {
+            row(String(format: "p%03d", $0), String(format: "Photos/p%03d.jpg", $0), "jpg", "image")
+        }.joined(separator: ",")
+        let tail = row("p200", "Photos/p200.jpg", "jpg", "image")
+        let clip = row("clip", "Photos/zzz.mp4", "mp4", "video")
+        let fake = GridFakeListener()
+        let browser = LibraryBrowser(
+            client: HelperClient(credentials: HelperCredentials(host: "192.168.1.20", pin: Data([1]), token: "t")) { request in
+                try await fake.send(request)
+            },
+            libraryRoot: URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true),
+            openFile: { _, _ in }
+        )
+        browser.displayFolder = "Photos/2026"
+        fake.enqueue(.success(HelperResponse(status: 200, body: page(first, cursor: "c1"))))
+        fake.enqueue(.success(HelperResponse(status: 200, body: page(tail, cursor: ""))))
+        fake.enqueue(.success(HelperResponse(status: 200, body: page(clip, cursor: ""))))
+        await browser.reload(media: "photo")
+        XCTAssertEqual(browser.folderPhotoTotal, 201)
+        XCTAssertTrue(browser.showsFolderPager)
+        XCTAssertEqual(browser.folderPagerTitle, "201 photos")
+        XCTAssertEqual(browser.folderPagerRange, "1\u{2013}200 of 201")
+        XCTAssertFalse(browser.folderPageCanGoBack)
+        XCTAssertTrue(browser.folderPageCanGoForward)
+        XCTAssertEqual(browser.rows.count, 201)
+        XCTAssertEqual(browser.rows.first?.uid, "p000")
+        XCTAssertEqual(browser.rows.last?.uid, "clip")
+        XCTAssertEqual(fake.urls.count, 3)
+        XCTAssertNil(queryValue("cursor", fake.urls[0]))
+        XCTAssertEqual(queryValue("cursor", fake.urls[1]), "c1")
+        XCTAssertEqual(queryValue("media", fake.urls[2]), "video")
+
+        await browser.showNextFolderPage()
+        XCTAssertEqual(browser.rows.map(\.uid), ["p200"])
+        XCTAssertEqual(browser.folderPagerRange, "201\u{2013}201 of 201")
+        XCTAssertTrue(browser.folderPageCanGoBack)
+        XCTAssertFalse(browser.folderPageCanGoForward)
+        XCTAssertEqual(fake.urls.count, 3)
+
+        await browser.showLastFolderPage()
+        XCTAssertEqual(browser.rows.map(\.uid), ["p200"])
+        await browser.showFirstFolderPage()
+        XCTAssertEqual(browser.rows.count, 201)
+        XCTAssertEqual(browser.rows.last?.uid, "clip")
+        await browser.showNextFolderPage()
+        await browser.showPreviousFolderPage()
+        XCTAssertEqual(browser.rows.first?.uid, "p000")
+        XCTAssertEqual(fake.urls.count, 3)
+
+        let before = fake.urls.count
+        fake.enqueue(.success(HelperResponse(status: 200, body: page(first, cursor: "c1"))))
+        fake.enqueue(.success(HelperResponse(status: 200, body: page(clip, cursor: ""))))
+        await browser.reload(media: "photo")
+        XCTAssertEqual(fake.urls.count, before + 2)
+        XCTAssertNil(queryValue("cursor", fake.urls[before]))
+        XCTAssertEqual(queryValue("media", fake.urls[before + 1]), "video")
+        XCTAssertEqual(browser.rows.count, 201)
+        XCTAssertEqual(browser.folderPhotoTotal, 201)
+        XCTAssertEqual(browser.rows.last?.uid, "clip")
+
+        await browser.showNextFolderPage()
+        fake.enqueue(.success(HelperResponse(status: 200, body: page(tail, cursor: ""))))
+        await browser.reload(media: "photo")
+        let refreshed = fake.urls[fake.urls.count - 1]
+        XCTAssertEqual(queryValue("media", refreshed), "photo")
+        XCTAssertEqual(queryValue("cursor", refreshed), "c1")
+        XCTAssertEqual(browser.rows.map(\.uid), ["p200"])
+        XCTAssertEqual(fake.urls.count, before + 3)
+    }
+
+    func testLaterFolderPageKeepsPreviewsThatWereAlreadyMade() async throws {
+        func row(_ uid: String) -> String {
+            #"{"uid":"\#(uid)","relPath":"Photos/\#(uid).jpg","ext":"jpg","mediaClass":"image","isKeeper":false,"pinned":false}"#
+        }
+        func page(_ rows: String, cursor: String) -> Data {
+            Data(#"{"rows":[\#(rows)],"nextCursor":"\#(cursor)"}"#.utf8)
+        }
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("zimage-page-preview-\(UUID().uuidString)", isDirectory: true)
+        let photos = root.appendingPathComponent("Photos", isDirectory: true)
+        try FileManager.default.createDirectory(at: photos, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try Self.writeTinyJPEG(to: photos.appendingPathComponent("p000.jpg"))
+        try Self.writeTinyJPEG(to: photos.appendingPathComponent("p200.jpg"))
+        let first = (0..<200).map { row(String(format: "p%03d", $0)) }.joined(separator: ",")
+        let fake = GridFakeListener()
+        let browser = LibraryBrowser(
+            client: HelperClient(credentials: HelperCredentials(host: "192.168.1.20", pin: Data([1]), token: "t")) { request in
+                try await fake.send(request)
+            },
+            libraryRoot: root,
+            openFile: { _, _ in }
+        )
+        fake.enqueue(.success(HelperResponse(status: 200, body: page(first, cursor: "c1"))))
+        fake.enqueue(.success(HelperResponse(status: 200, body: page(row("p200"), cursor: ""))))
+        fake.enqueue(.success(HelperResponse(status: 200, body: page("", cursor: ""))))
+        await browser.reload(media: "photo")
+        fake.enqueue(.success(HelperResponse(status: 200, body: Data("{}".utf8))))
+        fake.enqueue(.success(HelperResponse(status: 200, body: Data([0xFF, 0xD8]))))
+        let firstPreview = await browser.previewVisibleOne()
+        XCTAssertTrue(firstPreview)
+        XCTAssertNotNil(browser.rows.first { $0.uid == "p000" }?.thumbRel)
+
+        await browser.showNextFolderPage()
+        XCTAssertTrue(browser.awaitsPreviews)
+        XCTAssertEqual(browser.rows.map(\.uid), ["p200"])
+        fake.enqueue(.success(HelperResponse(status: 200, body: Data("{}".utf8))))
+        fake.enqueue(.success(HelperResponse(status: 200, body: Data([0xFF, 0xD8]))))
+        let secondPreview = await browser.previewVisibleOne()
+        XCTAssertTrue(secondPreview)
+        XCTAssertNotNil(browser.rows.first { $0.uid == "p200" }?.thumbRel)
+
+        await browser.showFirstFolderPage()
+        XCTAssertNotNil(browser.rows.first { $0.uid == "p000" }?.thumbRel)
+        await browser.showNextFolderPage()
+        XCTAssertNotNil(browser.rows.first { $0.uid == "p200" }?.thumbRel)
+        XCTAssertFalse(browser.awaitsPreviews)
+    }
+
+    func testServerFolderOfExactlyTwoHundredHidesThePager() async throws {
+        func row(_ index: Int) -> String {
+            let uid = String(format: "p%03d", index)
+            return #"{"uid":"\#(uid)","relPath":"Photos/\#(uid).jpg","ext":"jpg","mediaClass":"image","isKeeper":false,"pinned":false}"#
+        }
+        func page(_ rows: String, cursor: String) -> Data {
+            Data(#"{"rows":[\#(rows)],"nextCursor":"\#(cursor)"}"#.utf8)
+        }
+        let full = (0..<200).map(row).joined(separator: ",")
+        let fake = GridFakeListener()
+        let browser = LibraryBrowser(
+            client: HelperClient(credentials: HelperCredentials(host: "192.168.1.20", pin: Data([1]), token: "t")) { request in
+                try await fake.send(request)
+            },
+            libraryRoot: URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true),
+            openFile: { _, _ in }
+        )
+        fake.enqueue(.success(HelperResponse(status: 200, body: page(full, cursor: "c1"))))
+        fake.enqueue(.success(HelperResponse(status: 200, body: page("", cursor: ""))))
+        fake.enqueue(.success(HelperResponse(status: 200, body: page("", cursor: ""))))
+        await browser.reload(media: "photo")
+        XCTAssertEqual(browser.folderPhotoTotal, 200)
+        XCTAssertFalse(browser.showsFolderPager)
+        XCTAssertEqual(browser.rows.count, 200)
+        XCTAssertEqual(fake.urls.count, 3)
+        XCTAssertEqual(queryValue("cursor", fake.urls[1]), "c1")
+        XCTAssertEqual(queryValue("media", fake.urls[2]), "video")
+        await browser.showNextFolderPage()
+        await browser.showLastFolderPage()
+        XCTAssertEqual(browser.rows.count, 200)
+        XCTAssertFalse(browser.folderPageCanGoForward)
+        XCTAssertEqual(fake.urls.count, 3)
     }
 
     func testFolderTreeListsDirectoriesOnly() throws {

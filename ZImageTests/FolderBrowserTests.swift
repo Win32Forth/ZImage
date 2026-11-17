@@ -207,6 +207,102 @@ final class FolderBrowserTests: XCTestCase {
         XCTAssertEqual(EditorFolderScan.childFolders(of: root).map(\.name), ["child"])
     }
 
+    func testFolderNameFilterMatchesPartOfTheFileName() {
+        XCTAssertTrue(FolderNameFilter.matches("Red eye test.jpg", query: "Red"))
+        XCTAssertTrue(FolderNameFilter.matches("red-eye-2.JPG", query: " red "))
+        XCTAssertFalse(FolderNameFilter.matches("portrait.jpg", query: "Red"))
+        XCTAssertTrue(FolderNameFilter.matches("portrait.jpg", query: "   "))
+    }
+
+    @MainActor
+    func testDiskFolderGridHidesFilesThatDoNotMatchTheName() {
+        let model = EditorModel()
+        model.folderEntries = [
+            FolderEntry(url: URL(fileURLWithPath: "/tmp/a.jpg"), name: "a.jpg", isDirectory: false),
+            FolderEntry(url: URL(fileURLWithPath: "/tmp/Red eye test.jpg"), name: "Red eye test.jpg", isDirectory: false),
+            FolderEntry(url: URL(fileURLWithPath: "/tmp/red-eye-2.jpg"), name: "red-eye-2.jpg", isDirectory: false),
+            FolderEntry(url: URL(fileURLWithPath: "/tmp/child"), name: "child", isDirectory: true),
+        ]
+        XCTAssertEqual(model.visibleFolderEntries.map(\.name), ["a.jpg", "Red eye test.jpg", "red-eye-2.jpg"])
+        model.folderNameQuery = "Red"
+        model.findFolderByName()
+        XCTAssertEqual(model.visibleFolderEntries.map(\.name), ["Red eye test.jpg", "red-eye-2.jpg"])
+        model.clearFolderNameFilter()
+        XCTAssertEqual(model.folderNameQuery, "")
+        XCTAssertEqual(model.visibleFolderEntries.map(\.name), ["a.jpg", "Red eye test.jpg", "red-eye-2.jpg"])
+    }
+
+    func testFolderPreviewQueueDoesTheVisiblePageFirst() {
+        let page1 = URL(fileURLWithPath: "/tmp/p001.jpg")
+        let page2 = URL(fileURLWithPath: "/tmp/p201.jpg")
+        let later = URL(fileURLWithPath: "/tmp/p400.jpg")
+        let done: Set<String> = [FolderEntry.cacheKey(for: page1)]
+        XCTAssertEqual(
+            FolderPreviewQueue.nextURL(visible: [page2], folder: [page1, page2, later], done: done),
+            page2
+        )
+        XCTAssertEqual(
+            FolderPreviewQueue.nextURL(visible: [page1], folder: [page1, page2, later], done: done),
+            page2
+        )
+        XCTAssertNil(FolderPreviewQueue.nextURL(visible: [page1], folder: [page1], done: done))
+    }
+
+    func testFolderPageRangeOmitsTheTotalUntilTheCountIsKnown() {
+        XCTAssertEqual(FolderPage.limit, 200)
+        XCTAssertEqual(FolderPage.pageCount(total: 0), 1)
+        XCTAssertEqual(FolderPage.pageCount(total: 200), 1)
+        XCTAssertEqual(FolderPage.pageCount(total: 201), 2)
+        XCTAssertEqual(FolderPage.range(page: 0, countOnPage: 200, total: nil), "1\u{2013}200")
+        XCTAssertEqual(FolderPage.range(page: 1, countOnPage: 1, total: 201), "201\u{2013}201 of 201")
+        XCTAssertEqual(
+            FolderPage.range(page: 1, countOnPage: 200, total: 1_842),
+            "201\u{2013}400 of \(1_842.formatted())"
+        )
+        XCTAssertEqual(FolderPage.range(page: 0, countOnPage: 0, total: 10), "")
+    }
+
+    @MainActor
+    func testDiskFolderPagerStepsByTwoHundredPhotos() {
+        let model = EditorModel()
+        func photo(_ index: Int) -> FolderEntry {
+            let name = String(format: "p%03d.jpg", index)
+            return FolderEntry(url: URL(fileURLWithPath: "/tmp/\(name)"), name: name, isDirectory: false)
+        }
+        let clip = FolderEntry(
+            url: URL(fileURLWithPath: "/tmp/clip.mp4"),
+            name: "clip.mp4",
+            isDirectory: false,
+            isVideo: true
+        )
+        model.folderEntries = (0..<201).map(photo) + [clip]
+        XCTAssertEqual(model.folderPhotoCount, 201)
+        XCTAssertTrue(model.showsFolderPager)
+        XCTAssertEqual(model.folderPagerRange, "1\u{2013}200 of 201")
+        XCTAssertEqual(model.pagedFolderEntries.filter { !$0.isVideo }.map(\.name).first, "p000.jpg")
+        XCTAssertEqual(model.pagedFolderEntries.filter { !$0.isVideo }.map(\.name).last, "p199.jpg")
+        XCTAssertEqual(model.pagedFolderEntries.last?.name, "clip.mp4")
+        model.showFolderPage(1)
+        XCTAssertEqual(model.pagedFolderEntries.map(\.name), ["p200.jpg"])
+        XCTAssertEqual(model.folderPagerRange, "201\u{2013}201 of 201")
+        model.showFolderPage(8)
+        XCTAssertEqual(model.folderPageIndex, 1)
+        model.showFolderPage(1)
+        model.folderNameQuery = "p200"
+        model.findFolderByName()
+        XCTAssertEqual(model.folderPageIndex, 0)
+        XCTAssertFalse(model.showsFolderPager)
+        XCTAssertEqual(model.visibleFolderEntries.map(\.name), ["p200.jpg"])
+        model.clearFolderNameFilter()
+        XCTAssertTrue(model.showsFolderPager)
+        XCTAssertEqual(model.folderPageIndex, 0)
+
+        model.folderEntries = (0..<200).map(photo) + [clip]
+        XCTAssertEqual(model.folderPhotoCount, 200)
+        XCTAssertFalse(model.showsFolderPager)
+        XCTAssertEqual(model.pagedFolderEntries.count, 201)
+    }
+
     func testTreeListsChildFoldersAndNotTheFilesInsideThem() throws {
         let root = try makeFixture()
         defer { try? FileManager.default.removeItem(at: root) }

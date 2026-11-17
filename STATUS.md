@@ -14,6 +14,12 @@ Each entry uses this shape:
 - Scope: design section or PR name
 - Notes: facts, decisions, and the next step
 
+## 2026-11-16 — Folder pages and a name filter
+
+- Status: done
+- Scope: Folder view in Disk and Server. The helper source accepts a name query. The binary on the NAS was not replaced. Marketing version stays 1.8.1. No disk image.
+- Notes: A name field sits to the right of the folder path, with Find and Clear filter. Find or Return applies it. The match is a case-insensitive part of the file name. Find reads the whole folder, not only the first 200. Clear shows the folder again. An empty match says "No photos match that name." When a folder has more than 200 photos, a panel above Date shows the count, the slice, and First, Prev 200, Next 200, and Last. Two hundred or fewer leaves the column as it was. Videos stay on the first page and are not in the count. Server shows the first 200 while the title says "Counting photos…". A name search larger than 200 uses the same panel. Previews on later pages fill in after the page changes. The page on screen is reduced before the rest of the folder. Going back keeps previews already made. Find still works if the NAS helper is the older binary, because the Mac reads every page and keeps file names that match. There is still no disk image. The last disk image is `Releases/ZImager-1.8.0-macOS.dmg`. Reorganize, Review, and Duplicates still do not work and can lose photos. Leave them alone.
+
 ## 2026-11-16 — ZImager 1.8.1
 
 - Status: done

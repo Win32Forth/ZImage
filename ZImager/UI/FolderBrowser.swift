@@ -20,6 +20,120 @@ nonisolated struct FolderEntry: Equatable, Identifiable, Sendable {
     }
 }
 
+/// A file name contains the typed text. An empty query matches every name.
+enum FolderNameFilter {
+    static func matches(_ name: String, query: String) -> Bool {
+        let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        if needle.isEmpty { return true }
+        return name.range(of: needle, options: .caseInsensitive) != nil
+    }
+
+    /// The last path component. A folder named Stored does not match the text "red".
+    static func fileName(in path: String) -> String {
+        (path as NSString).lastPathComponent
+    }
+}
+
+/// One screen of a folder. The catalog and the disk grid both stop at this many photos.
+enum FolderPage {
+    static let limit = 200
+
+    static func pageCount(total: Int) -> Int {
+        guard total > 0 else { return 1 }
+        return (total + limit - 1) / limit
+    }
+
+    /// `201–400 of 1,842`. The total is omitted while a folder is still being counted.
+    static func range(page: Int, countOnPage: Int, total: Int?) -> String {
+        guard countOnPage > 0 else { return "" }
+        let start = page * limit + 1
+        let end = start + countOnPage - 1
+        let span = "\(start.formatted())–\(end.formatted())"
+        guard let total else { return span }
+        return "\(span) of \(total.formatted())"
+    }
+}
+
+/// The page on screen is reduced before the rest of the folder.
+enum FolderPreviewQueue {
+    static func nextURL(visible: [URL], folder: [URL], done: Set<String>) -> URL? {
+        func pending(_ urls: [URL]) -> URL? {
+            urls.first { !done.contains(FolderEntry.cacheKey(for: $0)) }
+        }
+        return pending(visible) ?? pending(folder)
+    }
+}
+
+/// Count and page controls for a folder with more than 200 photos. Sits above Date.
+struct FolderPagePanel: View {
+    var title: String
+    var range: String
+    var canGoBack: Bool
+    var canGoForward: Bool
+    var first: () -> Void
+    var previous: () -> Void
+    var next: () -> Void
+    var last: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(ChromePalette.ink)
+                .accessibilityIdentifier("Folder page count")
+            Text(range)
+                .font(.system(size: 13))
+                .foregroundStyle(ChromePalette.ink)
+                .accessibilityIdentifier("Folder page range")
+            Grid(alignment: .leading, horizontalSpacing: 8, verticalSpacing: 8) {
+                GridRow {
+                    libraryPushButton("First", identifier: "First page", action: first)
+                        .disabled(!canGoBack)
+                    libraryPushButton("Prev 200", identifier: "Prev 200", action: previous)
+                        .disabled(!canGoBack)
+                }
+                GridRow {
+                    libraryPushButton("Next 200", identifier: "Next 200", action: next)
+                        .disabled(!canGoForward)
+                    libraryPushButton("Last", identifier: "Last page", action: last)
+                        .disabled(!canGoForward)
+                }
+            }
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(ChromePalette.panel)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("Folder page")
+    }
+}
+
+/// Name field, Find, and Clear filter. Disk and Server folder views share this row.
+struct FolderNameFilterBar: View {
+    @Binding var query: String
+    var filterActive: Bool
+    var prefix: String
+    var find: () -> Void
+    var clear: () -> Void
+
+    var body: some View {
+        HStack(spacing: 8) {
+            TextField("Name", text: $query)
+                .textFieldStyle(.roundedBorder)
+                .font(.system(size: 13))
+                .frame(width: 168)
+                .onSubmit(find)
+                .accessibilityIdentifier("\(prefix) name filter")
+                .help("Shows photos and videos whose names contain this text. Press Return or Find.")
+            libraryPushButton("Find", identifier: "\(prefix) find", action: find)
+                .help("Shows photos and videos whose names contain this text.")
+            libraryPushButton("Clear filter", identifier: "\(prefix) clear filter", action: clear)
+                .disabled(!filterActive && query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .help("Shows every photo and video in this folder.")
+        }
+    }
+}
+
 /// The Open Folder root and the folder selected in that tree, kept for the next launch.
 /// A security-scoped bookmark is used when one can be made. Otherwise a plain bookmark is kept.
 enum EditorFolderBookmark {
@@ -728,7 +842,14 @@ struct FolderBrowser: View {
                     .foregroundStyle(ChromePalette.ink)
                     .lineLimit(1)
                     .truncationMode(.middle)
-                Spacer(minLength: 0)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                FolderNameFilterBar(
+                    query: $model.folderNameQuery,
+                    filterActive: !model.folderNameFilter.isEmpty,
+                    prefix: "Disk",
+                    find: { model.findFolderByName() },
+                    clear: { model.clearFolderNameFilter() }
+                )
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 8)
@@ -747,7 +868,9 @@ struct FolderBrowser: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                     .padding(16)
             } else if model.folderListingReady && images.isEmpty {
-                Text("No still images or videos in this folder.")
+                Text(model.folderNameFilter.isEmpty
+                    ? "No still images or videos in this folder."
+                    : "No photos match that name.")
                     .font(.system(size: 13))
                     .foregroundStyle(ChromePalette.muted)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -761,7 +884,7 @@ struct FolderBrowser: View {
                     }
                     .padding(16)
                 }
-                .modifier(KeptScroll(visible: onScreen && model.showsFolderGrid, key: folderKey ?? ""))
+                .modifier(KeptScroll(visible: onScreen && model.showsFolderGrid, key: "\(folderKey ?? "")|\(model.folderPageIndex)"))
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -775,7 +898,7 @@ struct FolderBrowser: View {
     }
 
     private var images: [FolderEntry] {
-        model.folderEntries.filter { !$0.isDirectory }
+        model.pagedFolderEntries
     }
 
     private var columns: [GridItem] {

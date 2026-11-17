@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/url"
 	"os"
@@ -60,6 +61,27 @@ func TestDatingRoutesDoNotMoveBytes(t *testing.T) {
 	qBody := readAll(t, q)
 	if !bytesContain(qBody, "pctuid") || bytesContain(qBody, "otheruid") {
 		t.Fatalf("query %s", qBody)
+	}
+	insertAPIAsset(t, catalog, "redeye", "Photos/old/Red eye test.jpg", 0.9, "")
+	insertAPIAsset(t, catalog, "redtwo", "Photos/2020/red-eye-2.jpg", 0.9, "")
+	named := authorizedGet(t, client, base+"/v1/assets?q="+urlQuery("Photos/old/")+"&name="+urlQuery("Red"))
+	namedBody := readAll(t, named)
+	if named.StatusCode != http.StatusOK || !bytesContain(namedBody, "redeye") || bytesContain(namedBody, "redtwo") || bytesContain(namedBody, "keepuid") {
+		t.Fatalf("name %d %s", named.StatusCode, namedBody)
+	}
+	for i := 0; i < 200; i++ {
+		insertAPIAsset(t, catalog, fmt.Sprintf("fill%03d", i), fmt.Sprintf("Photos/old/fill-%03d.jpg", i), 0.9, "")
+	}
+	insertAPIAsset(t, catalog, "redlate", "Photos/old/z-red-eye-late.jpg", 0.9, "")
+	plain := authorizedGet(t, client, base+"/v1/assets?q="+urlQuery("Photos/"))
+	plainBody := readAll(t, plain)
+	if bytesContain(plainBody, "redlate") {
+		t.Fatal("unfiltered page included a file past the first 200")
+	}
+	late := authorizedGet(t, client, base+"/v1/assets?q="+urlQuery("Photos/")+"&name="+urlQuery("red"))
+	lateBody := readAll(t, late)
+	if late.StatusCode != http.StatusOK || !bytesContain(lateBody, "redlate") || !bytesContain(lateBody, "redeye") || !bytesContain(lateBody, "redtwo") || bytesContain(lateBody, "keepuid") {
+		t.Fatalf("name past page %d %s", late.StatusCode, lateBody)
 	}
 	if _, err := catalog.Write.Exec(`
 		INSERT INTO assets (

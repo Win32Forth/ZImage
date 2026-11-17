@@ -505,6 +505,22 @@ final class LibraryBrowser {
     var reorgPrefix = "Photos"
     /// Relative folder shown in the Photos and Videos grids. Review and Duplicates ignore it.
     var displayFolder = DisplayFolder.root
+    /// Text in the Server folder name field. Find copies this into `nameFilter`.
+    var nameQuery = ""
+    /// Applied name filter. The helper matches it inside the displayed folder.
+    var nameFilter = ""
+    /// Page of the folder photo grid. Zero is the first 200 photos.
+    private(set) var folderPage = 0
+    /// Photos in the open folder, once every page has been read. Nil while that count is unfinished.
+    private(set) var folderPhotoTotal: Int?
+    /// True while later pages are still being read.
+    private(set) var folderPageCounting = false
+    private var stillPages: [[LibraryAsset]] = []
+    private var pageCursors: [String?] = []
+    private var folderVideos: [LibraryAsset] = []
+    private var folderListKey = ""
+    /// The page a click asked for before it had been read. `Int.max` means the last page.
+    private var requestedPage: Int?
     /// Photos, Review, or Duplicates. Previous and Next walk this list.
     var librarySection = "Photos"
     private(set) var reorgNotice: String?
@@ -588,6 +604,9 @@ final class LibraryBrowser {
         reorgStatusFault = nil
         reorgPrefix = "Photos"
         displayFolder = DisplayFolder.root
+        nameQuery = ""
+        nameFilter = ""
+        resetFolderPages()
         trim = nil
         trimNotice = nil
         duplicateGroups = []
@@ -595,19 +614,320 @@ final class LibraryBrowser {
         fetchedDuplicateThumbs = []
     }
 
+    func applyNameFilter() {
+        nameFilter = nameQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    func clearNameFilter() {
+        nameQuery = ""
+        nameFilter = ""
+    }
+
     /// `photo` lists stills and videos in the selected folder. `video` is the movie list alone.
     func reload(media: String? = nil) async {
         let folder = (media == "photo" || media == "video") ? displayFolder : nil
+        let name = nameFilter.isEmpty ? nil : nameFilter
         if media == "photo" {
-            await session.refreshPhotosAndVideos(under: folder)
-        } else {
-            await session.refresh(media: media, under: folder)
+            await reloadFolderGrid(under: folder, name: name)
+            return
         }
-        var loaded = Array(session.rows.prefix(media == "photo" ? Self.pageLimit * 2 : Self.pageLimit))
+        await session.refresh(media: media, under: folder, name: name)
+        if Task.isCancelled { return }
+        var loaded = Array(session.rows.prefix(Self.pageLimit))
         if media == "video" {
             loaded = loaded.filter { isVideo($0) }.sorted { captureKey($0) < captureKey($1) }
         }
         rows = loaded
+        trimSelectionToRows()
+        await loadThumbnails()
+    }
+
+    var showsFolderPager: Bool {
+        if let folderPhotoTotal, !folderPageCounting { return folderPhotoTotal > FolderPage.limit }
+        return stillPages.count > 1
+    }
+
+    var folderPagerTitle: String {
+        if let folderPhotoTotal, !folderPageCounting {
+            return "\(folderPhotoTotal.formatted()) photos"
+        }
+        return "Counting photos…"
+    }
+
+    var folderPagerRange: String {
+        guard stillPages.indices.contains(folderPage) else { return "" }
+        return FolderPage.range(
+            page: folderPage,
+            countOnPage: stillPages[folderPage].count,
+            total: folderPageCounting ? nil : folderPhotoTotal
+        )
+    }
+
+    var folderPageCanGoBack: Bool { folderPage > 0 }
+
+    var folderPageCanGoForward: Bool {
+        if folderPage + 1 < stillPages.count { return true }
+        return folderPageCounting
+    }
+
+    func showFirstFolderPage() async {
+        await showFolderPage(0)
+    }
+
+    func showPreviousFolderPage() async {
+        guard folderPage > 0 else { return }
+        await showFolderPage(folderPage - 1)
+    }
+
+    func showNextFolderPage() async {
+        if folderPage + 1 < stillPages.count {
+            await showFolderPage(folderPage + 1)
+            return
+        }
+        guard folderPageCounting else { return }
+        requestedPage = folderPage + 1
+    }
+
+    func showLastFolderPage() async {
+        if !folderPageCounting, let total = folderPhotoTotal {
+            await showFolderPage(FolderPage.pageCount(total: total) - 1)
+            return
+        }
+        requestedPage = .max
+    }
+
+    private func showFolderPage(_ index: Int) async {
+        guard stillPages.indices.contains(index) else { return }
+        folderPage = index
+        applyFolderRows()
+        await loadThumbnails()
+    }
+
+    private func reloadFolderGrid(under folder: String?, name: String?) async {
+        let key = "photo|\(folder ?? "")|\(name ?? "")"
+        let fresh = key != folderListKey
+        if fresh {
+            folderListKey = key
+            folderPage = 0
+            requestedPage = nil
+            stillPages = []
+            pageCursors = []
+            folderVideos = []
+            folderPhotoTotal = nil
+            folderPageCounting = false
+            rows = []
+        }
+        if name != nil {
+            notice = "Searching this folder…"
+        }
+        if fresh || name != nil {
+            let savedPage = folderPage
+            await walkFolderPhotos(under: folder, name: name, key: key)
+            if folderListKey != key || Task.isCancelled { return }
+            if !fresh {
+                folderPage = min(savedPage, max(0, stillPages.count - 1))
+                applyFolderRows()
+            }
+        } else {
+            await refreshVisibleFolderPage(under: folder, name: name, key: key)
+        }
+        guard folderListKey == key, !Task.isCancelled else { return }
+        if name != nil { notice = nil }
+        if fresh { trimSelectionToRows() }
+        await loadThumbnails()
+    }
+
+    /// Reads every photo page. The first 200 are shown as soon as they arrive.
+    /// A newer folder load owns `folderListKey`. This walk stops without writing over it.
+    private func walkFolderPhotos(under folder: String?, name: String?, key: String) async {
+        stillPages = []
+        pageCursors = []
+        folderPhotoTotal = nil
+        folderPageCounting = true
+        var cursor: String?
+        var seenCursors: Set<String> = []
+        var seenUIDs: Set<String> = []
+        var buffer: [LibraryAsset] = []
+        var tailCursor: String?
+        var counted = 0
+        var failed = false
+        while folderListKey == key && !Task.isCancelled {
+            let page: LibraryPage
+            do {
+                page = try await client.assets(media: "photo", under: folder, name: name, cursor: cursor)
+            } catch {
+                if folderListKey == key {
+                    failed = stillPages.isEmpty && buffer.isEmpty
+                }
+                break
+            }
+            if folderListKey != key || Task.isCancelled { break }
+            if stillPages.isEmpty && buffer.isEmpty {
+                session.markReachable()
+            }
+            let requestCursor = cursor
+            for row in page.rows {
+                guard !isVideo(row), seenUIDs.insert(row.uid).inserted else { continue }
+                if let name, !FolderNameFilter.matches(FolderNameFilter.fileName(in: row.relPath ?? ""), query: name) {
+                    continue
+                }
+                if buffer.isEmpty { tailCursor = requestCursor }
+                buffer.append(row)
+                counted += 1
+                if buffer.count == FolderPage.limit {
+                    stillPages.append(buffer)
+                    pageCursors.append(tailCursor)
+                    buffer.removeAll()
+                    tailCursor = nil
+                    await publishArrivedPage(key: key)
+                    if folderListKey != key || Task.isCancelled { break }
+                }
+            }
+            if folderListKey != key || Task.isCancelled { break }
+            let next = page.nextCursor
+            if next.isEmpty || page.rows.isEmpty || !seenCursors.insert(next).inserted { break }
+            cursor = next
+        }
+        if folderListKey != key || Task.isCancelled {
+            abandonFolderList(key: key, name: name)
+            return
+        }
+        if failed {
+            folderPageCounting = false
+            await session.refresh(media: "photo", under: folder, name: name)
+            guard folderListKey == key, !Task.isCancelled else {
+                abandonFolderList(key: key, name: name)
+                return
+            }
+            rows = Array(session.rows.filter { !isVideo($0) }.prefix(FolderPage.limit))
+            return
+        }
+        if !buffer.isEmpty {
+            stillPages.append(buffer)
+            pageCursors.append(tailCursor)
+        }
+        let videos = await loadFolderVideos(under: folder, name: name)
+        guard folderListKey == key, !Task.isCancelled else {
+            abandonFolderList(key: key, name: name)
+            return
+        }
+        folderVideos = videos
+        folderPhotoTotal = counted
+        folderPageCounting = false
+        if let requestedPage {
+            if requestedPage == .max {
+                folderPage = max(0, stillPages.count - 1)
+            } else if stillPages.indices.contains(requestedPage) {
+                folderPage = requestedPage
+            }
+            self.requestedPage = nil
+        } else if folderPage >= stillPages.count {
+            folderPage = max(0, stillPages.count - 1)
+        }
+        applyFolderRows()
+    }
+
+    private func publishArrivedPage(key: String) async {
+        guard folderListKey == key, !Task.isCancelled else { return }
+        let arrived = stillPages.count - 1
+        let show = folderPage == arrived || (folderPage == 0 && arrived == 0) || requestedPage == arrived
+        guard show else { return }
+        if requestedPage == arrived {
+            folderPage = arrived
+            requestedPage = nil
+        }
+        applyFolderRows()
+        await loadThumbnails()
+    }
+
+    private func refreshVisibleFolderPage(under folder: String?, name: String?, key: String) async {
+        guard name == nil, stillPages.indices.contains(folderPage) else { return }
+        let pageIndex = folderPage
+        let cursor = pageCursors.indices.contains(pageIndex) ? pageCursors[pageIndex] : nil
+        let stills: [LibraryAsset]
+        do {
+            let page = try await client.assets(media: "photo", under: folder, name: nil, cursor: cursor)
+            guard folderListKey == key, !Task.isCancelled else { return }
+            session.markReachable()
+            stills = page.rows.filter { !isVideo($0) }
+        } catch {
+            return
+        }
+        if !stills.isEmpty, stillPages.indices.contains(pageIndex) {
+            let previous = Dictionary(uniqueKeysWithValues: stillPages[pageIndex].map { ($0.uid, $0) })
+            stillPages[pageIndex] = stills.map { fresh in
+                guard fresh.thumbRel == nil, let kept = previous[fresh.uid]?.thumbRel else { return fresh }
+                var merged = fresh
+                merged.thumbRel = kept
+                return merged
+            }
+        }
+        if pageIndex == 0 {
+            let videos = await loadFolderVideos(under: folder, name: nil)
+            guard folderListKey == key, !Task.isCancelled else { return }
+            folderVideos = videos
+        }
+        applyFolderRows()
+    }
+
+    /// Videos on the first photo page. A name walks every video page. An open folder keeps the first 200.
+    private func loadFolderVideos(under folder: String?, name: String?) async -> [LibraryAsset] {
+        var matched: [LibraryAsset] = []
+        var cursor: String?
+        var seenCursors: Set<String> = []
+        var seenUIDs: Set<String> = []
+        let walkAll = name != nil
+        while !Task.isCancelled {
+            let page: LibraryPage
+            do {
+                page = try await client.assets(media: "video", under: folder, name: name, cursor: cursor)
+            } catch {
+                break
+            }
+            for row in page.rows where isVideo(row) && seenUIDs.insert(row.uid).inserted {
+                if let name, !FolderNameFilter.matches(FolderNameFilter.fileName(in: row.relPath ?? ""), query: name) {
+                    continue
+                }
+                matched.append(row)
+            }
+            let next = page.nextCursor
+            if !walkAll || next.isEmpty || page.rows.isEmpty || !seenCursors.insert(next).inserted { break }
+            cursor = next
+        }
+        return matched
+    }
+
+    private func applyFolderRows() {
+        let page = stillPages.isEmpty ? 0 : min(folderPage, stillPages.count - 1)
+        folderPage = page
+        let stills = stillPages.indices.contains(page) ? stillPages[page] : []
+        let videos = page == 0 ? folderVideos : []
+        rows = (stills + videos).sorted { left, right in
+            (left.relPath ?? left.uid).localizedStandardCompare(right.relPath ?? right.uid) == .orderedAscending
+        }
+    }
+
+    /// Drops an unfinished count so the next open reads the folder again.
+    /// A newer load owns the key and is left alone.
+    private func abandonFolderList(key: String, name: String?) {
+        guard folderListKey == key else { return }
+        folderListKey = ""
+        folderPageCounting = false
+        if name != nil { notice = nil }
+    }
+
+    private func resetFolderPages() {
+        folderPage = 0
+        folderPhotoTotal = nil
+        folderPageCounting = false
+        stillPages = []
+        pageCursors = []
+        folderVideos = []
+        folderListKey = ""
+        requestedPage = nil
+    }
+
+    private func trimSelectionToRows() {
         let alive = Set(rows.map(\.uid))
         selectedUIDs = selectedUIDs.intersection(alive)
         if let selectedUID, !alive.contains(selectedUID) {
@@ -616,7 +936,6 @@ final class LibraryBrowser {
         if let anchor = selectionAnchorUID, !selectedUIDs.contains(anchor) {
             selectionAnchorUID = selectedUID
         }
-        await loadThumbnails()
     }
 
     private func captureKey(_ asset: LibraryAsset) -> String {
@@ -1432,6 +1751,14 @@ final class LibraryBrowser {
         }
     }
 
+    /// Stays asleep while this page's previews are done. Wakes when the page changes.
+    func waitForAnotherFolderPage() async {
+        let page = folderPage
+        while !Task.isCancelled && folderPage == page && !awaitsPreviews {
+            try? await Task.sleep(for: .milliseconds(200))
+        }
+    }
+
     /// Reduces the first visible still that has no preview yet. The page order is the folder on screen.
     /// The helper previews that same folder ahead of the rest of the library.
     func previewVisibleOne() async -> Bool {
@@ -1499,6 +1826,14 @@ final class LibraryBrowser {
         }
         if let index = reviewRows.firstIndex(where: { $0.uid == asset.uid }) {
             reviewRows[index] = asset
+        }
+        for page in stillPages.indices {
+            if let index = stillPages[page].firstIndex(where: { $0.uid == asset.uid }) {
+                stillPages[page][index] = asset
+            }
+        }
+        if let index = folderVideos.firstIndex(where: { $0.uid == asset.uid }) {
+            folderVideos[index] = asset
         }
     }
 

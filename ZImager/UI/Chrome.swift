@@ -31,6 +31,10 @@ final class EditorModel {
     var showsFolderGrid = false
     /// When on, the Folder view lists images and videos found in subfolders.
     var scanSubfolders = false
+    /// Text in the Disk folder name field. Find copies this into `folderNameFilter`.
+    var folderNameQuery = ""
+    /// Applied name filter. Empty shows every file in the folder.
+    var folderNameFilter = ""
     var previewPoints = PreviewSize.defaultPoints
     var zoom = ZoomController()
     var canvasTool: CanvasTool = .zoom
@@ -322,9 +326,73 @@ final class EditorModel {
         openSecurityScopedFile(at: entry.url)
     }
 
+    /// Files the Disk folder grid is showing. A name filter hides the rest.
+    var visibleFolderEntries: [FolderEntry] {
+        folderEntries.filter { entry in
+            guard !entry.isDirectory else { return false }
+            return FolderNameFilter.matches(entry.name, query: folderNameFilter)
+        }
+    }
+
+    /// The page of the Disk folder grid. Zero is the first 200 photos.
+    var folderPage = 0
+
+    var folderPhotos: [FolderEntry] {
+        visibleFolderEntries.filter { !$0.isVideo }
+    }
+
+    var folderPhotoCount: Int { folderPhotos.count }
+
+    var showsFolderPager: Bool { folderPhotoCount > FolderPage.limit }
+
+    var folderPageIndex: Int {
+        min(folderPage, FolderPage.pageCount(total: folderPhotoCount) - 1)
+    }
+
+    var folderPageCount: Int { FolderPage.pageCount(total: folderPhotoCount) }
+
+    var folderPagePhotoCount: Int {
+        let start = folderPageIndex * FolderPage.limit
+        return min(FolderPage.limit, max(0, folderPhotoCount - start))
+    }
+
+    var folderPagerRange: String {
+        FolderPage.range(page: folderPageIndex, countOnPage: folderPagePhotoCount, total: folderPhotoCount)
+    }
+
+    /// Photos on this page. Videos stay on the first page and are not part of the count.
+    var pagedFolderEntries: [FolderEntry] {
+        let photos = folderPhotos
+        guard photos.count > FolderPage.limit else { return visibleFolderEntries }
+        let page = folderPageIndex
+        let start = page * FolderPage.limit
+        let slice = photos[start..<min(start + FolderPage.limit, photos.count)]
+        let ids = Set(slice.map(\.id))
+        if page == 0 {
+            return visibleFolderEntries.filter { $0.isVideo || ids.contains($0.id) }
+        }
+        return Array(slice)
+    }
+
+    func showFolderPage(_ index: Int) {
+        let last = folderPageCount - 1
+        folderPage = min(max(0, index), last)
+    }
+
+    func findFolderByName() {
+        folderNameFilter = folderNameQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        folderPage = 0
+    }
+
+    func clearFolderNameFilter() {
+        folderNameQuery = ""
+        folderNameFilter = ""
+        folderPage = 0
+    }
+
     /// Stills in the folder grid, in the order the grid shows them. Videos stay put.
     private var listedFolderImages: [FolderEntry] {
-        folderEntries.filter { !$0.isDirectory && !$0.isVideo }
+        pagedFolderEntries.filter { !$0.isVideo }
     }
 
     func canStepListedImage(by delta: Int) -> Bool {
@@ -495,7 +563,7 @@ final class EditorModel {
     }
 
     func selectFolderEntry(_ entry: FolderEntry, shift: Bool, extend: Bool = false) {
-        let order = folderEntries.filter { !$0.isDirectory }.map(\.id)
+        let order = pagedFolderEntries.map(\.id)
         let choice = GridSelection.choose(
             order: order,
             anchor: folderSelectionAnchor,
@@ -2111,6 +2179,7 @@ final class EditorModel {
 
     private func reloadFolderListing() {
         guard let folderURL else { return }
+        folderPage = 0
         folderListingReady = false
         folderGeneration += 1
         let generation = folderGeneration
@@ -2150,11 +2219,16 @@ final class EditorModel {
     }
 
     /// Builds one preview at a time and shows it as soon as that file is ready.
+    /// The page on screen goes first. The rest of the folder follows.
     private func preparePreviews(for entries: [FolderEntry], generation: Int) {
-        let images = entries.filter { !$0.isDirectory }.map(\.url)
+        let folder = entries.filter { !$0.isDirectory }.map(\.url)
         Task {
-            for imageURL in images {
+            var done = Set<String>()
+            while generation == self.folderGeneration {
+                let visible = self.pagedFolderEntries.map(\.url)
+                guard let imageURL = FolderPreviewQueue.nextURL(visible: visible, folder: folder, done: done) else { return }
                 let key = FolderEntry.cacheKey(for: imageURL)
+                done.insert(key)
                 let loaded = await Task.detached { () -> (URL?, Data?) in
                     let original = try? FolderPreviewCache.ensureJPEG(for: imageURL)
                     let edited = FolderPreviewCache.readEditedJPEG(for: imageURL)
@@ -4224,6 +4298,12 @@ struct Chrome: View {
 
     private var diskMode: Bool { sourceMode != "server" }
     private var showsImage: Bool { diskMode ? !model.showsFolderGrid : !serverShowsFolder }
+    /// The Photos folder grid. Review and Duplicates keep the date column as it is.
+    private var showsServerFolderPager: Bool {
+        !diskMode && !showsImage && !showsEvents && !showsReorg
+            && (librarySection ?? "Photos") == "Photos"
+            && browser.showsFolderPager
+    }
 
     var body: some View {
         GeometryReader { geo in
@@ -4247,11 +4327,47 @@ struct Chrome: View {
                                 .frame(width: 280)
                         }
                     } else if diskMode {
-                        FolderFileDetails(model: model)
-                            .frame(width: 280)
+                        VStack(spacing: 0) {
+                            if model.showsFolderPager {
+                                FolderPagePanel(
+                                    title: "\(model.folderPhotoCount.formatted()) photos",
+                                    range: model.folderPagerRange,
+                                    canGoBack: model.folderPageIndex > 0,
+                                    canGoForward: model.folderPageIndex + 1 < model.folderPageCount,
+                                    first: { model.showFolderPage(0) },
+                                    previous: { model.showFolderPage(model.folderPageIndex - 1) },
+                                    next: { model.showFolderPage(model.folderPageIndex + 1) },
+                                    last: { model.showFolderPage(model.folderPageCount - 1) }
+                                )
+                                Rectangle()
+                                    .fill(ChromePalette.hairline)
+                                    .frame(height: 1)
+                            }
+                            FolderFileDetails(model: model)
+                        }
+                        .frame(width: 280, alignment: .top)
+                        .frame(maxHeight: .infinity, alignment: .top)
                     } else {
-                        DateInspector(browser: browser)
-                            .frame(width: 280)
+                        VStack(spacing: 0) {
+                            if showsServerFolderPager {
+                                FolderPagePanel(
+                                    title: browser.folderPagerTitle,
+                                    range: browser.folderPagerRange,
+                                    canGoBack: browser.folderPageCanGoBack,
+                                    canGoForward: browser.folderPageCanGoForward,
+                                    first: { Task { await browser.showFirstFolderPage() } },
+                                    previous: { Task { await browser.showPreviousFolderPage() } },
+                                    next: { Task { await browser.showNextFolderPage() } },
+                                    last: { Task { await browser.showLastFolderPage() } }
+                                )
+                                Rectangle()
+                                    .fill(ChromePalette.hairline)
+                                    .frame(height: 1)
+                            }
+                            DateInspector(browser: browser)
+                        }
+                        .frame(width: 280, alignment: .top)
+                        .frame(maxHeight: .infinity, alignment: .top)
                     }
                 }
             }

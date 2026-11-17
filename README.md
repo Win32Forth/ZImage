@@ -14,7 +14,13 @@ Disk, and Server browsing of a folder, are the parts to use. Rotate, paste, expo
 
 Red Eye sits to the right of Scratches on the Touchup panel, and on the menu beside Remove Scratches. Click Red Eye, then click the red of each pupil. Click Red Eye again to leave. Each eye is its own history step, titled Red eye. The black center is about 20% larger than the red the click found, so the red ring around the pupil is included. That ring is filled with the pupil's dark color. A white catchlight stays. A click on skin or lips does nothing.
 
-The helper is unchanged. There is no disk image for 1.8.1 yet. 1.8.0 behavior below is still in this app.
+Folder view, in Disk and in Server, has a name field to the right of the folder path, with Find and Clear filter. Typing does not filter until Find or Return. The match is a case-insensitive part of the file name. Find searches the whole folder, not only the first 200 photos. Clear shows the folder again. When nothing matches, the grid says "No photos match that name."
+
+When a folder has more than 200 photos, a panel above Date shows the count, for example "1,842 photos", the slice on screen, for example "201–400 of 1,842", and First, Prev 200, Next 200, and Last. A folder of 200 photos or fewer leaves that column as it was. Videos stay on the first page and are not in the count. On Server, the first 200 appear while the title says "Counting photos…". A name search with more than 200 matches uses the same panel.
+
+Previews on the second page and later fill in after you change pages. The page on screen is reduced before the rest of the folder. Going back keeps previews that were already made.
+
+The helper source accepts a name on the asset list. The binary on the NAS was not replaced. Find does not need that replacement: it still reads every page and keeps file names that match. There is no disk image for 1.8.1 yet. 1.8.0 behavior below is still in this app.
 
 ## What 1.8.0 changes
 
