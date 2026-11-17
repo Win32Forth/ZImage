@@ -10,6 +10,7 @@ struct LibraryGrid: View {
     var live = true
     /// The grid is on screen. Hiding it keeps the scroll offset.
     var onScreen = true
+    @State private var confirmsRemovedDelete = false
 
     private var columns: [GridItem] {
         [GridItem(.adaptive(minimum: browser.previewPoints + 24), spacing: 16)]
@@ -30,7 +31,7 @@ struct LibraryGrid: View {
                         libraryPushButton("Rescan", identifier: "Rescan Folder") {
                             browser.rescanDisplayFolder()
                         }
-                        .disabled(browser.rescanBusy || browser.removalBusy || browser.dateBusy || browser.cleanBusy)
+                        .disabled(browser.rescanBusy || browser.removalBusy || browser.dateBusy || browser.cleanBusy || browser.moveBusy)
                         .help("Adds new files in this folder and its subfolders, and removes catalog records whose files are gone.")
                     }
                     Text(browser.displayFolder)
@@ -40,13 +41,21 @@ struct LibraryGrid: View {
                         .truncationMode(.middle)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .accessibilityIdentifier("Display folder name")
-                    FolderNameFilterBar(
-                        query: $browser.nameQuery,
-                        filterActive: !browser.nameFilter.isEmpty,
-                        prefix: "Server",
-                        find: { browser.applyNameFilter() },
-                        clear: { browser.clearNameFilter() }
-                    )
+                    if DisplayFolder.isRemovedShelf(browser.displayFolder) {
+                        libraryPushButton("Delete ALL", identifier: "Delete ALL") {
+                            confirmsRemovedDelete = true
+                        }
+                        .disabled(browser.removalBusy || browser.rescanBusy || browser.dateBusy || browser.cleanBusy || browser.moveBusy)
+                        .help("Deletes every file in Photos/_Removed from the server.")
+                    } else {
+                        FolderNameFilterBar(
+                            query: $browser.nameQuery,
+                            filterActive: !browser.nameFilter.isEmpty,
+                            prefix: "Server",
+                            find: { browser.applyNameFilter() },
+                            clear: { browser.clearNameFilter() }
+                        )
+                    }
                 }
                 .padding(.horizontal, 16)
                 .padding(.top, 10)
@@ -97,7 +106,7 @@ struct LibraryGrid: View {
             .modifier(KeptScroll(
                 visible: onScreen,
                 key: "\(media ?? "")|\(browser.displayFolder)|\(browser.folderPage)",
-                holdOffset: browser.removalBusy || browser.dateBusy || browser.cleanBusy || browser.rescanBusy
+                holdOffset: browser.removalBusy || browser.dateBusy || browser.cleanBusy || browser.rescanBusy || browser.moveBusy
             ))
         }
         .background(ChromePalette.panel)
@@ -105,15 +114,31 @@ struct LibraryGrid: View {
             guard live else { return }
             browser.deleteKey()
         }
+        .onChange(of: browser.displayFolder) { _, folder in
+            guard DisplayFolder.isRemovedShelf(folder) else { return }
+            if !browser.nameQuery.isEmpty || !browser.nameFilter.isEmpty {
+                browser.clearNameFilter()
+            }
+        }
+        .alert(
+            "Are you sure, all _Removed photos will be deleted from the server?",
+            isPresented: $confirmsRemovedDelete
+        ) {
+            Button("Yes", role: .destructive) {
+                Task { await browser.deleteAllRemoved() }
+            }
+            Button("No", role: .cancel) {}
+        }
         .task(id: "\(media ?? "")|\(browser.displayFolder)|\(browser.nameFilter)|\(live)") {
             guard live else { return }
             await browser.showFocus()
             await browser.reload(media: media)
             while !Task.isCancelled {
                 if await browser.previewVisibleOne() { continue }
+                // The page on screen is done. Keep going through the rest of this folder.
+                if await browser.previewNextFolderStill() { continue }
                 let consumed = await browser.checkpointOne()
                 if !browser.awaitsPreviews && !consumed {
-                    // The next page has its own squares. This walk stays up so they fill in.
                     await browser.waitForAnotherFolderPage()
                     continue
                 }
@@ -245,7 +270,7 @@ struct LibraryGrid: View {
                 let targets = browser.libraryRemovalTargets(clicked: asset)
                 Task { await browser.removeFromLibrary(targets) }
             }
-            .disabled(browser.removalBusy || browser.dateBusy || browser.cleanBusy || browser.rescanBusy || browser.libraryRemovalTargets(clicked: asset).isEmpty)
+            .disabled(browser.removalBusy || browser.dateBusy || browser.cleanBusy || browser.rescanBusy || browser.moveBusy || browser.libraryRemovalTargets(clicked: asset).isEmpty)
             Divider()
             Text(browser.sizeLabel(for: asset))
         }

@@ -29,6 +29,10 @@ struct LibraryFolderTree: View {
         .onChange(of: browser.displayFolder) { _, folder in
             Task { await reveal(folder) }
         }
+        .onChange(of: browser.folderTreeRevision) { _, _ in
+            let parents = browser.folderTreeParents
+            Task { await reload(parents) }
+        }
     }
 
     private var visibleRows: [(node: LibraryFolderNode, depth: Int)] {
@@ -108,6 +112,14 @@ struct LibraryFolderTree: View {
         }.value
         guard browser.libraryRoot.path == root.path else { return }
         children[rel] = found
+    }
+
+    /// Rereads parents that are already on screen. A collapsed parent loads when it opens.
+    private func reload(_ parents: [String]) async {
+        for rel in parents {
+            guard children[rel] != nil || expanded.contains(rel) else { continue }
+            await load(rel)
+        }
     }
 
     /// Opens the folders above the one on screen so its row is in the list.

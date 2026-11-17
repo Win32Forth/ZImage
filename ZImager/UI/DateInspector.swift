@@ -39,16 +39,15 @@ struct DateInspector: View {
                 let typed = captureText
                 Task { await browser.setCaptureDate(typed) }
             }
-            .disabled(browser.dateTargets().isEmpty || browser.dateBusy || browser.removalBusy || browser.cleanBusy || browser.rescanBusy)
+            .disabled(browser.dateTargets().isEmpty || browser.dateBusy || browser.removalBusy || browser.cleanBusy || browser.rescanBusy || browser.moveBusy)
             if showsUserConfidence {
                 Text("Confidence 1.0")
                     .font(.system(size: 13))
                     .foregroundStyle(ChromePalette.ink)
             }
-            Spacer()
         }
         .padding(16)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
         .background(ChromePalette.panel)
         .accessibilityIdentifier("Date inspector")
         .task(id: browser.selectedUID) {
@@ -139,6 +138,53 @@ struct DateInspector: View {
         if asset.mediaClass == "video" { return true }
         let ext = (asset.ext ?? "").lowercased()
         return LibraryItemMenu.videoExtensions.contains(ext)
+    }
+}
+
+/// Names a folder and moves the selected files there. It sits under Date in Server Folder view.
+struct MoveFolderPanel: View {
+    @Bindable var browser: LibraryBrowser
+    @State private var folderText = ""
+    @State private var subfolder = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Move selected files to specified Folder")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(ChromePalette.ink)
+                .fixedSize(horizontal: false, vertical: true)
+            TextField("Folder", text: $folderText)
+                .textFieldStyle(.roundedBorder)
+                .accessibilityIdentifier("Move folder name")
+                .onSubmit { move() }
+            Toggle("Sub-folder of this folder", isOn: $subfolder)
+                .toggleStyle(.checkbox)
+                .font(.system(size: 13))
+                .foregroundStyle(ChromePalette.ink)
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityIdentifier("Sub-folder of this folder")
+            Button("Move to Folder") {
+                move()
+            }
+            .disabled(folderText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                || browser.moveTargets().isEmpty
+                || browser.moveBusy
+                || browser.dateBusy
+                || browser.removalBusy
+                || browser.cleanBusy
+                || browser.rescanBusy)
+            .accessibilityIdentifier("Move to Folder")
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .background(ChromePalette.panel)
+        .accessibilityIdentifier("Move folder panel")
+    }
+
+    private func move() {
+        let typed = folderText
+        let nested = subfolder
+        Task { await browser.moveSelected(to: typed, subfolder: nested) }
     }
 }
 

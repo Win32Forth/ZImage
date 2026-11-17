@@ -627,6 +627,48 @@ final class LibraryGridTests: XCTestCase {
         XCTAssertFalse(browser.awaitsPreviews)
     }
 
+    func testRestOfTheFolderIsPreviewedWhileTheFirstPageStays() async throws {
+        func row(_ uid: String) -> String {
+            #"{"uid":"\#(uid)","relPath":"Photos/\#(uid).jpg","ext":"jpg","mediaClass":"image","isKeeper":false,"pinned":false}"#
+        }
+        func page(_ rows: String, cursor: String) -> Data {
+            Data(#"{"rows":[\#(rows)],"nextCursor":"\#(cursor)"}"#.utf8)
+        }
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("zimage-folder-rest-\(UUID().uuidString)", isDirectory: true)
+        let photos = root.appendingPathComponent("Photos", isDirectory: true)
+        try FileManager.default.createDirectory(at: photos, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try Self.writeTinyJPEG(to: photos.appendingPathComponent("p200.jpg"))
+        let first = (0..<200).map { row(String(format: "p%03d", $0)) }.joined(separator: ",")
+        let fake = GridFakeListener()
+        let browser = LibraryBrowser(
+            client: HelperClient(credentials: HelperCredentials(host: "192.168.1.20", pin: Data([1]), token: "t")) { request in
+                try await fake.send(request)
+            },
+            libraryRoot: root,
+            openFile: { _, _ in }
+        )
+        fake.enqueue(.success(HelperResponse(status: 200, body: page(first, cursor: "c1"))))
+        fake.enqueue(.success(HelperResponse(status: 200, body: page(row("p200"), cursor: ""))))
+        fake.enqueue(.success(HelperResponse(status: 200, body: page("", cursor: ""))))
+        await browser.reload(media: "photo")
+        XCTAssertEqual(browser.folderPage, 0)
+        XCTAssertEqual(browser.rows.first?.uid, "p000")
+        fake.enqueue(.success(HelperResponse(status: 200, body: Data("{}".utf8))))
+        fake.enqueue(.success(HelperResponse(status: 200, body: Data([0xFF, 0xD8]))))
+        let made = await browser.previewNextFolderStill()
+        XCTAssertTrue(made)
+        XCTAssertEqual(browser.folderPage, 0)
+        XCTAssertEqual(browser.rows.first?.uid, "p000")
+        XCTAssertNil(browser.rows.first { $0.uid == "p000" }?.thumbRel)
+        XCTAssertTrue(browser.awaitsPreviews)
+        await browser.showNextFolderPage()
+        XCTAssertEqual(browser.rows.map(\.uid), ["p200"])
+        XCTAssertNotNil(browser.rows.first?.thumbRel)
+        XCTAssertFalse(browser.awaitsPreviews)
+        XCTAssertEqual(browser.previewStatus, "Making previews for the rest of this folder.")
+    }
+
     func testServerFolderOfExactlyTwoHundredHidesThePager() async throws {
         func row(_ index: Int) -> String {
             let uid = String(format: "p%03d", index)
@@ -802,6 +844,406 @@ final class LibraryGridTests: XCTestCase {
         XCTAssertTrue(browser.rows.isEmpty)
         XCTAssertEqual(fake.callCount, 0)
         XCTAssertEqual(browser.thumbnailRequestCount, 0)
+    }
+
+    func testDeleteAllRemovesOnlyTheRemovedShelf() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("zimage-removed-\(UUID().uuidString)", isDirectory: true)
+    let shelf = root.appendingPathComponent("Photos/_Removed", isDirectory: true)
+    let nested = shelf.appendingPathComponent("nested", isDirectory: true)
+    let other = root.appendingPathComponent("Photos/2024", isDirectory: true)
+    let lookalike = root.appendingPathComponent("Photos/_RemovedExtra", isDirectory: true)
+    try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: other, withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: lookalike, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let parked = shelf.appendingPathComponent("a.jpg")
+    let buried = nested.appendingPathComponent("b.jpg")
+    let kept = other.appendingPathComponent("c.jpg")
+    let extra = lookalike.appendingPathComponent("d.jpg")
+    try Data("a".utf8).write(to: parked)
+    try Data("b".utf8).write(to: buried)
+    try Data("c".utf8).write(to: kept)
+    try Data("d".utf8).write(to: extra)
+    XCTAssertTrue(DisplayFolder.isRemovedShelf("Photos/_Removed"))
+    XCTAssertFalse(DisplayFolder.isRemovedShelf("Photos/_RemovedExtra"))
+    XCTAssertFalse(DisplayFolder.isRemovedShelf("Photos/_Removed/nested"))
+    XCTAssertFalse(DisplayFolder.isRemovedShelf("Photos"))
+
+    let fake = GridFakeListener()
+    let browser = LibraryBrowser(
+        client: HelperClient(credentials: HelperCredentials(host: "192.168.1.20", pin: Data([1]), token: "t")) { request in
+            try await fake.send(request)
+        },
+        libraryRoot: root,
+        openFile: { _, _ in }
+    )
+    browser.displayFolder = "Photos/2024"
+    await browser.deleteAllRemoved()
+    XCTAssertTrue(FileManager.default.fileExists(atPath: parked.path))
+    XCTAssertEqual(fake.callCount, 0)
+
+    browser.displayFolder = "Photos/_Removed"
+    let scan = Data(#"{"prefix":"Photos/_Removed","runState":"completed","phase":"","done":1,"total":1,"added":0,"removed":2}"#.utf8)
+    let empty = Data(#"{"rows":[],"nextCursor":""}"#.utf8)
+    fake.enqueue(.success(HelperResponse(status: 200, body: scan)))
+    fake.enqueue(.success(HelperResponse(status: 200, body: scan)))
+    for _ in 0..<6 {
+        fake.enqueue(.success(HelperResponse(status: 200, body: empty)))
+    }
+    await browser.deleteAllRemoved()
+    XCTAssertTrue(FileManager.default.fileExists(atPath: shelf.path))
+    XCTAssertFalse(FileManager.default.fileExists(atPath: parked.path))
+    XCTAssertFalse(FileManager.default.fileExists(atPath: nested.path))
+    XCTAssertTrue(FileManager.default.fileExists(atPath: kept.path))
+    XCTAssertTrue(FileManager.default.fileExists(atPath: extra.path))
+    for _ in 0..<40 where browser.rescanBusy {
+        try await Task.sleep(for: .milliseconds(25))
+    }
+    XCTAssertFalse(browser.rescanBusy)
+    XCTAssertTrue(fake.paths.contains("/v1/folders/rescan"))
+    }
+
+    func testEmptyFolderRefreshClearsTheGrid() async throws {
+        func row(_ uid: String) -> String {
+            #"{"uid":"\#(uid)","relPath":"Photos/\#(uid).jpg","ext":"jpg","mediaClass":"image","isKeeper":false,"pinned":false}"#
+        }
+        func page(_ rows: String, cursor: String) -> Data {
+            Data(#"{"rows":[\#(rows)],"nextCursor":"\#(cursor)"}"#.utf8)
+        }
+        let first = (0..<200).map { row(String(format: "p%03d", $0)) }.joined(separator: ",")
+        let fake = GridFakeListener()
+        let browser = LibraryBrowser(
+            client: HelperClient(credentials: HelperCredentials(host: "192.168.1.20", pin: Data([1]), token: "t")) { request in
+                try await fake.send(request)
+            },
+            libraryRoot: URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true),
+            openFile: { _, _ in }
+        )
+        let empty = page("", cursor: "")
+        fake.enqueue(.success(HelperResponse(status: 200, body: page(first, cursor: "c1"))))
+        fake.enqueue(.success(HelperResponse(status: 200, body: page(row("p200"), cursor: ""))))
+        fake.enqueue(.success(HelperResponse(status: 200, body: empty)))
+        await browser.reload(media: "photo")
+        await browser.showNextFolderPage()
+        XCTAssertEqual(browser.rows.map(\.uid), ["p200"])
+        XCTAssertTrue(browser.showsFolderPager)
+        XCTAssertEqual(browser.folderPhotoTotal, 201)
+        browser.selectedUID = "p200"
+        browser.selectedUIDs = ["p200"]
+
+        let before = fake.callCount
+        fake.enqueue(.success(HelperResponse(status: 200, body: empty)))
+        fake.enqueue(.success(HelperResponse(status: 200, body: empty)))
+        fake.enqueue(.success(HelperResponse(status: 200, body: empty)))
+        await browser.reload(media: "photo")
+        XCTAssertTrue(browser.rows.isEmpty)
+        XCTAssertFalse(browser.showsFolderPager)
+        XCTAssertEqual(browser.folderPhotoTotal, 0)
+        XCTAssertEqual(browser.folderPage, 0)
+        XCTAssertNil(browser.selectedUID)
+        XCTAssertTrue(browser.selectedUIDs.isEmpty)
+        XCTAssertGreaterThan(fake.callCount, before + 1)
+    }
+
+    func testFailedFolderRefreshKeepsThePage() async throws {
+        func row(_ uid: String) -> String {
+            #"{"uid":"\#(uid)","relPath":"Photos/\#(uid).jpg","ext":"jpg","mediaClass":"image","isKeeper":false,"pinned":false}"#
+        }
+        func page(_ rows: String, cursor: String) -> Data {
+            Data(#"{"rows":[\#(rows)],"nextCursor":"\#(cursor)"}"#.utf8)
+        }
+        let fake = GridFakeListener()
+        let browser = LibraryBrowser(
+            client: HelperClient(credentials: HelperCredentials(host: "192.168.1.20", pin: Data([1]), token: "t")) { request in
+                try await fake.send(request)
+            },
+            libraryRoot: URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true),
+            openFile: { _, _ in }
+        )
+        fake.enqueue(.success(HelperResponse(status: 200, body: page(row("keep"), cursor: ""))))
+        fake.enqueue(.success(HelperResponse(status: 200, body: page("", cursor: ""))))
+        await browser.reload(media: "photo")
+        XCTAssertEqual(browser.rows.map(\.uid), ["keep"])
+        browser.selectedUID = "keep"
+        let before = fake.callCount
+        fake.enqueue(.failure(URLError(.timedOut)))
+        await browser.reload(media: "photo")
+        XCTAssertEqual(browser.rows.map(\.uid), ["keep"])
+        XCTAssertEqual(browser.selectedUID, "keep")
+        XCTAssertEqual(browser.folderPhotoTotal, 1)
+        XCTAssertEqual(fake.callCount, before + 1)
+    }
+
+    func testShorterFolderRefreshDropsLaterPages() async throws {
+        func row(_ uid: String) -> String {
+            #"{"uid":"\#(uid)","relPath":"Photos/\#(uid).jpg","ext":"jpg","mediaClass":"image","isKeeper":false,"pinned":false}"#
+        }
+        func page(_ rows: String, cursor: String) -> Data {
+            Data(#"{"rows":[\#(rows)],"nextCursor":"\#(cursor)"}"#.utf8)
+        }
+        let first = (0..<200).map { row(String(format: "p%03d", $0)) }.joined(separator: ",")
+        let fake = GridFakeListener()
+        let browser = LibraryBrowser(
+            client: HelperClient(credentials: HelperCredentials(host: "192.168.1.20", pin: Data([1]), token: "t")) { request in
+                try await fake.send(request)
+            },
+            libraryRoot: URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true),
+            openFile: { _, _ in }
+        )
+        fake.enqueue(.success(HelperResponse(status: 200, body: page(first, cursor: "c1"))))
+        fake.enqueue(.success(HelperResponse(status: 200, body: page(row("p200"), cursor: ""))))
+        fake.enqueue(.success(HelperResponse(status: 200, body: page("", cursor: ""))))
+        await browser.reload(media: "photo")
+        XCTAssertTrue(browser.showsFolderPager)
+        XCTAssertEqual(browser.folderPhotoTotal, 201)
+
+        let before = fake.callCount
+        let left = [row("p000"), row("p001")].joined(separator: ",")
+        fake.enqueue(.success(HelperResponse(status: 200, body: page(left, cursor: ""))))
+        fake.enqueue(.success(HelperResponse(status: 200, body: page("", cursor: ""))))
+        await browser.reload(media: "photo")
+        XCTAssertEqual(browser.rows.map(\.uid), ["p000", "p001"])
+        XCTAssertEqual(browser.folderPhotoTotal, 2)
+        XCTAssertFalse(browser.showsFolderPager)
+        XCTAssertFalse(browser.folderPageCanGoForward)
+        XCTAssertEqual(fake.callCount, before + 2)
+    }
+
+    func testDeleteAllClearsALoadedRemovedFolder() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("zimage-removed-grid-\(UUID().uuidString)", isDirectory: true)
+        let shelf = root.appendingPathComponent("Photos/_Removed", isDirectory: true)
+        try FileManager.default.createDirectory(at: shelf, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let parked = shelf.appendingPathComponent("a.jpg")
+        try Data("a".utf8).write(to: parked)
+        func page(_ rows: String, cursor: String) -> Data {
+            Data(#"{"rows":[\#(rows)],"nextCursor":"\#(cursor)"}"#.utf8)
+        }
+        let still = #"{"uid":"gone","relPath":"Photos/_Removed/a.jpg","ext":"jpg","mediaClass":"image","isKeeper":false,"pinned":false}"#
+        let fake = GridFakeListener()
+        let browser = LibraryBrowser(
+            client: HelperClient(credentials: HelperCredentials(host: "192.168.1.20", pin: Data([1]), token: "t")) { request in
+                try await fake.send(request)
+            },
+            libraryRoot: root,
+            openFile: { _, _ in }
+        )
+        browser.displayFolder = "Photos/_Removed"
+        fake.enqueue(.success(HelperResponse(status: 200, body: page(still, cursor: ""))))
+        fake.enqueue(.success(HelperResponse(status: 200, body: page("", cursor: ""))))
+        await browser.reload(media: "photo")
+        XCTAssertEqual(browser.rows.map(\.uid), ["gone"])
+        browser.selectedUID = "gone"
+        browser.selectedUIDs = ["gone"]
+
+        let scan = Data(#"{"prefix":"Photos/_Removed","runState":"completed","phase":"","done":1,"total":1,"added":0,"removed":1}"#.utf8)
+        let empty = page("", cursor: "")
+        fake.enqueue(.success(HelperResponse(status: 200, body: scan)))
+        fake.enqueue(.success(HelperResponse(status: 200, body: scan)))
+        for _ in 0..<4 {
+            fake.enqueue(.success(HelperResponse(status: 200, body: empty)))
+        }
+        await browser.deleteAllRemoved()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: parked.path))
+        XCTAssertTrue(browser.rows.isEmpty)
+        XCTAssertNil(browser.selectedUID)
+        for _ in 0..<40 where browser.rescanBusy {
+            try await Task.sleep(for: .milliseconds(25))
+        }
+        XCTAssertFalse(browser.rescanBusy)
+        XCTAssertTrue(browser.rows.isEmpty)
+        XCTAssertFalse(browser.showsFolderPager)
+    }
+
+    func testMoveFolderPicksTheDirectoryFromTheOpenFolder() {
+        XCTAssertEqual(
+            FolderMove.directory(displayFolder: "Photos/_Review", fileRelPath: "Photos/_Review/Undated/e0/a.jpg", folderName: "Tom Schoenect"),
+            "Photos/Tom Schoenect"
+        )
+        XCTAssertEqual(
+            FolderMove.directory(displayFolder: "Photos/_Duplicates/g1", fileRelPath: "Photos/_Duplicates/g1/b.jpg", folderName: " Tom Schoenect "),
+            "Photos/Tom Schoenect"
+        )
+        XCTAssertEqual(
+            FolderMove.directory(displayFolder: "Photos/2024", fileRelPath: "Photos/2024/2024-06-15/a.jpg", folderName: "Tom Schoenect"),
+            "Photos/Tom Schoenect"
+        )
+        XCTAssertEqual(
+            FolderMove.directory(displayFolder: "Photos/2024", fileRelPath: "Photos/2024/a.jpg", folderName: "Tom Schoenect"),
+            "Photos/Tom Schoenect"
+        )
+        XCTAssertEqual(
+            FolderMove.directory(displayFolder: "Photos/2024/2024-06-15", fileRelPath: "Photos/2024/2024-06-15/a.jpg", folderName: "Tom Schoenect"),
+            "Photos/Tom Schoenect"
+        )
+        XCTAssertEqual(
+            FolderMove.directory(displayFolder: "Photos/Albums", fileRelPath: "Photos/Albums/a.jpg", folderName: "Tom Schoenect"),
+            "Photos/Tom Schoenect"
+        )
+        XCTAssertEqual(
+            FolderMove.directory(displayFolder: "Photos/Cartoons", fileRelPath: "Photos/Cartoons/a.jpg", folderName: "Sketches"),
+            "Photos/Sketches"
+        )
+        XCTAssertEqual(
+            FolderMove.directory(displayFolder: "Photos/Cartoons", fileRelPath: "Photos/Cartoons/Inner/a.jpg", folderName: "Sketches"),
+            "Photos/Sketches"
+        )
+        XCTAssertEqual(
+            FolderMove.directory(displayFolder: "Photos", fileRelPath: "Photos/a.jpg", folderName: "Cartoons"),
+            "Photos/Cartoons"
+        )
+        XCTAssertEqual(
+            FolderMove.directory(displayFolder: "Photos/_Removed", fileRelPath: "Photos/_Removed/a.jpg", folderName: "Cartoons"),
+            "Photos/Cartoons"
+        )
+        XCTAssertEqual(
+            FolderMove.directory(displayFolder: "Photos/2024/2024-06-15/Birthday", fileRelPath: "Photos/2024/2024-06-15/Birthday/a.jpg", folderName: "Cartoons"),
+            "Photos/Cartoons"
+        )
+        XCTAssertEqual(
+            FolderMove.directory(displayFolder: "Photos/Blogger 1600", fileRelPath: "Photos/Blogger 1600/a.jpg", folderName: "Miracle"),
+            "Photos/Miracle"
+        )
+        XCTAssertEqual(
+            FolderMove.directory(displayFolder: "Photos/Blogger 1600", fileRelPath: "Photos/Blogger 1600/a.jpg", folderName: "Miracle", subfolder: true),
+            "Photos/Blogger 1600/Miracle"
+        )
+        XCTAssertEqual(
+            FolderMove.directory(displayFolder: "Photos/2024", fileRelPath: "Photos/2024/2024-06-15/a.jpg", folderName: "Tom Schoenect", subfolder: true),
+            "Photos/2024/Tom Schoenect"
+        )
+        XCTAssertEqual(
+            FolderMove.directory(displayFolder: "Photos/Cartoons", fileRelPath: "Photos/Cartoons/Inner/a.jpg", folderName: "Sketches", subfolder: true),
+            "Photos/Cartoons/Sketches"
+        )
+        XCTAssertEqual(
+            FolderMove.directory(displayFolder: "Photos/_Review", fileRelPath: "Photos/_Review/a.jpg", folderName: "Tom Schoenect", subfolder: true),
+            "Photos/_Review/Tom Schoenect"
+        )
+        XCTAssertNil(FolderMove.directory(displayFolder: "Photos/Albums", fileRelPath: "Photos/2024/a.jpg", folderName: "Tom Schoenect"))
+        XCTAssertNil(FolderMove.directory(displayFolder: "Photos/2024", fileRelPath: "Photos/2024/a.jpg", folderName: "../Tom"))
+        XCTAssertNil(FolderMove.directory(displayFolder: "Photos/_Review", fileRelPath: "Photos/_Review/a.jpg", folderName: "_Removed"))
+        XCTAssertEqual(
+            FolderMove.rescanPrefixes(displayFolder: "Photos/_Review", destinations: ["Photos/Tom Schoenect"]),
+            ["Photos/_Review", "Photos/Tom Schoenect"]
+        )
+        XCTAssertEqual(
+            FolderMove.rescanPrefixes(displayFolder: "Photos/2024", destinations: ["Photos/2024/2024-06-15/Tom Schoenect"]),
+            ["Photos/2024"]
+        )
+    }
+
+    func testMoveFolderCreatesTheNamedFolderAndLeavesOtherFiles() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("zimage-move-\(UUID().uuidString)", isDirectory: true)
+        let review = root.appendingPathComponent("Photos/_Review/Undated", isDirectory: true)
+        let year = root.appendingPathComponent("Photos/2024/2024-06-15", isDirectory: true)
+        try FileManager.default.createDirectory(at: review, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: year, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let parked = review.appendingPathComponent("a.jpg")
+        let sameName = review.appendingPathComponent("nested")
+        try FileManager.default.createDirectory(at: sameName, withIntermediateDirectories: true)
+        let second = sameName.appendingPathComponent("a.jpg")
+        let kept = year.appendingPathComponent("c.jpg")
+        try Data("a".utf8).write(to: parked)
+        try Data("b".utf8).write(to: second)
+        try Data("c".utf8).write(to: kept)
+        let outcome = FolderMove.perform(libraryRoot: root, items: [
+            ("Photos/_Review/Undated/a.jpg", "Photos/Tom Schoenect"),
+            ("Photos/_Review/Undated/nested/a.jpg", "Photos/Tom Schoenect"),
+            ("Photos/../../secret.jpg", "Photos/Tom Schoenect"),
+        ])
+        XCTAssertEqual(outcome.moved, 2)
+        XCTAssertEqual(outcome.stayed, 1)
+        XCTAssertEqual(outcome.directories, ["Photos/Tom Schoenect"])
+        let dest = root.appendingPathComponent("Photos/Tom Schoenect")
+        XCTAssertEqual(try Data(contentsOf: dest.appendingPathComponent("a.jpg")), Data("a".utf8))
+        XCTAssertEqual(try Data(contentsOf: dest.appendingPathComponent("a-2.jpg")), Data("b".utf8))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: parked.path))
+        let already = FolderMove.perform(libraryRoot: root, items: [
+            ("Photos/Tom Schoenect/a.jpg", "Photos/Tom Schoenect"),
+        ])
+        XCTAssertEqual(already.moved, 0)
+        XCTAssertEqual(already.stayed, 1)
+        XCTAssertEqual(already.directories, [])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dest.appendingPathComponent("a-3.jpg").path))
+        XCTAssertEqual(try Data(contentsOf: dest.appendingPathComponent("a.jpg")), Data("a".utf8))
+        XCTAssertEqual(try Data(contentsOf: kept), Data("c".utf8))
+        let dated = FolderMove.perform(libraryRoot: root, items: [
+            ("Photos/2024/2024-06-15/c.jpg", "Photos/2024/2024-06-15/Tom Schoenect"),
+        ])
+        XCTAssertEqual(dated.moved, 1)
+        XCTAssertEqual(
+            try Data(contentsOf: year.appendingPathComponent("Tom Schoenect/c.jpg")),
+            Data("c".utf8)
+        )
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("Photos/Tom Schoenect/c.jpg").path))
+        let cartoons = root.appendingPathComponent("Photos/Cartoons", isDirectory: true)
+        try FileManager.default.createDirectory(at: cartoons, withIntermediateDirectories: true)
+        let drawing = cartoons.appendingPathComponent("d.jpg")
+        try Data("d".utf8).write(to: drawing)
+        let sketched = FolderMove.perform(libraryRoot: root, items: [
+            ("Photos/Cartoons/d.jpg", "Photos/Cartoons/Sketches"),
+        ])
+        XCTAssertEqual(sketched.moved, 1)
+        XCTAssertEqual(sketched.directories, ["Photos/Cartoons/Sketches"])
+        XCTAssertEqual(try Data(contentsOf: cartoons.appendingPathComponent("Sketches/d.jpg")), Data("d".utf8))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: drawing.path))
+    }
+
+    func testMoveSelectedFromReviewLandsUnderPhotos() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("zimage-move-review-\(UUID().uuidString)", isDirectory: true)
+        let review = root.appendingPathComponent("Photos/_Review", isDirectory: true)
+        let other = root.appendingPathComponent("Photos/2024", isDirectory: true)
+        try FileManager.default.createDirectory(at: review, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: other, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let parked = review.appendingPathComponent("a.jpg")
+        let kept = other.appendingPathComponent("c.jpg")
+        try Data("a".utf8).write(to: parked)
+        try Data("c".utf8).write(to: kept)
+        func page(_ rows: String) -> Data {
+            Data(#"{"rows":[\#(rows)],"nextCursor":""}"#.utf8)
+        }
+        let still = #"{"uid":"move-me","relPath":"Photos/_Review/a.jpg","ext":"jpg","mediaClass":"image","isKeeper":false,"pinned":false}"#
+        let fake = GridFakeListener()
+        let browser = LibraryBrowser(
+            client: HelperClient(credentials: HelperCredentials(host: "192.168.1.20", pin: Data([1]), token: "t")) { request in
+                try await fake.send(request)
+            },
+            libraryRoot: root,
+            openFile: { _, _ in }
+        )
+        browser.displayFolder = "Photos/_Review"
+        fake.enqueue(.success(HelperResponse(status: 200, body: page(still))))
+        fake.enqueue(.success(HelperResponse(status: 200, body: page(""))))
+        await browser.reload(media: "photo")
+        browser.selectedUIDs = ["move-me"]
+        let scan = Data(#"{"prefix":"Photos/_Review","runState":"completed","phase":"","done":1,"total":1,"added":0,"removed":1}"#.utf8)
+        let empty = page("")
+        for _ in 0..<4 {
+            fake.enqueue(.success(HelperResponse(status: 200, body: scan)))
+        }
+        for _ in 0..<4 {
+            fake.enqueue(.success(HelperResponse(status: 200, body: empty)))
+        }
+        XCTAssertEqual(browser.folderTreeRevision, 0)
+        await browser.moveSelected(to: "Tom Schoenect")
+        let dest = root.appendingPathComponent("Photos/Tom Schoenect/a.jpg")
+        XCTAssertEqual(try Data(contentsOf: dest), Data("a".utf8))
+        XCTAssertTrue(browser.rows.isEmpty)
+        XCTAssertEqual(browser.folderPage, 0)
+        XCTAssertEqual(browser.folderTreeRevision, 1)
+        XCTAssertEqual(browser.folderTreeParents, ["Photos"])
+        XCTAssertTrue(
+            LibraryFolderScan.childFolders(libraryRoot: root, parent: "Photos").contains { $0.rel == "Photos/Tom Schoenect" }
+        )
+        XCTAssertFalse(FileManager.default.fileExists(atPath: parked.path))
+        XCTAssertEqual(try Data(contentsOf: kept), Data("c".utf8))
+        XCTAssertFalse(browser.moveBusy)
+        XCTAssertFalse(browser.rescanBusy)
+        XCTAssertTrue(fake.paths.contains("/v1/folders/rescan"))
+        XCTAssertEqual(browser.notice, "Moved 1 file to Photos/Tom Schoenect.")
     }
 }
 

@@ -476,6 +476,233 @@ enum DisplayFolder {
         guard parts.first == "Photos", parts.allSatisfy({ $0 != "." && $0 != ".." }) else { return nil }
         return parts.joined(separator: "/") + "/"
     }
+
+    /// The parked shelf. A folder named `_Removed` anywhere else is not this shelf.
+    static func isRemovedShelf(_ folder: String) -> Bool {
+        folder == "Photos/_Removed"
+    }
+}
+
+/// Deletes the files parked in `Photos/_Removed`. The folder itself stays.
+enum RemovedShelf {
+    struct Result: Equatable {
+        var deleted = 0
+        var failed = 0
+        var missing = false
+    }
+
+    static func deleteContents(libraryRoot: URL) -> Result {
+        let root = libraryRoot.standardizedFileURL.resolvingSymlinksInPath()
+        let shelf = root
+            .appendingPathComponent("Photos", isDirectory: true)
+            .appendingPathComponent("_Removed", isDirectory: true)
+        let resolved = shelf.resolvingSymlinksInPath().standardizedFileURL
+        let rootPrefix = root.path.hasSuffix("/") ? root.path : root.path + "/"
+        guard resolved.path.hasPrefix(rootPrefix),
+              resolved.lastPathComponent == "_Removed",
+              resolved.deletingLastPathComponent().lastPathComponent == "Photos" else {
+            return Result(failed: 1)
+        }
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: resolved.path, isDirectory: &isDirectory), isDirectory.boolValue else {
+            return Result(missing: true)
+        }
+        let shelfPrefix = resolved.path.hasSuffix("/") ? resolved.path : resolved.path + "/"
+        guard let enumerator = FileManager.default.enumerator(
+            at: resolved,
+            includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey],
+            options: []
+        ) else {
+            return Result(failed: 1)
+        }
+        var files: [URL] = []
+        var directories: [URL] = []
+        for case let item as URL in enumerator {
+            let link = (try? item.resourceValues(forKeys: [.isSymbolicLinkKey]))?.isSymbolicLink == true
+            let itemPath = item.standardizedFileURL.path
+            guard itemPath.hasPrefix(shelfPrefix) else {
+                enumerator.skipDescendants()
+                continue
+            }
+            if link {
+                files.append(item)
+                enumerator.skipDescendants()
+                continue
+            }
+            let resolvedItem = item.resolvingSymlinksInPath().standardizedFileURL.path
+            guard resolvedItem.hasPrefix(shelfPrefix) else {
+                enumerator.skipDescendants()
+                continue
+            }
+            let directory = (try? item.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true
+            if directory {
+                directories.append(item)
+            } else {
+                files.append(item)
+            }
+        }
+        var result = Result()
+        for file in files {
+            do {
+                try FileManager.default.removeItem(at: file)
+                result.deleted += 1
+            } catch {
+                result.failed += 1
+            }
+        }
+        for directory in directories.sorted(by: { $0.path.count > $1.path.count }) {
+            if (try? FileManager.default.removeItem(at: directory)) == nil {
+                result.failed += 1
+            }
+        }
+        return result
+    }
+}
+
+/// Moves selected files into a folder the user names.
+/// The named folder is created under Photos. The subfolder box puts it under the folder on screen.
+enum FolderMove {
+    struct Outcome: Equatable {
+        var moved = 0
+        var stayed = 0
+        var directories: [String] = []
+    }
+
+    static func folderName(_ typed: String) -> String? {
+        let trimmed = typed.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        if trimmed == "." || trimmed == ".." { return nil }
+        if trimmed.contains("/") || trimmed.contains("\\") || trimmed.contains("\0") { return nil }
+        if trimmed.unicodeScalars.contains(where: { $0.value < 32 }) { return nil }
+        if trimmed == "_Removed" || trimmed == "_Duplicates" || trimmed == "_Review" { return nil }
+        return trimmed
+    }
+
+    /// Directory under the library root.
+    /// Unchecked lands in `Photos/<name>`. Checked lands in the open folder.
+    static func directory(displayFolder: String, fileRelPath: String, folderName raw: String, subfolder: Bool = false) -> String? {
+        guard let name = folderName(raw) else { return nil }
+        guard fileRelPath == displayFolder || fileRelPath.hasPrefix(displayFolder + "/") else { return nil }
+        let fileParts = fileRelPath.split(separator: "/").map(String.init)
+        guard fileParts.count >= 2, fileParts.first == "Photos",
+              fileParts.allSatisfy({ $0 != "." && $0 != ".." }) else { return nil }
+        let openParts = displayFolder.split(separator: "/").map(String.init)
+        guard openParts.first == "Photos", openParts.allSatisfy({ $0 != "." && $0 != ".." }) else { return nil }
+        if subfolder {
+            return displayFolder + "/" + name
+        }
+        return "Photos/\(name)"
+    }
+
+    /// The open folder, then any destination that sits outside it.
+    static func rescanPrefixes(displayFolder: String, destinations: [String]) -> [String] {
+        var prefixes = [displayFolder]
+        for dest in destinations {
+            let covered = prefixes.contains { dest == $0 || dest.hasPrefix($0 + "/") }
+            if !covered {
+                prefixes.append(dest)
+            }
+        }
+        return prefixes
+    }
+
+    static func finishedNotice(name: String, outcome: Outcome) -> String {
+        if outcome.moved == 0 {
+            return outcome.stayed == 1 ? "The file stayed where it is." : "The files stayed where they are."
+        }
+        let place = outcome.directories.count == 1 ? (outcome.directories[0]) : name
+        if outcome.stayed == 0 {
+            return outcome.moved == 1 ? "Moved 1 file to \(place)." : "Moved \(outcome.moved.formatted()) files to \(place)."
+        }
+        let stayed = outcome.stayed == 1 ? "1 stayed." : "\(outcome.stayed.formatted()) stayed."
+        return "Moved \(outcome.moved.formatted()) files to \(place). \(stayed)"
+    }
+
+    /// Moves each file into its destination directory. An existing name gets `-2`, `-3`, and so on.
+    static func perform(libraryRoot: URL, items: [(sourceRel: String, destDir: String)]) -> Outcome {
+        var outcome = Outcome()
+        var seen: [String] = []
+        for item in items {
+            guard let source = fileInsideLibrary(libraryRoot: libraryRoot, relative: item.sourceRel),
+                  let directory = directoryInsideLibrary(libraryRoot: libraryRoot, relative: item.destDir) else {
+                outcome.stayed += 1
+                continue
+            }
+            // Already in that folder. A second move would rename it to name-2.
+            if (item.sourceRel as NSString).deletingLastPathComponent == item.destDir {
+                outcome.stayed += 1
+                continue
+            }
+            guard let claimed = claim(directory: directory, fileName: source.lastPathComponent) else {
+                outcome.stayed += 1
+                continue
+            }
+            do {
+                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+                try FileManager.default.moveItem(at: source, to: claimed)
+                outcome.moved += 1
+                if !seen.contains(item.destDir) {
+                    seen.append(item.destDir)
+                }
+            } catch {
+                outcome.stayed += 1
+            }
+        }
+        outcome.directories = seen
+        return outcome
+    }
+
+    private static func claim(directory: URL, fileName: String) -> URL? {
+        guard fileName != ".", fileName != "..", !fileName.contains("/") else { return nil }
+        let ext = (fileName as NSString).pathExtension
+        let stem = (fileName as NSString).deletingPathExtension
+        for number in 1..<1000 {
+            let name: String
+            if number == 1 {
+                name = fileName
+            } else if ext.isEmpty {
+                name = "\(stem)-\(number)"
+            } else {
+                name = "\(stem)-\(number).\(ext)"
+            }
+            let candidate = directory.appendingPathComponent(name)
+            if !FileManager.default.fileExists(atPath: candidate.path) {
+                return candidate
+            }
+        }
+        return nil
+    }
+
+    private static func fileInsideLibrary(libraryRoot: URL, relative: String) -> URL? {
+        guard let parent = directoryInsideLibrary(libraryRoot: libraryRoot, relative: (relative as NSString).deletingLastPathComponent) else {
+            return nil
+        }
+        let name = (relative as NSString).lastPathComponent
+        guard name != ".", name != "..", !name.contains("/") else { return nil }
+        return parent.appendingPathComponent(name)
+    }
+
+    /// Resolves existing components. A folder that is not on disk yet stays under its parent.
+    private static func directoryInsideLibrary(libraryRoot: URL, relative: String) -> URL? {
+        let parts = relative.split(separator: "/").map(String.init)
+        guard parts.first == "Photos", parts.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." && !$0.contains("\0") }) else {
+            return nil
+        }
+        let root = libraryRoot.standardizedFileURL.resolvingSymlinksInPath()
+        let rootPrefix = root.path.hasSuffix("/") ? root.path : root.path + "/"
+        var url = root
+        for part in parts {
+            url = url.appendingPathComponent(part, isDirectory: true)
+            var isDirectory: ObjCBool = false
+            if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) {
+                let resolved = url.resolvingSymlinksInPath().standardizedFileURL
+                guard resolved.path.hasPrefix(rootPrefix) else { return nil }
+                url = resolved
+            }
+        }
+        guard url.path.hasPrefix(rootPrefix) else { return nil }
+        return url
+    }
 }
 
 /// One page of the catalog grid. Cells scale the stored preview JPEG.
@@ -495,6 +722,12 @@ final class LibraryBrowser {
     private(set) var cleanBusy = false
     /// True while Rescan is walking the displayed folder.
     private(set) var rescanBusy = false
+    /// True while Move to Folder is moving the current batch.
+    private(set) var moveBusy = false
+    /// Bumped after Move to Folder writes a directory, so the folder tree rereads that parent.
+    private(set) var folderTreeRevision = 0
+    /// Parents whose child lists are stale. Empty until a move lands files in a directory.
+    private(set) var folderTreeParents: [String] = []
     /// The folder walk bar. Nil hides it.
     private(set) var rescanMeter: TouchupMeter?
     private var rescanGeneration = 0
@@ -597,6 +830,7 @@ final class LibraryBrowser {
         notice = nil
         rescanGeneration += 1
         rescanBusy = false
+        moveBusy = false
         rescanMeter = nil
         reorg = nil
         reorgNotice = nil
@@ -720,6 +954,7 @@ final class LibraryBrowser {
         if name != nil {
             notice = "Searching this folder…"
         }
+        var dropped = false
         if fresh || name != nil {
             let savedPage = folderPage
             await walkFolderPhotos(under: folder, name: name, key: key)
@@ -729,11 +964,17 @@ final class LibraryBrowser {
                 applyFolderRows()
             }
         } else {
-            await refreshVisibleFolderPage(under: folder, name: name, key: key)
+            let outcome = await refreshVisibleFolderPage(under: folder, name: name, key: key)
+            dropped = outcome == .dropped
+            // An empty cursor page cannot prove the earlier pages are gone. Read the folder again.
+            if dropped, folderListKey.isEmpty, !Task.isCancelled {
+                folderListKey = key
+                await walkFolderPhotos(under: folder, name: name, key: key)
+            }
         }
         guard folderListKey == key, !Task.isCancelled else { return }
         if name != nil { notice = nil }
-        if fresh { trimSelectionToRows() }
+        if fresh || dropped { trimSelectionToRows() }
         await loadThumbnails()
     }
 
@@ -840,34 +1081,70 @@ final class LibraryBrowser {
         await loadThumbnails()
     }
 
-    private func refreshVisibleFolderPage(under folder: String?, name: String?, key: String) async {
-        guard name == nil, stillPages.indices.contains(folderPage) else { return }
+    /// A failed fetch keeps the page. An empty page drops the cached list so the caller can read the folder again.
+    private enum FolderPageRefresh {
+        case kept
+        case replaced
+        case dropped
+    }
+
+    private func refreshVisibleFolderPage(under folder: String?, name: String?, key: String) async -> FolderPageRefresh {
+        guard name == nil, stillPages.indices.contains(folderPage) else { return .kept }
         let pageIndex = folderPage
         let cursor = pageCursors.indices.contains(pageIndex) ? pageCursors[pageIndex] : nil
         let stills: [LibraryAsset]
+        let nextCursor: String
         do {
             let page = try await client.assets(media: "photo", under: folder, name: nil, cursor: cursor)
-            guard folderListKey == key, !Task.isCancelled else { return }
+            guard folderListKey == key, !Task.isCancelled else { return .kept }
             session.markReachable()
             stills = page.rows.filter { !isVideo($0) }
+            nextCursor = page.nextCursor
         } catch {
-            return
+            return .kept
         }
-        if !stills.isEmpty, stillPages.indices.contains(pageIndex) {
-            let previous = Dictionary(uniqueKeysWithValues: stillPages[pageIndex].map { ($0.uid, $0) })
-            stillPages[pageIndex] = stills.map { fresh in
-                guard fresh.thumbRel == nil, let kept = previous[fresh.uid]?.thumbRel else { return fresh }
-                var merged = fresh
-                merged.thumbRel = kept
-                return merged
+        guard stillPages.indices.contains(pageIndex), folderListKey == key else { return .kept }
+        if stills.isEmpty {
+            folderListKey = ""
+            stillPages = []
+            pageCursors = []
+            folderVideos = []
+            folderPhotoTotal = 0
+            folderPageCounting = false
+            folderPage = 0
+            requestedPage = nil
+            rows = []
+            return .dropped
+        }
+        let previous = Dictionary(uniqueKeysWithValues: stillPages[pageIndex].map { ($0.uid, $0) })
+        stillPages[pageIndex] = stills.map { fresh in
+            guard fresh.thumbRel == nil, let kept = previous[fresh.uid]?.thumbRel else { return fresh }
+            var merged = fresh
+            merged.thumbRel = kept
+            return merged
+        }
+        let ended = stills.count < FolderPage.limit || nextCursor.isEmpty
+        if ended {
+            let drop = pageIndex + 1
+            if drop < stillPages.count {
+                stillPages.removeSubrange(drop...)
+            }
+            if drop < pageCursors.count {
+                pageCursors.removeSubrange(drop...)
+            }
+            folderPhotoTotal = stillPages.reduce(0) { $0 + $1.count }
+            folderPageCounting = false
+            if folderPage >= stillPages.count {
+                folderPage = max(0, stillPages.count - 1)
             }
         }
         if pageIndex == 0 {
             let videos = await loadFolderVideos(under: folder, name: nil)
-            guard folderListKey == key, !Task.isCancelled else { return }
+            guard folderListKey == key, !Task.isCancelled else { return .replaced }
             folderVideos = videos
         }
         applyFolderRows()
+        return .replaced
     }
 
     /// Videos on the first photo page. A name walks every video page. An open folder keeps the first 200.
@@ -1003,9 +1280,75 @@ final class LibraryBrowser {
         return chosen.filter { !parkedInLibrary($0) }
     }
 
+    /// Selected files in the folder on screen. One selected row is enough.
+    func moveTargets() -> [LibraryAsset] {
+        var chosen = rows.filter { selectedUIDs.contains($0.uid) }
+        if chosen.isEmpty, let selectedUID, let one = rows.first(where: { $0.uid == selectedUID }) {
+            chosen = [one]
+        }
+        return chosen.filter { $0.relPath != nil }
+    }
+
+    /// Moves the selection into the named folder, then rescans so the catalog follows the files.
+    /// `subfolder` creates that folder inside the folder on screen. Otherwise it is created under Photos.
+    func moveSelected(to typed: String, subfolder: Bool = false) async {
+        guard !moveBusy, !dateBusy, !removalBusy, !cleanBusy, !rescanBusy else { return }
+        guard let name = FolderMove.folderName(typed) else {
+            notice = "Type a folder name."
+            return
+        }
+        let assets = moveTargets()
+        guard !assets.isEmpty else {
+            notice = "Select a file to move."
+            return
+        }
+        var items: [(sourceRel: String, destDir: String)] = []
+        for asset in assets {
+            guard let rel = asset.relPath,
+                  let dir = FolderMove.directory(
+                    displayFolder: displayFolder,
+                    fileRelPath: rel,
+                    folderName: name,
+                    subfolder: subfolder
+                  ) else {
+                continue
+            }
+            items.append((rel, dir))
+        }
+        guard !items.isEmpty else {
+            notice = "Those files are not in this folder."
+            return
+        }
+        moveBusy = true
+        let total = items.count
+        var outcome = FolderMove.Outcome()
+        let root = libraryRoot
+        for (index, item) in items.enumerated() {
+            let place = item.destDir
+            notice = "Moving \(index + 1) of \(total) to \(place)."
+            await Task.yield()
+            let step = await Task.detached(priority: .userInitiated) {
+                FolderMove.perform(libraryRoot: root, items: [item])
+            }.value
+            outcome.moved += step.moved
+            outcome.stayed += step.stayed
+            for dir in step.directories where !outcome.directories.contains(dir) {
+                outcome.directories.append(dir)
+            }
+        }
+        outcome.stayed += assets.count - items.count
+        moveBusy = false
+        if outcome.moved > 0 {
+            refreshFolderTree(for: outcome.directories)
+        }
+        let done = FolderMove.finishedNotice(name: name, outcome: outcome)
+        let prefixes = FolderMove.rescanPrefixes(displayFolder: displayFolder, destinations: outcome.directories)
+        await rescanMovedFolders(prefixes, notice: done)
+    }
+
     /// Writes the typed date on every selected file and moves each one into its date folder.
     func setCaptureDate(_ text: String) async {
-        guard !dateBusy, !removalBusy, !cleanBusy, !rescanBusy else { return }
+        guard !dateBusy, !removalBusy, !cleanBusy, !rescanBusy, !moveBusy else { return }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let wire = LibraryItemMenu.captureRequest(trimmed) else {
             notice = "The date was not saved. Use YYYY-MM-DD or a four-digit year."
@@ -1048,7 +1391,7 @@ final class LibraryBrowser {
 
     /// Drops leftover catalog rows in the open folder. A row goes only when its file is gone and another file here has the same name and size.
     func cleanDisplayFolder() async {
-        guard !cleanBusy, !removalBusy, !dateBusy else { return }
+        guard !cleanBusy, !removalBusy, !dateBusy, !moveBusy else { return }
         cleanBusy = true
         defer { cleanBusy = false }
         notice = "Cleaning leftover records."
@@ -1074,9 +1417,41 @@ final class LibraryBrowser {
         }
     }
 
+    /// Deletes every file in Photos/_Removed, then asks the helper to drop those catalog rows.
+    func deleteAllRemoved() async {
+        guard DisplayFolder.isRemovedShelf(displayFolder) else { return }
+        guard !removalBusy, !rescanBusy, !dateBusy, !cleanBusy, !moveBusy else { return }
+        removalBusy = true
+        notice = "Deleting photos in Photos/_Removed."
+        let root = libraryRoot
+        let result = await Task.detached(priority: .userInitiated) {
+            RemovedShelf.deleteContents(libraryRoot: root)
+        }.value
+        removalBusy = false
+        guard DisplayFolder.isRemovedShelf(displayFolder) else { return }
+        if result.missing || (result.deleted == 0 && result.failed > 0) {
+            notice = "Photos/_Removed could not be opened."
+            return
+        }
+        // The catalog page still on screen is the folder from before this delete.
+        resetFolderPages()
+        rows = []
+        trimSelectionToRows()
+        if result.failed > 0 {
+            notice = "Deleted \(result.deleted.formatted()) files. \(result.failed.formatted()) stayed in Photos/_Removed."
+        } else if result.deleted == 0 {
+            notice = "Photos/_Removed is already empty."
+        } else if result.deleted == 1 {
+            notice = "Deleted 1 file from Photos/_Removed."
+        } else {
+            notice = "Deleted \(result.deleted.formatted()) files from Photos/_Removed."
+        }
+        rescanDisplayFolder()
+    }
+
     /// Catalogs the displayed folder and its subfolders, and deletes rows whose files are gone.
     func rescanDisplayFolder() {
-        guard !rescanBusy, !removalBusy, !dateBusy, !cleanBusy else { return }
+        guard !rescanBusy, !removalBusy, !dateBusy, !cleanBusy, !moveBusy else { return }
         rescanBusy = true
         rescanGeneration += 1
         let generation = rescanGeneration
@@ -1086,20 +1461,76 @@ final class LibraryBrowser {
         Task { await runFolderRescan(generation: generation, folder: folder) }
     }
 
-    private func runFolderRescan(generation: Int, folder: String) async {
+    /// Asks the folder tree to list these directories under their parents.
+    private func refreshFolderTree(for directories: [String]) {
+        var parents: [String] = []
+        for directory in directories {
+            let parent = (directory as NSString).deletingLastPathComponent
+            guard !parent.isEmpty, parent != directory, !parents.contains(parent) else { continue }
+            parents.append(parent)
+        }
+        guard !parents.isEmpty else { return }
+        folderTreeParents = parents
+        folderTreeRevision += 1
+    }
+
+    /// Walks each folder that gained or lost a file. The move notice stays when the walks finish.
+    private func rescanMovedFolders(_ prefixes: [String], notice done: String) async {
+        guard !prefixes.isEmpty else {
+            notice = done
+            return
+        }
+        guard !rescanBusy else {
+            notice = done
+            return
+        }
+        rescanBusy = true
+        rescanGeneration += 1
+        let generation = rescanGeneration
+        var catalogued = true
+        for folder in prefixes {
+            guard generation == rescanGeneration else { return }
+            rescanMeter = TouchupMeter(title: "Rescanning \(folder)", done: 0, total: 0, fraction: nil)
+            let ok = await runFolderRescan(generation: generation, folder: folder, announce: false, reloadGrid: false)
+            if !ok {
+                catalogued = false
+                break
+            }
+        }
+        guard generation == rescanGeneration else { return }
+        rescanMeter = nil
+        rescanBusy = false
+        let line = catalogued ? done : done + " The folder was not rescanned."
+        notice = line
+        // A cursor refresh of the page on screen misses files the scan just added, and keeps a page that lost files.
+        resetFolderPages()
+        await reload(media: "photo")
+        notice = line
+    }
+
+    private func runFolderRescan(generation: Int, folder: String, announce: Bool = true, reloadGrid: Bool = true) async -> Bool {
         switch await client.startFolderRescan(prefix: folder) {
         case .unsupported:
-            finishRescan(generation: generation, notice: "This helper cannot rescan a folder yet.")
+            if announce {
+                finishRescan(generation: generation, notice: "This helper cannot rescan a folder yet.")
+            }
+            return false
         case .busy:
-            finishRescan(generation: generation, notice: "A folder rescan is already running.")
+            if announce {
+                finishRescan(generation: generation, notice: "A folder rescan is already running.")
+            }
+            return false
         case .offline:
-            finishRescan(generation: generation, notice: "The folder was not rescanned.")
+            if announce {
+                finishRescan(generation: generation, notice: "The folder was not rescanned.")
+            }
+            return false
         case .status:
-            await followFolderRescan(generation: generation, folder: folder)
+            return await followFolderRescan(generation: generation, folder: folder, announce: announce, reloadGrid: reloadGrid)
         }
     }
 
-    private func followFolderRescan(generation: Int, folder: String) async {
+    private func followFolderRescan(generation: Int, folder: String, announce: Bool = true, reloadGrid: Bool = true) async -> Bool {
         var misses = 0
         var lastAdded = -1
         var lastRemoved = -1
@@ -1108,10 +1539,10 @@ final class LibraryBrowser {
             switch await client.folderRescanStatus() {
             case .status(let status):
                 misses = 0
-                guard generation == rescanGeneration else { return }
+                guard generation == rescanGeneration else { return false }
                 applyRescanMeter(status, folder: folder)
                 let changed = status.added != lastAdded || status.removed != lastRemoved
-                if changed, displayFolder == folder, Date().timeIntervalSince(lastReload) > 2 {
+                if reloadGrid, changed, displayFolder == folder, Date().timeIntervalSince(lastReload) > 2 {
                     lastAdded = status.added
                     lastRemoved = status.removed
                     lastReload = Date()
@@ -1121,28 +1552,37 @@ final class LibraryBrowser {
                     try? await Task.sleep(for: .milliseconds(500))
                     continue
                 }
-                if displayFolder == folder {
+                if reloadGrid, displayFolder == folder {
                     await reload(media: "photo")
                 }
                 if status.runState == "failed" {
                     let line = status.error == "prefix" ? "That folder cannot be rescanned." : "The folder was not rescanned."
-                    finishRescan(generation: generation, notice: line)
-                } else {
+                    if announce {
+                        finishRescan(generation: generation, notice: line)
+                    }
+                    return false
+                }
+                if announce {
                     finishRescan(generation: generation, notice: rescanFinishedNotice(added: status.added, removed: status.removed))
                 }
-                return
+                return true
             case .unsupported:
-                finishRescan(generation: generation, notice: "This helper cannot rescan a folder yet.")
-                return
+                if announce {
+                    finishRescan(generation: generation, notice: "This helper cannot rescan a folder yet.")
+                }
+                return false
             case .busy, .offline:
                 misses += 1
                 if misses >= 5 {
-                    finishRescan(generation: generation, notice: "The folder was not rescanned.")
-                    return
+                    if announce {
+                        finishRescan(generation: generation, notice: "The folder was not rescanned.")
+                    }
+                    return false
                 }
                 try? await Task.sleep(for: .milliseconds(500))
             }
         }
+        return false
     }
 
     private func applyRescanMeter(_ status: FolderScanStatus, folder: String) {
@@ -1624,7 +2064,7 @@ final class LibraryBrowser {
 
     /// Journal-moves each file into Photos/_Removed, one at a time. A failure leaves that file in place.
     func removeFromLibrary(_ assets: [LibraryAsset]) async {
-        guard !assets.isEmpty, !removalBusy, !dateBusy, !cleanBusy, !rescanBusy else { return }
+        guard !assets.isEmpty, !removalBusy, !dateBusy, !cleanBusy, !rescanBusy, !moveBusy else { return }
         removalBusy = true
         defer { removalBusy = false }
         var moved = 0
@@ -1763,18 +2203,49 @@ final class LibraryBrowser {
     /// The helper previews that same folder ahead of the rest of the library.
     func previewVisibleOne() async -> Bool {
         guard let asset = rows.first(where: needsVisiblePreview) else { return false }
+        await previewAsset(asset)
+        return true
+    }
+
+    /// Reduces the next still on a page that is not on screen. The page the user is looking at stays put.
+    func previewNextFolderStill() async -> Bool {
+        guard let asset = nextOffscreenPreview() else { return false }
+        await previewAsset(asset)
+        return true
+    }
+
+    /// Pages after the one on screen come first. Earlier pages follow.
+    private func nextOffscreenPreview() -> LibraryAsset? {
+        guard !stillPages.isEmpty else { return nil }
+        let current = min(max(folderPage, 0), stillPages.count - 1)
+        var order: [[LibraryAsset]] = []
+        if current + 1 < stillPages.count {
+            order.append(contentsOf: stillPages[(current + 1)...])
+        }
+        if current > 0 {
+            order.append(contentsOf: stillPages[..<current])
+        }
+        for page in order {
+            if let asset = page.first(where: needsVisiblePreview) {
+                return asset
+            }
+        }
+        return nil
+    }
+
+    private func previewAsset(_ asset: LibraryAsset) async {
         previewTried.insert(asset.uid)
-        guard let url = fileURL(for: asset) else { return true }
+        guard let url = fileURL(for: asset) else { return }
         let facts: Data
         do {
             facts = try MacCheckpoint.payloads(for: url).facts
         } catch {
-            return true
+            return
         }
         do {
-            guard try await client.putFacts(uid: asset.uid, body: facts) == 200 else { return true }
+            guard try await client.putFacts(uid: asset.uid, body: facts) == 200 else { return }
         } catch {
-            return true
+            return
         }
         var updated = asset
         let prefix = String(asset.uid.prefix(2))
@@ -1784,7 +2255,6 @@ final class LibraryBrowser {
         }
         replace(updated)
         await storePreview(for: updated)
-        return true
     }
 
     private func needsVisiblePreview(_ asset: LibraryAsset) -> Bool {
@@ -2089,6 +2559,9 @@ final class LibraryBrowser {
     var previewStatus: String? {
         if awaitsPreviews {
             return "Reduced previews are still being written. These squares fill in as each one is stored."
+        }
+        if stillPages.contains(where: { $0.contains(where: needsVisiblePreview) }) {
+            return "Making previews for the rest of this folder."
         }
         if rows.contains(where: { isStill($0) && $0.thumbRel == nil && $0.decodeSupport != nil }) {
             return "Some photos are over 32 million pixels or could not be reduced. Those squares stay empty."

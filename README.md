@@ -1,6 +1,6 @@
 # ZImage
 
-ZImager 1.8.1 is the app. It is one window. Disk is the editor. Server is the library. The separate ZImage editor and ZImage Library are no longer in this project.
+ZImager 1.8.2 is the app. It is one window. Disk is the editor. Server is the library. The separate ZImage editor and ZImage Library are no longer in this project.
 
 `DESIGN.md` is the plan. `STATUS.md` is the iteration log, newest first.
 
@@ -9,6 +9,16 @@ ZImager 1.8.1 is the app. It is one window. Disk is the editor. Server is the li
 Reorganize, Review, and Duplicates do not work yet. Using them can lose photos. Leave those controls alone. Do not press Start, Pause, Continue, Find duplicates, or Delete all duplicates.
 
 Disk, and Server browsing of a folder, are the parts to use. Rotate, paste, export, print, and the image adjustments save the photo and rebuild its preview.
+
+## What 1.8.2 changes
+
+Server Folder view can move the selected files into a folder you name. The panel sits under Date. Its title is "Move selected files to specified Folder". Type a name and press Move to Folder. The checkbox "Sub-folder of this folder" starts unchecked. Unchecked, the folder is created under Photos. Typing Miracle while Blogger 1600 is open creates Photos/Miracle and moves the selected files there. Checked, the folder is created inside the folder on screen, so that same name becomes Photos/Blogger 1600/Miracle. A file already in the destination stays where it is. Two files with the same name become name-2. The names _Removed, _Duplicates, and _Review are refused. After the move, the folder on screen is read again, and a new folder shows in the left tree without quitting.
+
+When the folder on screen is Photos/_Removed, the name field, Find, and Clear filter are replaced by Delete ALL. It asks "Are you sure, all _Removed photos will be deleted from the server?" Yes deletes every file in that folder, including files in subfolders, and leaves the folder. Photos/_RemovedExtra is left alone. The grid clears when the folder is empty.
+
+While a folder is open, previews keep filling in for the rest of that folder after the page on screen is done. The slider line says "Making previews for the rest of this folder."
+
+The helper is unchanged. This disk image does not include it. 1.8.1 behavior below is still in this app.
 
 ## What 1.8.1 changes
 
@@ -20,7 +30,7 @@ When a folder has more than 200 photos, a panel above Date shows the count, for 
 
 Previews on the second page and later fill in after you change pages. The page on screen is reduced before the rest of the folder. Going back keeps previews that were already made.
 
-The helper source accepts a name on the asset list. The binary on the NAS was not replaced. Find does not need that replacement: it still reads every page and keeps file names that match. There is no disk image for 1.8.1 yet. 1.8.0 behavior below is still in this app.
+The helper source accepts a name on the asset list. The binary on the NAS was not replaced. Find does not need that replacement: it still reads every page and keeps file names that match. 1.8.0 behavior below is still in this app.
 
 ## What 1.8.0 changes
 
@@ -82,7 +92,7 @@ Clean folder is in the Server three-bar menu. It removes catalog records in the 
 
 ## Install ZImager
 
-The disk image is `Releases/ZImager-1.8.0-macOS.dmg`. It contains `ZImager.app` and `README.txt`. 1.8.1 is not in that image yet.
+The disk image is `Releases/ZImager-1.8.2-macOS.dmg`. It contains `ZImager.app` and `README.txt`.
 
 1. Open the disk image.
 2. Drag **ZImager.app** into Applications.

@@ -1,0 +1,75 @@
+ZImager 1.8.2
+
+ZImager is the photo editor and the library in one app.
+Disk opens folders on this Mac. Server talks to a helper on a Synology.
+
+This disk image contains ZImager.app and this README. It does not
+include the helper.
+
+What 1.8.2 changes
+------------------
+Server Folder view can move the selected files into a folder you name.
+The panel sits under Date. Its title is "Move selected files to
+specified Folder". Type a name and press Move to Folder. The checkbox
+"Sub-folder of this folder" starts unchecked. Unchecked, the folder is
+created under Photos. Typing Miracle while Blogger 1600 is open creates
+Photos/Miracle and moves the selected files there. Checked, the folder
+is created inside the folder on screen, so that same name becomes
+Photos/Blogger 1600/Miracle. A file already in the destination stays
+where it is. Two files with the same name become name-2. The names
+_Removed, _Duplicates, and _Review are refused. After the move, the
+folder on screen is read again, and a new folder shows in the left tree
+without quitting.
+
+When the folder on screen is Photos/_Removed, the name field, Find, and
+Clear filter are replaced by Delete ALL. It asks "Are you sure, all
+_Removed photos will be deleted from the server?" Yes deletes every
+file in that folder, including files in subfolders, and leaves the
+folder. Photos/_RemovedExtra is left alone. The grid clears when the
+folder is empty.
+
+While a folder is open, previews keep filling in for the rest of that
+folder after the page on screen is done. The slider line says "Making
+previews for the rest of this folder."
+
+The helper is unchanged. This disk image does not include it.
+
+1.8.1 and 1.8.0 are still in this app: Red Eye, a folder name filter,
+pages past 200 photos, later-page previews, fast Spot and Scratch
+repair, Flatten, and Rescan. 1.7.2, 1.7.1, 1.7.0, and 1.6.0 are still
+here too: in-app video with graded export, Horizon, stacked spot
+repairs, ZImager as the only app, Folder View and Edit View, arrow keys
+between photos, folder Export and Print, Copy settings and Paste
+settings, Tone Auto and Reset, Spectrum, Remove from library into
+Photos/_Removed, and Set date into the date folder.
+
+This build is Apple Silicon. It runs on macOS 26. It does not require
+macOS 27.
+
+Do not use Reorganize, Review, or Duplicates
+---------------------------------------------
+Those three do not work yet. Using them can lose photos.
+Leave Reorganize, Review, and Duplicates alone.
+Do not press Start, Pause, Continue, Find duplicates, or Delete all duplicates.
+
+Install
+-------
+1. Open this disk image.
+2. Drag ZImager.app into Applications.
+3. Follow Approval below once.
+
+Approval
+--------
+ZImager is built by Tom Zimmer on his Mac using Apple's development tools.
+It is not notarized for distribution. macOS asks you to approve it once
+before it will run.
+
+1. Double-click ZImager.app.
+2. macOS says Apple could not verify that ZImager is free of malware.
+   Close that dialog.
+3. Open System Settings → Privacy & Security.
+4. Scroll to Security until you see that ZImager was blocked.
+5. Click Open Anyway.
+6. Confirm Open Anyway again if asked, then enter your password.
+
+After that, double-click ZImager and it will run.

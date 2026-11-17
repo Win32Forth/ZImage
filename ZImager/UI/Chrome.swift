@@ -4299,6 +4299,11 @@ struct Chrome: View {
     private var diskMode: Bool { sourceMode != "server" }
     private var showsImage: Bool { diskMode ? !model.showsFolderGrid : !serverShowsFolder }
     /// The Photos folder grid. Review and Duplicates keep the date column as it is.
+    private var showsServerMovePanel: Bool {
+        !diskMode && !showsImage && !showsEvents && !showsReorg
+            && (librarySection ?? "Photos") == "Photos"
+    }
+
     private var showsServerFolderPager: Bool {
         !diskMode && !showsImage && !showsEvents && !showsReorg
             && (librarySection ?? "Photos") == "Photos"
@@ -4365,6 +4370,12 @@ struct Chrome: View {
                                     .frame(height: 1)
                             }
                             DateInspector(browser: browser)
+                            if showsServerMovePanel {
+                                Rectangle()
+                                    .fill(ChromePalette.hairline)
+                                    .frame(height: 1)
+                                MoveFolderPanel(browser: browser)
+                            }
                         }
                         .frame(width: 280, alignment: .top)
                         .frame(maxHeight: .infinity, alignment: .top)

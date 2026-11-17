@@ -14,6 +14,12 @@ Each entry uses this shape:
 - Scope: design section or PR name
 - Notes: facts, decisions, and the next step
 
+## 2026-11-17 — ZImager 1.8.2
+
+- Status: done
+- Scope: ZImager 1.8.2. Move to Folder, Delete ALL on Photos/_Removed, folder-tree refresh, and previews for the rest of the open folder. The helper is unchanged.
+- Notes: Marketing version 1.8.2 is on the ZImager target. The test target stays 1.0. `CURRENT_PROJECT_VERSION` stays 1. Server Folder view, under Date, has "Move selected files to specified Folder", a folder field, the checkbox "Sub-folder of this folder" (unchecked), and Move to Folder. Unchecked creates the named folder under Photos. Checked creates it inside the folder on screen. A file already in the destination stays put. Same names become name-2. The names _Removed, _Duplicates, and _Review are refused. After the move the folder on screen is read from the start, and a new folder shows in the left tree. Photos/_Removed replaces Find with Delete ALL. Yes deletes every file under that folder, including subfolders, leaves the folder, and clears the grid. Photos/_RemovedExtra is left alone. After the page on screen has previews, the rest of that folder keeps filling in. The slider line says "Making previews for the rest of this folder." The disk image is `Releases/ZImager-1.8.2-macOS.dmg`, sha256 `ae66c141fa072ea29492e964a7b6700a5b6c46153edb19826086007407f5b5bb`, and it does not include the helper. Reorganize, Review, and Duplicates still do not work and can lose photos. Leave them alone. Release builds arm64 only. The deployment target stays macOS 26.0.
+
 ## 2026-11-16 — Folder pages and a name filter
 
 - Status: done
