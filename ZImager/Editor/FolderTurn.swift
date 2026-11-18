@@ -41,6 +41,40 @@ enum GridSelection {
     }
 }
 
+/// Click order for a two-photo merge. The first entry is the left or the top.
+enum SelectionOrder {
+    static func update(
+        previous: [String],
+        gridOrder: [String],
+        anchor: String?,
+        clicked: String,
+        shift: Bool,
+        extend: Bool,
+        keys: Set<String>
+    ) -> [String] {
+        guard !keys.isEmpty else { return [] }
+        if extend {
+            var order = previous.filter { keys.contains($0) }
+            if keys.contains(clicked), !order.contains(clicked) {
+                order.append(clicked)
+            }
+            return order
+        }
+        if shift,
+           let anchor,
+           keys.contains(anchor),
+           let start = gridOrder.firstIndex(of: anchor),
+           let end = gridOrder.firstIndex(of: clicked) {
+            if start <= end {
+                return Array(gridOrder[start...end]).filter { keys.contains($0) }
+            }
+            let toward = Array(gridOrder[end..<start].reversed())
+            return ([anchor] + toward).filter { keys.contains($0) }
+        }
+        return keys.contains(clicked) ? [clicked] : []
+    }
+}
+
 struct CatalogEditTarget: Sendable, Equatable {
     var uid: String
     var relativePath: String

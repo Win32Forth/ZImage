@@ -829,6 +829,8 @@ struct FolderBrowser: View {
     @Bindable var model: EditorModel
     /// False while Server is showing. The grid stays mounted so its offset can return.
     var onScreen = true
+    @State private var renameEntry: FolderEntry?
+    @State private var renameName = ""
 
     var body: some View {
         VStack(spacing: 0) {
@@ -891,6 +893,29 @@ struct FolderBrowser: View {
         .background(ChromePalette.panel)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("Folder grid")
+        .alert("Rename", isPresented: renamePresented) {
+            TextField("File name", text: $renameName)
+            Button("Rename") {
+                let entry = renameEntry
+                let typed = renameName
+                renameEntry = nil
+                if let entry, !model.showsDiskMergePreview {
+                    model.renameFolderEntry(entry, to: typed)
+                }
+            }
+            Button("Cancel", role: .cancel) {
+                renameEntry = nil
+            }
+        } message: {
+            Text("The file stays in this folder.")
+        }
+    }
+
+    private var renamePresented: Binding<Bool> {
+        Binding(
+            get: { renameEntry != nil },
+            set: { if !$0 { renameEntry = nil } }
+        )
     }
 
     private var folderKey: String? {
@@ -980,6 +1005,15 @@ struct FolderBrowser: View {
                         }
                     }
                 }
+            }
+            if !entry.isDirectory, !model.showsDiskMergePreview {
+                Button(LibraryItemMenu.rename) {
+                    renameName = entry.name
+                    renameEntry = entry
+                }
+                .disabled(model.folderRotateBusy || model.exportBusy || model.mergePreviewBusy)
+                .accessibilityIdentifier("Rename")
+                .help("Gives this file a new name in the same folder.")
             }
             Divider()
             Button("Copy settings") {

@@ -1,14 +1,30 @@
 # ZImage
 
-ZImager 1.8.2 is the app. It is one window. Disk is the editor. Server is the library. The separate ZImage editor and ZImage Library are no longer in this project.
+ZImager 1.8.3 is the app. It is one window. Disk is the editor. Server is the library. The separate ZImage editor and ZImage Library are no longer in this project.
 
 `DESIGN.md` is the plan. `STATUS.md` is the iteration log, newest first.
 
 ## Do not use yet
 
-Reorganize, Review, and Duplicates do not work yet. Using them can lose photos. Leave those controls alone. Do not press Start, Pause, Continue, Find duplicates, or Delete all duplicates.
+Reorganize, Review, and Duplicates do not work yet. Using them can lose photos. The Events and Reorganize buttons are hidden until those tools are ready. Leave Reorganize, Review, and Duplicates alone. Do not press Start, Pause, Continue, Find duplicates, or Delete all duplicates.
 
 Disk, and Server browsing of a folder, are the parts to use. Rotate, paste, export, print, and the image adjustments save the photo and rebuild its preview.
+
+## What 1.8.3 changes
+
+Folder view, on Disk and on Server, can join two still photos into one TIFF. Select exactly two photos in the same folder. The panel is "Merge two photos", under Move selected files. Choose Horizontal or Vertical. The first photo you click is the left side, or the top. The second is the right side, or the bottom. A sideways pair stays sideways. Preview starts the two photos flush, edge to edge, so you line up the seam yourself.
+
+Preview opens over the folder. Arrow keys move the second photo one pixel at a time: left, right, up, and down. Shift-arrow is also one pixel. Click zooms in at the pointer. Option-click zooms out, and it stops when the whole join fits. Hold Space and drag to move the whole picture. The two photos keep the placement you set. Fit shows the whole join. 100% shows one image pixel per point, centered on the seam, and clicking 100% again recenters. Changing Horizontal or Vertical returns to a flush join. Cancel closes the preview and writes nothing.
+
+Merge writes an 8-bit TIFF in the same folder and leaves the two originals. The name is the first file's name, a hyphen, and the second file's name, with `.tiff`. If that name is taken, the file is `{name}-2.tiff`, then `-3`, up through `-999`. An overlap is blended. A gap along the join stays black. A slide past the edge fills the clear band from the nearest pixels of the photo.
+
+After the merge is accepted, right-click a file in Folder view and choose Rename. Rename is hidden while the preview is up. The file stays in that folder. A name that is already there is refused. An empty name, ".", "..", a slash, a colon, or a name the file system will not take is refused. A change of capitalization only is allowed.
+
+Disk Folder view has the same Move panel as Server. It sits between Date and Merge. The title is "Move selected files to specified Folder". The checkbox "Sub-folder of this folder" starts unchecked. Unchecked, the named folder is created under the folder you opened, the root of the tree. Checked, it is created inside the folder on screen. A file already in the destination stays where it is. Two files with the same name become name-2. The names _Removed, _Duplicates, and _Review are refused. The folder list reloads, and a new folder shows in the left tree. This move does not use the helper.
+
+The Events button and the Reorganize button are hidden. Those tools are not ready. Geometry keystone is unchanged. Vertical still changes the top and bottom edges. Horizontal still changes the left and right edges.
+
+The helper is unchanged. This disk image does not include it. 1.8.2 behavior below is still in this app.
 
 ## What 1.8.2 changes
 
@@ -92,7 +108,7 @@ Clean folder is in the Server three-bar menu. It removes catalog records in the 
 
 ## Install ZImager
 
-The disk image is `Releases/ZImager-1.8.2-macOS.dmg`. It contains `ZImager.app` and `README.txt`.
+The disk image is `Releases/ZImager-1.8.3-macOS.dmg`. It contains `ZImager.app` and `README.txt`.
 
 1. Open the disk image.
 2. Drag **ZImager.app** into Applications.

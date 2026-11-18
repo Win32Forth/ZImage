@@ -14,6 +14,12 @@ Each entry uses this shape:
 - Scope: design section or PR name
 - Notes: facts, decisions, and the next step
 
+## 2026-11-17 — ZImager 1.8.3
+
+- Status: done
+- Scope: ZImager 1.8.3. Merge two photos, Rename in Folder view, and Move to Folder on Disk. The Events and Reorganize buttons are hidden. Geometry keystone is unchanged. The helper is unchanged.
+- Notes: Marketing version 1.8.3 is on the ZImager target. The test target stays 1.0. `CURRENT_PROJECT_VERSION` stays 1. Folder view on Disk and on Server joins exactly two stills from the same folder. The panel is "Merge two photos", under Move selected files. The first photo clicked is the left or the top. The second is the right or the bottom. Preview starts flush. Arrow keys move the second photo one pixel. Shift-arrow is also one pixel. Click zooms in. Option-click zooms out and stops at fit. Space-drag moves the whole picture and keeps the placement. Fit and 100% are on the preview. 100% is one point per pixel, centered on the seam, and a second click recenters. Merge writes an 8-bit TIFF in that folder named `{first}-{second}.tiff`. A taken name becomes `{name}-2.tiff` through `-999`. The originals stay. After the merge is accepted, right-click Rename changes the clicked file's name in the same folder. A taken name is refused. Disk Folder view has the same Move panel as Server, between Date and Merge. Unchecked creates the named folder under the opened tree root. Checked creates it inside the folder on screen. A file already there stays. Same names become name-2. The names _Removed, _Duplicates, and _Review are refused. The folder list reloads and the left tree shows the new folder. That move does not call the helper. The Events and Reorganize buttons are hidden. Reorganize, Review, and Duplicates still do not work and can lose photos. Leave them alone. Vertical keystone still changes the top and bottom edges. Horizontal keystone still changes the left and right edges. The disk image is `Releases/ZImager-1.8.3-macOS.dmg`, sha256 `cf273e50b5f2fc932cdcc91a332517a8484f1326831fb424ac32f9c2fb4bc8bb`, and it does not include the helper. Release builds arm64 only. The deployment target stays macOS 26.0.
+
 ## 2026-11-17 — ZImager 1.8.2
 
 - Status: done

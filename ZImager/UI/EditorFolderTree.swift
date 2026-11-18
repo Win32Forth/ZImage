@@ -88,6 +88,10 @@ struct EditorFolderTree: View {
         .onChange(of: model.folderURL.map(EditorFolderScan.key)) { _, _ in
             Task { await reveal(model.folderURL) }
         }
+        .onChange(of: model.folderTreeRevision) { _, _ in
+            let parents = model.folderTreeParents
+            Task { await reload(parents) }
+        }
     }
 
     private func visibleRows(root: URL) -> [(node: EditorFolderNode, depth: Int)] {
@@ -160,6 +164,15 @@ struct EditorFolderTree: View {
         }
         expanded.insert(node.id)
         Task { await load(node.url) }
+    }
+
+    /// Rereads parents that are already on screen. A collapsed parent loads when it opens.
+    private func reload(_ parents: [URL]) async {
+        for directory in parents {
+            let key = EditorFolderScan.key(directory)
+            guard children[key] != nil || expanded.contains(key) else { continue }
+            await load(directory)
+        }
     }
 
     private func load(_ directory: URL) async {

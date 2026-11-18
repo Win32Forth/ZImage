@@ -11,6 +11,8 @@ struct LibraryGrid: View {
     /// The grid is on screen. Hiding it keeps the scroll offset.
     var onScreen = true
     @State private var confirmsRemovedDelete = false
+    @State private var renameAsset: LibraryAsset?
+    @State private var renameName = ""
 
     private var columns: [GridItem] {
         [GridItem(.adaptive(minimum: browser.previewPoints + 24), spacing: 16)]
@@ -31,7 +33,7 @@ struct LibraryGrid: View {
                         libraryPushButton("Rescan", identifier: "Rescan Folder") {
                             browser.rescanDisplayFolder()
                         }
-                        .disabled(browser.rescanBusy || browser.removalBusy || browser.dateBusy || browser.cleanBusy || browser.moveBusy)
+                        .disabled(browser.rescanBusy || browser.removalBusy || browser.dateBusy || browser.cleanBusy || browser.moveBusy || browser.mergeBusy)
                         .help("Adds new files in this folder and its subfolders, and removes catalog records whose files are gone.")
                     }
                     Text(browser.displayFolder)
@@ -45,7 +47,7 @@ struct LibraryGrid: View {
                         libraryPushButton("Delete ALL", identifier: "Delete ALL") {
                             confirmsRemovedDelete = true
                         }
-                        .disabled(browser.removalBusy || browser.rescanBusy || browser.dateBusy || browser.cleanBusy || browser.moveBusy)
+                        .disabled(browser.removalBusy || browser.rescanBusy || browser.dateBusy || browser.cleanBusy || browser.moveBusy || browser.mergeBusy)
                         .help("Deletes every file in Photos/_Removed from the server.")
                     } else {
                         FolderNameFilterBar(
@@ -106,7 +108,7 @@ struct LibraryGrid: View {
             .modifier(KeptScroll(
                 visible: onScreen,
                 key: "\(media ?? "")|\(browser.displayFolder)|\(browser.folderPage)",
-                holdOffset: browser.removalBusy || browser.dateBusy || browser.cleanBusy || browser.rescanBusy || browser.moveBusy
+                holdOffset: browser.removalBusy || browser.dateBusy || browser.cleanBusy || browser.rescanBusy || browser.moveBusy || browser.mergeBusy
             ))
         }
         .background(ChromePalette.panel)
@@ -129,6 +131,22 @@ struct LibraryGrid: View {
             }
             Button("No", role: .cancel) {}
         }
+        .alert("Rename", isPresented: renamePresented) {
+            TextField("File name", text: $renameName)
+            Button("Rename") {
+                let asset = renameAsset
+                let typed = renameName
+                renameAsset = nil
+                if let asset, !model.showsServerMergePreview {
+                    browser.rename(asset, to: typed)
+                }
+            }
+            Button("Cancel", role: .cancel) {
+                renameAsset = nil
+            }
+        } message: {
+            Text("The file stays in this folder.")
+        }
         .task(id: "\(media ?? "")|\(browser.displayFolder)|\(browser.nameFilter)|\(live)") {
             guard live else { return }
             await browser.showFocus()
@@ -149,6 +167,13 @@ struct LibraryGrid: View {
                 }
             }
         }
+    }
+
+    private var renamePresented: Binding<Bool> {
+        Binding(
+            get: { renameAsset != nil },
+            set: { if !$0 { renameAsset = nil } }
+        )
     }
 
     /// Stays in the tree when the text is empty so the scroll view keeps its identity.
@@ -254,6 +279,20 @@ struct LibraryGrid: View {
                     }
                 }
             }
+            if !model.showsServerMergePreview {
+                Button(LibraryItemMenu.rename) {
+                    renameName = browser.filename(for: asset)
+                    renameAsset = asset
+                }
+                .disabled(
+                    browser.fileURL(for: asset) == nil
+                        || browser.removalBusy || browser.dateBusy || browser.cleanBusy
+                        || browser.rescanBusy || browser.moveBusy || browser.mergeBusy
+                        || model.mergePreviewBusy
+                )
+                .accessibilityIdentifier("Rename")
+                .help("Gives this file a new name in the same folder.")
+            }
             Divider()
             Button("Copy settings") {
                 if let url = browser.fileURL(for: asset) {
@@ -270,7 +309,7 @@ struct LibraryGrid: View {
                 let targets = browser.libraryRemovalTargets(clicked: asset)
                 Task { await browser.removeFromLibrary(targets) }
             }
-            .disabled(browser.removalBusy || browser.dateBusy || browser.cleanBusy || browser.rescanBusy || browser.moveBusy || browser.libraryRemovalTargets(clicked: asset).isEmpty)
+            .disabled(browser.removalBusy || browser.dateBusy || browser.cleanBusy || browser.rescanBusy || browser.moveBusy || browser.mergeBusy || browser.libraryRemovalTargets(clicked: asset).isEmpty)
             Divider()
             Text(browser.sizeLabel(for: asset))
         }

@@ -207,6 +207,135 @@ final class FolderBrowserTests: XCTestCase {
         XCTAssertEqual(EditorFolderScan.childFolders(of: root).map(\.name), ["child"])
     }
 
+    @MainActor
+    func testRenameKeepsTheFileInItsFolderAndUpdatesTheSelection() throws {
+        XCTAssertEqual(LibraryItemMenu.rename, "Rename")
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("zimage-rename-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("Left-Right.tiff")
+        let other = root.appendingPathComponent("kept.tiff")
+        try Data("merged".utf8).write(to: source)
+        try Data("other".utf8).write(to: other)
+        let entry = FolderEntry(url: source, name: source.lastPathComponent, isDirectory: false)
+        let neighbor = FolderEntry(url: other, name: other.lastPathComponent, isDirectory: false)
+        let model = EditorModel()
+        model.folderEntries = [entry, neighbor]
+        model.selectFolderEntry(entry, shift: false)
+
+        model.renameFolderEntry(entry, to: "  panorama.tiff  ")
+        let renamed = root.appendingPathComponent("panorama.tiff")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: renamed.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: source.path))
+        XCTAssertEqual(model.folderEntries.map(\.name), ["panorama.tiff", "kept.tiff"])
+        XCTAssertEqual(model.selectedFolderKey, FolderEntry.cacheKey(for: renamed))
+        XCTAssertEqual(model.folderRotateNote, "Renamed to panorama.tiff.")
+        XCTAssertEqual(try Data(contentsOf: renamed), Data("merged".utf8))
+
+        let current = try XCTUnwrap(model.folderEntries.first)
+        model.renameFolderEntry(current, to: "kept.tiff")
+        XCTAssertEqual(model.folderRotateNote, "A file named kept.tiff is already in this folder.")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: renamed.path))
+        XCTAssertEqual(try Data(contentsOf: other), Data("other".utf8))
+
+        model.renameFolderEntry(current, to: "panorama.tiff")
+        XCTAssertEqual(model.folderEntries.map(\.name), ["panorama.tiff", "kept.tiff"])
+
+        model.renameFolderEntry(current, to: "Panorama.tiff")
+        let cased = root.appendingPathComponent("Panorama.tiff")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: cased.path))
+        XCTAssertEqual(model.folderEntries.first?.name, "Panorama.tiff")
+
+        XCTAssertEqual(FileRename.cleaned(""), .failure(.empty))
+        XCTAssertEqual(FileRename.cleaned("a/b.tiff"), .failure(.invalid))
+        XCTAssertEqual(FileRename.cleaned("a:b.tiff"), .failure(.invalid))
+        XCTAssertEqual(
+            FileRename.relocatedPath("Photos/Blogger 1600/Left-Right.tiff", fileName: "panorama.tiff"),
+            "Photos/Blogger 1600/panorama.tiff"
+        )
+    }
+
+    func testDiskMoveLandsUnderTheOpenedRootUnlessItIsASubfolder() throws {
+        let root = URL(fileURLWithPath: "/tmp/Pictures")
+        let open = root.appendingPathComponent("Vacation")
+        let photo = open.appendingPathComponent("a.jpg")
+        let nested = open.appendingPathComponent("Day").appendingPathComponent("b.jpg")
+        let outside = root.appendingPathComponent("Other").appendingPathComponent("c.jpg")
+        XCTAssertEqual(
+            FolderMove.diskDestination(root: root, openFolder: open, file: photo, folderName: " Album ", subfolder: false)?.path,
+            root.appendingPathComponent("Album").path
+        )
+        XCTAssertEqual(
+            FolderMove.diskDestination(root: root, openFolder: open, file: nested, folderName: "Album", subfolder: true)?.path,
+            open.appendingPathComponent("Album").path
+        )
+        XCTAssertNil(FolderMove.diskDestination(root: root, openFolder: open, file: outside, folderName: "Album", subfolder: false))
+        XCTAssertNil(FolderMove.diskDestination(root: root, openFolder: open, file: photo, folderName: "_Removed", subfolder: false))
+        XCTAssertNil(FolderMove.diskDestination(root: root, openFolder: open, file: photo, folderName: "A/B", subfolder: true))
+
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("zimage-disk-move-\(UUID().uuidString)", isDirectory: true)
+        let sourceFolder = directory.appendingPathComponent("Vacation", isDirectory: true)
+        let album = directory.appendingPathComponent("Album", isDirectory: true)
+        try FileManager.default.createDirectory(at: sourceFolder, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: album, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let first = sourceFolder.appendingPathComponent("a.jpg")
+        let second = sourceFolder.appendingPathComponent("b.jpg")
+        try Data("a".utf8).write(to: first)
+        try Data("b".utf8).write(to: second)
+        try Data("kept".utf8).write(to: album.appendingPathComponent("a.jpg"))
+        let moved = FolderMove.perform(files: [
+            (first, album),
+            (second, album),
+            (album.appendingPathComponent("a.jpg"), album),
+        ])
+        XCTAssertEqual(moved.moved, 2)
+        XCTAssertEqual(moved.stayed, 1)
+        XCTAssertEqual(try Data(contentsOf: album.appendingPathComponent("a.jpg")), Data("kept".utf8))
+        XCTAssertEqual(try Data(contentsOf: album.appendingPathComponent("a-2.jpg")), Data("a".utf8))
+        XCTAssertEqual(try Data(contentsOf: album.appendingPathComponent("b.jpg")), Data("b".utf8))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: first.path))
+    }
+
+    @MainActor
+    func testDiskMoveRefreshesTheFolderAndTheTree() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("zimage-disk-tree-\(UUID().uuidString)", isDirectory: true)
+        let vacation = root.appendingPathComponent("Vacation", isDirectory: true)
+        try FileManager.default.createDirectory(at: vacation, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let photo = vacation.appendingPathComponent("a.jpg")
+        try Data("a".utf8).write(to: photo)
+        let model = EditorModel()
+        model.browseRoot = root
+        model.folderURL = vacation
+        let entry = FolderEntry(url: photo, name: photo.lastPathComponent, isDirectory: false)
+        model.folderEntries = [entry]
+        model.selectFolderEntry(entry, shift: false)
+        model.moveSelectedFolderFiles(to: "Album", subfolder: false)
+        try await waitUntil { model.folderRotateNote == "Moved 1 file to Album." }
+        let dest = root.appendingPathComponent("Album").appendingPathComponent("a.jpg")
+        XCTAssertEqual(try Data(contentsOf: dest), Data("a".utf8))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: photo.path))
+        XCTAssertEqual(model.folderTreeRevision, 1)
+        XCTAssertEqual(model.folderTreeParents.map { FolderEntry.cacheKey(for: $0) }, [FolderEntry.cacheKey(for: root)])
+        XCTAssertFalse(model.folderRotateBusy)
+        try await waitUntil { model.folderListingReady && !model.folderEntries.contains { $0.name == "a.jpg" } }
+
+        let again = vacation.appendingPathComponent("b.jpg")
+        try Data("b".utf8).write(to: again)
+        let second = FolderEntry(url: again, name: again.lastPathComponent, isDirectory: false)
+        model.folderEntries.append(second)
+        model.selectFolderEntry(second, shift: false)
+        model.moveSelectedFolderFiles(to: "Album", subfolder: true)
+        try await waitUntil { model.folderRotateNote == "Moved 1 file to Vacation/Album." }
+        XCTAssertEqual(try Data(contentsOf: vacation.appendingPathComponent("Album").appendingPathComponent("b.jpg")), Data("b".utf8))
+        XCTAssertEqual(model.folderTreeRevision, 2)
+        XCTAssertEqual(model.folderTreeParents.map { FolderEntry.cacheKey(for: $0) }, [FolderEntry.cacheKey(for: vacation)])
+    }
+
     func testFolderNameFilterMatchesPartOfTheFileName() {
         XCTAssertTrue(FolderNameFilter.matches("Red eye test.jpg", query: "Red"))
         XCTAssertTrue(FolderNameFilter.matches("red-eye-2.JPG", query: " red "))

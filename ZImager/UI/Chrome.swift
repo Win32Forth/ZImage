@@ -23,9 +23,44 @@ final class EditorModel {
     var selectedFolderKey: String?
     /// Shift-click fills this from the anchor. Control-click or Command-click toggles one photo.
     var selectedFolderKeys: Set<String> = []
+    /// Click order. The first id is the left or the top when two photos are merged.
+    var folderSelectionOrder: [String] = []
     var folderSelectionAnchor: String?
     var folderRotateBusy = false
     var folderRotateNote: String?
+    /// Bumped after a Disk move creates a folder, so the left tree rereads its parent.
+    var folderTreeRevision = 0
+    /// Parents of folders a Disk move just created.
+    var folderTreeParents: [URL] = []
+    /// The joined photo on screen. Nil until Preview has drawn it.
+    var mergePreviewImage: CGImage?
+    var mergePreviewRight = 0
+    var mergePreviewDown = 0
+    var mergePreviewAxis = PhotoMergeAxis.horizontal
+    /// True while the two photos are being read, or while Merge is writing the TIFF.
+    var mergePreviewBusy = false
+    /// Fit keeps the whole join in view. 100% is one point per pixel.
+    var mergePreviewFitted = true
+    /// Bumped each time 100% is chosen, so a second click recenters on the seam.
+    var mergePreviewActualToken = 0
+    /// Top-left of the first photo in the preview, in pixels. Y grows downward.
+    var mergePreviewFirstOrigin = CGPoint.zero
+    /// Pixel to center when 100% is chosen. Y grows downward.
+    var mergePreviewFocus = CGPoint.zero
+    /// Nil on Disk. The Server folder the preview was opened from.
+    private(set) var mergePreviewServerFolder: String?
+    static let mergePreviewingNote = "Previewing the join."
+    /// Clears the previewing note, or reports a photo that could not be read.
+    @ObservationIgnored
+    var onMergePreviewNote: ((String?) -> Void)?
+    private var mergePreviewFirst: CGImage?
+    private var mergePreviewSecond: CGImage?
+    private var mergePreviewFirstURL: URL?
+    private var mergePreviewSecondURL: URL?
+    private var mergePreviewDirectory: URL?
+    private var mergePreviewGeneration = 0
+    private var mergePreviewRenderToken = 0
+    private var mergePreviewRendering = false
     var folderListingReady = false
     var folderMessage: String?
     var showsFolderGrid = false
@@ -241,6 +276,7 @@ final class EditorModel {
 
     /// Sets the tree root and shows that folder's stills. The previous folder scope is released.
     func openFolder(at url: URL) {
+        cancelDiskMergePreview()
         releaseFolderScope()
         if url.startAccessingSecurityScopedResource() {
             folderScopeURL = url
@@ -259,6 +295,7 @@ final class EditorModel {
     /// Shows stills in one folder under the open tree. Subfolders stay in the tree.
     func selectBrowseFolder(_ url: URL) {
         guard isInsideFolderScope(url) else { return }
+        cancelDiskMergePreview()
         folderURL = url
         showsFolderGrid = true
         folderEntries = []
@@ -414,6 +451,158 @@ final class EditorModel {
 
     func showInFinder(_ entry: FolderEntry) {
         NSWorkspace.shared.activateFileViewerSelecting([entry.url])
+    }
+
+    /// Gives one folder file a new name in the folder it is already in.
+    func renameFolderEntry(_ entry: FolderEntry, to typed: String) {
+        guard !showsDiskMergePreview, !mergePreviewBusy, !folderRotateBusy, !exportBusy else {
+            folderRotateNote = "An export is already running."
+            return
+        }
+        guard !entry.isDirectory else { return }
+        switch FileRename.perform(source: entry.url, typed: typed) {
+        case .failure(let problem):
+            let label: String
+            if case .success(let cleaned) = FileRename.cleaned(typed) {
+                label = cleaned
+            } else {
+                label = typed
+            }
+            if let message = FileRename.message(for: problem, name: label) {
+                folderRotateNote = message
+            }
+        case .success(let dest):
+            let updated = FolderEntry(
+                url: dest,
+                name: dest.lastPathComponent,
+                isDirectory: false,
+                isVideo: entry.isVideo
+            )
+            if let index = folderEntries.firstIndex(where: { $0.id == entry.id }) {
+                folderEntries[index] = updated
+            }
+            let oldKey = entry.id
+            let newKey = updated.id
+            if selectedFolderKeys.contains(oldKey) {
+                selectedFolderKeys.remove(oldKey)
+                selectedFolderKeys.insert(newKey)
+            }
+            if selectedFolderKey == oldKey { selectedFolderKey = newKey }
+            if folderSelectionAnchor == oldKey { folderSelectionAnchor = newKey }
+            folderSelectionOrder = folderSelectionOrder.map { $0 == oldKey ? newKey : $0 }
+            if let jpeg = previewJPEGByPath.removeValue(forKey: oldKey) {
+                previewJPEGByPath[newKey] = jpeg
+            }
+            if let edited = editedPreviewData.removeValue(forKey: oldKey) {
+                editedPreviewData[newKey] = edited
+            }
+            if let pendingOpenURL, FolderEntry.cacheKey(for: pendingOpenURL) == oldKey {
+                self.pendingOpenURL = dest
+            }
+            if let sourceFileURL, FolderEntry.cacheKey(for: sourceFileURL) == oldKey {
+                self.sourceFileURL = dest
+            }
+            if let documentURL, FolderEntry.cacheKey(for: documentURL) == oldKey {
+                self.documentURL = dest
+            }
+            folderRotateNote = "Renamed to \(dest.lastPathComponent)."
+        }
+    }
+
+    /// Selected files in the Disk folder. Directories stay where they are.
+    func diskMoveTargets() -> [FolderEntry] {
+        folderEntries.filter { selectedFolderKeys.contains($0.id) && !$0.isDirectory }
+    }
+
+    /// Moves the selection into the named folder. Unchecked creates it under the opened root.
+    /// Checked creates it inside the folder on screen.
+    func moveSelectedFolderFiles(to typed: String, subfolder: Bool) {
+        guard !showsDiskMergePreview, !mergePreviewBusy, !folderRotateBusy, !exportBusy else {
+            folderRotateNote = "An export is already running."
+            return
+        }
+        guard let name = FolderMove.folderName(typed) else {
+            folderRotateNote = "Type a folder name."
+            return
+        }
+        guard let root = browseRoot, let open = folderURL else {
+            folderRotateNote = "Select a file to move."
+            return
+        }
+        let chosen = diskMoveTargets()
+        guard !chosen.isEmpty else {
+            folderRotateNote = "Select a file to move."
+            return
+        }
+        var items: [(source: URL, directory: URL)] = []
+        for entry in chosen {
+            guard let directory = FolderMove.diskDestination(
+                root: root,
+                openFolder: open,
+                file: entry.url,
+                folderName: name,
+                subfolder: subfolder
+            ) else { continue }
+            items.append((entry.url, directory))
+        }
+        guard !items.isEmpty else {
+            folderRotateNote = "Those files are not in this folder."
+            return
+        }
+        folderRotateBusy = true
+        let total = items.count
+        Task {
+            var moved = 0
+            var stayed = 0
+            var directories: [URL] = []
+            for (index, item) in items.enumerated() {
+                self.folderRotateNote = "Moving \(index + 1) of \(total) to \(item.directory.lastPathComponent)."
+                await Task.yield()
+                let step = await Task.detached {
+                    FolderMove.perform(files: [item])
+                }.value
+                moved += step.moved
+                stayed += step.stayed
+                for directory in step.directories {
+                    let key = FolderEntry.cacheKey(for: directory)
+                    if !directories.contains(where: { FolderEntry.cacheKey(for: $0) == key }) {
+                        directories.append(directory)
+                    }
+                }
+            }
+            stayed += chosen.count - items.count
+            self.folderRotateBusy = false
+            if moved > 0 {
+                self.noteDiskFoldersCreated(directories)
+                self.reloadFolderListing()
+            }
+            let labels = directories.map { self.diskPlaceLabel(root: root, directory: $0) }
+            let outcome = FolderMove.Outcome(moved: moved, stayed: stayed, directories: labels)
+            self.folderRotateNote = FolderMove.finishedNotice(name: name, outcome: outcome)
+        }
+    }
+
+    private func noteDiskFoldersCreated(_ directories: [URL]) {
+        var parents: [URL] = []
+        for directory in directories {
+            let parent = directory.deletingLastPathComponent()
+            let key = FolderEntry.cacheKey(for: parent)
+            if !parents.contains(where: { FolderEntry.cacheKey(for: $0) == key }) {
+                parents.append(parent)
+            }
+        }
+        folderTreeParents = parents
+        folderTreeRevision += 1
+    }
+
+    /// The destination named from the opened root, such as `Vacation/Album`.
+    private func diskPlaceLabel(root: URL, directory: URL) -> String {
+        let rootKey = FolderEntry.cacheKey(for: root)
+        let directoryKey = FolderEntry.cacheKey(for: directory)
+        if directoryKey.hasPrefix(rootKey + "/") {
+            return String(directoryKey.dropFirst(rootKey.count + 1))
+        }
+        return directory.lastPathComponent
     }
 
     /// File size for the folder menu, in Finder's decimal megabytes.
@@ -572,9 +761,276 @@ final class EditorModel {
             extend: extend,
             existing: selectedFolderKeys
         )
+        folderSelectionOrder = SelectionOrder.update(
+            previous: folderSelectionOrder,
+            gridOrder: order,
+            anchor: folderSelectionAnchor,
+            clicked: entry.id,
+            shift: shift,
+            extend: extend,
+            keys: choice.keys
+        )
         selectedFolderKeys = choice.keys
         folderSelectionAnchor = choice.anchor
         selectedFolderKey = choice.primary
+    }
+
+    /// The selected stills in click order. A photo chosen without a click follows the folder list.
+    func orderedMergeStills() -> [FolderEntry] {
+        let stills = folderEntries.filter { selectedFolderKeys.contains($0.id) && !$0.isDirectory && !$0.isVideo }
+        var ordered: [FolderEntry] = []
+        for id in folderSelectionOrder {
+            if let entry = stills.first(where: { $0.id == id }) {
+                ordered.append(entry)
+            }
+        }
+        for entry in stills where !ordered.contains(where: { $0.id == entry.id }) {
+            ordered.append(entry)
+        }
+        return ordered
+    }
+
+    func mergeFolderPair() -> (first: String, second: String)? {
+        let stills = orderedMergeStills()
+        guard stills.count == 2 else { return nil }
+        return (stills[0].name, stills[1].name)
+    }
+
+    var showsDiskMergePreview: Bool {
+        mergePreviewDirectory != nil && mergePreviewServerFolder == nil
+    }
+
+    var showsServerMergePreview: Bool {
+        mergePreviewServerFolder != nil
+    }
+
+    /// Shows the two Disk photos joined flush. Arrow keys move the second one.
+    func beginFolderMergePreview(axis: PhotoMergeAxis) {
+        guard !folderRotateBusy, !exportBusy else {
+            folderRotateNote = "An export is already running."
+            return
+        }
+        guard !mergePreviewBusy else { return }
+        let stills = orderedMergeStills()
+        guard stills.count == 2 else {
+            folderRotateNote = "Select two photos."
+            return
+        }
+        let first = stills[0].url
+        let second = stills[1].url
+        let folder1 = first.deletingLastPathComponent().standardizedFileURL.resolvingSymlinksInPath()
+        let folder2 = second.deletingLastPathComponent().standardizedFileURL.resolvingSymlinksInPath()
+        guard folder1 == folder2 else {
+            folderRotateNote = "Select two photos in the same folder."
+            return
+        }
+        let firstPath = first.standardizedFileURL.resolvingSymlinksInPath()
+        let secondPath = second.standardizedFileURL.resolvingSymlinksInPath()
+        guard firstPath != secondPath else {
+            folderRotateNote = "Select two different photos."
+            return
+        }
+        folderRotateNote = Self.mergePreviewingNote
+        beginMergePreview(first: first, second: second, directory: folder1, axis: axis, serverFolder: nil)
+    }
+
+    /// Shows the two photos joined flush. `serverFolder` is nil for a Disk folder.
+    func beginMergePreview(
+        first: URL,
+        second: URL,
+        directory: URL,
+        axis: PhotoMergeAxis,
+        serverFolder: String?
+    ) {
+        mergePreviewGeneration += 1
+        mergePreviewRenderToken += 1
+        let generation = mergePreviewGeneration
+        mergePreviewImage = nil
+        mergePreviewFirst = nil
+        mergePreviewSecond = nil
+        mergePreviewRight = 0
+        mergePreviewDown = 0
+        mergePreviewFitted = true
+        mergePreviewActualToken = 0
+        mergePreviewAxis = axis
+        mergePreviewFirstURL = first
+        mergePreviewSecondURL = second
+        mergePreviewDirectory = directory
+        mergePreviewServerFolder = serverFolder
+        mergePreviewFirstOrigin = .zero
+        mergePreviewFocus = .zero
+        mergePreviewBusy = true
+        Task {
+            let loaded = await Task.detached { () -> (CGImage?, CGImage?) in
+                (PhotoMerge.loadImage(at: first), PhotoMerge.loadImage(at: second))
+            }.value
+            guard generation == self.mergePreviewGeneration else { return }
+            guard let primary = loaded.0, let secondary = loaded.1 else {
+                self.mergePreviewBusy = false
+                self.cancelMergePreview()
+                self.onMergePreviewNote?("The photos could not be read.")
+                return
+            }
+            self.mergePreviewFirst = primary
+            self.mergePreviewSecond = secondary
+            self.mergePreviewBusy = false
+            self.scheduleMergePreview()
+        }
+    }
+
+    /// Changing Horizontal or Vertical starts again from a flush join.
+    func retargetMergePreview(axis: PhotoMergeAxis) {
+        guard mergePreviewDirectory != nil, axis != mergePreviewAxis else { return }
+        mergePreviewAxis = axis
+        mergePreviewRight = 0
+        mergePreviewDown = 0
+        guard mergePreviewFirst != nil else { return }
+        scheduleMergePreview()
+    }
+
+    /// Moves the second photo by one screen pixel. Returns true while a preview is up.
+    func nudgeMergePreview(right dx: Int, down dy: Int) -> Bool {
+        guard mergePreviewDirectory != nil else { return false }
+        guard let first = mergePreviewFirst, let second = mergePreviewSecond, !mergePreviewBusy else { return true }
+        guard let current = PhotoMerge.frame(
+            first: first,
+            second: second,
+            axis: mergePreviewAxis,
+            right: mergePreviewRight,
+            down: mergePreviewDown
+        ) else { return true }
+        let placed = PhotoMerge.limit(
+            right: mergePreviewRight + dx,
+            down: mergePreviewDown + dy,
+            axis: mergePreviewAxis,
+            firstWidth: first.width,
+            firstHeight: first.height,
+            secondWidth: current.secondWidth,
+            secondHeight: current.secondHeight
+        )
+        guard placed.right != mergePreviewRight || placed.down != mergePreviewDown else { return true }
+        mergePreviewRight = placed.right
+        mergePreviewDown = placed.down
+        scheduleMergePreview()
+        return true
+    }
+
+    func cancelDiskMergePreview() {
+        guard showsDiskMergePreview else { return }
+        cancelMergePreview()
+    }
+
+    func cancelServerMergePreview() {
+        guard showsServerMergePreview else { return }
+        cancelMergePreview()
+    }
+
+    func cancelMergePreviewIfServerFolderChanged(_ folder: String) {
+        guard let current = mergePreviewServerFolder, current != folder else { return }
+        cancelMergePreview()
+    }
+
+    func cancelMergePreview() {
+        mergePreviewGeneration += 1
+        mergePreviewRenderToken += 1
+        mergePreviewBusy = false
+        mergePreviewImage = nil
+        mergePreviewFirst = nil
+        mergePreviewSecond = nil
+        mergePreviewFirstURL = nil
+        mergePreviewSecondURL = nil
+        mergePreviewDirectory = nil
+        mergePreviewServerFolder = nil
+        mergePreviewRight = 0
+        mergePreviewDown = 0
+        mergePreviewFirstOrigin = .zero
+        mergePreviewFocus = .zero
+    }
+
+    /// Writes the TIFF at the offsets on screen. The caller closes the preview after a success.
+    func writeMergePreview() async -> Result<String, PhotoMergeFailure> {
+        guard let first = mergePreviewFirstURL,
+              let second = mergePreviewSecondURL,
+              let directory = mergePreviewDirectory else {
+            return .failure(.cannotWrite)
+        }
+        let axis = mergePreviewAxis
+        let right = mergePreviewRight
+        let down = mergePreviewDown
+        mergePreviewBusy = true
+        let result = await Task.detached {
+            PhotoMerge.perform(
+                first: first,
+                second: second,
+                axis: axis,
+                directory: directory,
+                placement: (right: right, down: down)
+            )
+        }.value
+        mergePreviewBusy = false
+        return result
+    }
+
+    /// Saves the Disk preview and shows the new TIFF in this folder.
+    func commitFolderMergePreview() {
+        guard showsDiskMergePreview else { return }
+        guard !folderRotateBusy, !exportBusy else {
+            folderRotateNote = "An export is already running."
+            return
+        }
+        guard !mergePreviewBusy else { return }
+        folderRotateNote = "Merging the two photos."
+        Task {
+            let result = await self.writeMergePreview()
+            switch result {
+            case .success(let name):
+                self.cancelMergePreview()
+                self.folderRotateNote = "Merged into \(name)."
+                self.reloadFolderListing()
+            case .failure(let error):
+                self.folderRotateNote = error.message
+            }
+        }
+    }
+
+    private func scheduleMergePreview() {
+        mergePreviewRenderToken += 1
+        guard !mergePreviewRendering else { return }
+        mergePreviewRendering = true
+        Task { await self.renderMergePreview() }
+    }
+
+    /// Drops a frame when a newer arrow has already moved the second photo.
+    private func renderMergePreview() async {
+        while true {
+            let token = mergePreviewRenderToken
+            guard mergePreviewDirectory != nil,
+                  let first = mergePreviewFirst,
+                  let second = mergePreviewSecond else {
+                mergePreviewRendering = false
+                return
+            }
+            let axis = mergePreviewAxis
+            let right = mergePreviewRight
+            let down = mergePreviewDown
+            let placed = PhotoMerge.frame(first: first, second: second, axis: axis, right: right, down: down)
+            let image = await Task.detached {
+                PhotoMerge.render(first: first, second: second, axis: axis, right: right, down: down)
+            }.value
+            guard token == self.mergePreviewRenderToken, self.mergePreviewDirectory != nil else { continue }
+            if let image {
+                self.mergePreviewImage = image
+                if let placed {
+                    self.mergePreviewFirstOrigin = CGPoint(x: placed.firstX, y: placed.firstTop)
+                    self.mergePreviewFocus = CGPoint(x: placed.focusX, y: placed.focusY)
+                }
+                self.onMergePreviewNote?(nil)
+            }
+            if token == self.mergePreviewRenderToken {
+                self.mergePreviewRendering = false
+                return
+            }
+        }
     }
 
     var canRotateFolderSelection: Bool {
@@ -2194,6 +2650,7 @@ final class EditorModel {
                 self.folderEntries = []
                 self.selectedFolderKey = nil
                 self.selectedFolderKeys = []
+                self.folderSelectionOrder = []
                 self.folderSelectionAnchor = nil
                 self.folderListingReady = true
                 self.folderMessage = "Could not read this folder."
@@ -2206,6 +2663,7 @@ final class EditorModel {
             self.selectedFolderKeys = self.selectedFolderKeys.filter { key in
                 listed.contains { $0.id == key }
             }
+            self.folderSelectionOrder = self.folderSelectionOrder.filter { self.selectedFolderKeys.contains($0) }
             if self.selectedFolderKeys.isEmpty {
                 self.selectedFolderKey = nil
                 self.folderSelectionAnchor = nil
@@ -2286,36 +2744,49 @@ final class EditorModel {
                 return event
             }
             guard event.type == .keyDown else { return event }
-            let blocked: NSEvent.ModifierFlags = [.command, .shift, .option, .control]
-            guard event.modifierFlags.intersection(blocked).isEmpty else { return event }
-            let delta: Int
+            let step: (right: Int, down: Int)?
             switch event.keyCode {
-            case 123: delta = -1
-            case 124: delta = 1
-            default: return event
+            case 123: step = (-1, 0)
+            case 124: step = (1, 0)
+            case 125: step = (0, 1)
+            case 126: step = (0, -1)
+            default: step = nil
             }
+            guard let step else { return event }
+            let blocked: NSEvent.ModifierFlags = [.command, .option, .control]
+            if !event.modifierFlags.intersection(blocked).isEmpty { return event }
             var forwarding = false
             MainActor.assumeIsolated {
                 forwarding = self?.forwardingArrow ?? false
             }
             if forwarding { return event }
+            let shift = event.modifierFlags.contains(.shift)
             if let responder = NSApp.keyWindow?.firstResponder {
-                if let slider = responder as? NSSlider {
-                    MainActor.assumeIsolated { self?.forwardingArrow = true }
-                    slider.keyDown(with: event)
-                    MainActor.assumeIsolated { self?.forwardingArrow = false }
-                    return nil
-                }
-                if let text = responder as? NSTextView {
-                    MainActor.assumeIsolated { self?.forwardingArrow = true }
-                    text.keyDown(with: event)
-                    MainActor.assumeIsolated { self?.forwardingArrow = false }
-                    return nil
+                if responder is NSSlider || responder is NSTextView {
+                    if shift { return event }
+                    if let slider = responder as? NSSlider {
+                        MainActor.assumeIsolated { self?.forwardingArrow = true }
+                        slider.keyDown(with: event)
+                        MainActor.assumeIsolated { self?.forwardingArrow = false }
+                        return nil
+                    }
+                    if let text = responder as? NSTextView {
+                        MainActor.assumeIsolated { self?.forwardingArrow = true }
+                        text.keyDown(with: event)
+                        MainActor.assumeIsolated { self?.forwardingArrow = false }
+                        return nil
+                    }
                 }
             }
+            var nudging = false
+            MainActor.assumeIsolated {
+                nudging = self?.nudgeMergePreview(right: step.right, down: step.down) ?? false
+            }
+            if nudging { return nil }
+            if shift || step.down != 0 { return event }
             var handled = false
             MainActor.assumeIsolated {
-                handled = self?.imageStep?(delta) ?? false
+                handled = self?.imageStep?(step.right) ?? false
             }
             return handled ? nil : event
         }
@@ -4349,6 +4820,26 @@ struct Chrome: View {
                                     .frame(height: 1)
                             }
                             FolderFileDetails(model: model)
+                            Rectangle()
+                                .fill(ChromePalette.hairline)
+                                .frame(height: 1)
+                            DiskMoveFolderPanel(model: model)
+                            Rectangle()
+                                .fill(ChromePalette.hairline)
+                                .frame(height: 1)
+                            MergePhotosPanel(
+                                firstName: model.mergeFolderPair()?.first,
+                                secondName: model.mergeFolderPair()?.second,
+                                busy: model.folderRotateBusy || model.exportBusy || model.mergePreviewBusy,
+                                previewing: model.showsDiskMergePreview,
+                                ready: model.mergePreviewImage != nil,
+                                right: model.mergePreviewRight,
+                                down: model.mergePreviewDown,
+                                preview: { axis in model.beginFolderMergePreview(axis: axis) },
+                                retarget: { axis in model.retargetMergePreview(axis: axis) },
+                                merge: { model.commitFolderMergePreview() },
+                                cancel: { model.cancelMergePreview() }
+                            )
                         }
                         .frame(width: 280, alignment: .top)
                         .frame(maxHeight: .infinity, alignment: .top)
@@ -4375,6 +4866,48 @@ struct Chrome: View {
                                     .fill(ChromePalette.hairline)
                                     .frame(height: 1)
                                 MoveFolderPanel(browser: browser)
+                                Rectangle()
+                                    .fill(ChromePalette.hairline)
+                                    .frame(height: 1)
+                                MergePhotosPanel(
+                                    firstName: browser.mergeFolderPair()?.first,
+                                    secondName: browser.mergeFolderPair()?.second,
+                                    busy: browser.mergeBusy || browser.moveBusy || browser.dateBusy
+                                        || browser.removalBusy || browser.cleanBusy || browser.rescanBusy
+                                        || model.mergePreviewBusy,
+                                    previewing: model.showsServerMergePreview,
+                                    ready: model.mergePreviewImage != nil,
+                                    right: model.mergePreviewRight,
+                                    down: model.mergePreviewDown,
+                                    preview: { axis in
+                                        switch browser.mergePair() {
+                                        case .refused(let message):
+                                            browser.notice = message
+                                        case .ready(let first, let second, let directory, let folder):
+                                            browser.notice = EditorModel.mergePreviewingNote
+                                            model.beginMergePreview(
+                                                first: first,
+                                                second: second,
+                                                directory: directory,
+                                                axis: axis,
+                                                serverFolder: folder
+                                            )
+                                        }
+                                    },
+                                    retarget: { axis in model.retargetMergePreview(axis: axis) },
+                                    merge: {
+                                        guard let folder = model.mergePreviewServerFolder else { return }
+                                        guard browser.claimMergeWrite() else { return }
+                                        Task {
+                                            let result = await model.writeMergePreview()
+                                            if case .success = result {
+                                                model.cancelMergePreview()
+                                            }
+                                            await browser.finishMergeWrite(result, folder: folder)
+                                        }
+                                    },
+                                    cancel: { model.cancelMergePreview() }
+                                )
                             }
                         }
                         .frame(width: 280, alignment: .top)
@@ -4425,6 +4958,16 @@ struct Chrome: View {
                 return true
             }
             model.installCanvasKeys()
+            model.onMergePreviewNote = { [model, browser] note in
+                let server = UserDefaults.standard.string(forKey: "ZImager.sourceMode") == "server"
+                if server {
+                    if note == nil, browser.notice != EditorModel.mergePreviewingNote { return }
+                    browser.notice = note
+                } else {
+                    if note == nil, model.folderRotateNote != EditorModel.mergePreviewingNote { return }
+                    model.folderRotateNote = note
+                }
+            }
             sectionChangesSelectFolder = true
         }
         .onChange(of: librarySection) { _, section in
@@ -4432,8 +4975,12 @@ struct Chrome: View {
             if sectionChangesSelectFolder {
                 serverShowsFolder = true
             }
+            if section != "Photos" {
+                model.cancelServerMergePreview()
+            }
         }
         .onChange(of: sourceMode) { _, mode in
+            model.cancelMergePreview()
             if mode == "server", model.canvasTool == .removeObject {
                 model.selectCanvasTool(.zoom)
             }
@@ -4441,12 +4988,19 @@ struct Chrome: View {
         .onChange(of: model.showsFolderGrid) { _, showing in
             if showing {
                 model.publishFolderPreviewFromImage()
+            } else {
+                model.cancelDiskMergePreview()
             }
         }
         .onChange(of: serverShowsFolder) { _, showing in
             if showing {
                 model.publishFolderPreviewFromImage()
+            } else {
+                model.cancelServerMergePreview()
             }
+        }
+        .onChange(of: browser.displayFolder) { _, folder in
+            model.cancelMergePreviewIfServerFolderChanged(folder)
         }
         .task(id: sourceMode) {
             guard sourceMode == "server" else {
@@ -4646,6 +5200,7 @@ struct Chrome: View {
             }
             Spacer(minLength: 12)
             HStack(spacing: 12) {
+                // Events and Reorganize stay out of the toolbar until those tools are ready.
                 if diskMode || showsImage {
                     Button("Undo") { model.undo() }
                         .disabled(!model.log.canUndo)
@@ -4659,15 +5214,6 @@ struct Chrome: View {
                         .disabled(!model.hasCopiedSettings || model.proxy == nil)
                         .accessibilityIdentifier("Paste settings")
                         .help("Applies the copied Tone and Geometry settings.")
-                } else {
-                    libraryPushButton("Events", identifier: "Events") {
-                        showsEvents.toggle()
-                        if showsEvents { serverShowsFolder = true }
-                    }
-                    libraryPushButton("Reorganize", identifier: "Reorganize") {
-                        showsReorg.toggle()
-                        if showsReorg { serverShowsFolder = true }
-                    }
                 }
             }
             .padding(.trailing, 16)
@@ -4815,10 +5361,12 @@ struct Chrome: View {
             .padding(.vertical, 8)
             ZStack {
                 libraryPage
-                    .opacity(serverShowsFolder ? 1 : 0)
-                    .allowsHitTesting(serverShowsFolder)
-                    .accessibilityHidden(!serverShowsFolder)
-                if model.showsPDFPicker, let document = model.pdfDocument, showsImage {
+                    .opacity(serverShowsFolder && !model.showsServerMergePreview ? 1 : 0)
+                    .allowsHitTesting(serverShowsFolder && !model.showsServerMergePreview)
+                    .accessibilityHidden(!serverShowsFolder || model.showsServerMergePreview)
+                if serverShowsFolder, model.showsServerMergePreview {
+                    mergePreviewLayer
+                } else if model.showsPDFPicker, let document = model.pdfDocument, showsImage {
                     PDFPagePicker(
                         document: document,
                         pageIndex: $model.pdfPageIndex,
@@ -4935,10 +5483,12 @@ struct Chrome: View {
             .padding(.vertical, 8)
             ZStack {
                 FolderBrowser(model: model, onScreen: diskMode)
-                    .opacity(model.showsFolderGrid ? 1 : 0)
-                    .allowsHitTesting(model.showsFolderGrid)
-                    .accessibilityHidden(!model.showsFolderGrid)
-                if model.showsPDFPicker, let document = model.pdfDocument, !model.showsFolderGrid {
+                    .opacity(model.showsFolderGrid && !model.showsDiskMergePreview ? 1 : 0)
+                    .allowsHitTesting(model.showsFolderGrid && !model.showsDiskMergePreview)
+                    .accessibilityHidden(!model.showsFolderGrid || model.showsDiskMergePreview)
+                if model.showsFolderGrid, model.showsDiskMergePreview {
+                    mergePreviewLayer
+                } else if model.showsPDFPicker, let document = model.pdfDocument, !model.showsFolderGrid {
                     PDFPagePicker(
                         document: document,
                         pageIndex: $model.pdfPageIndex,
@@ -4956,6 +5506,34 @@ struct Chrome: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    @ViewBuilder
+    private var mergePreviewLayer: some View {
+        if let image = model.mergePreviewImage {
+            MergePreviewCanvas(
+                image: image,
+                fitted: model.mergePreviewFitted,
+                actualToken: model.mergePreviewActualToken,
+                firstOrigin: model.mergePreviewFirstOrigin,
+                focus: model.mergePreviewFocus,
+                spaceDown: model.spaceDown,
+                setFitted: { model.mergePreviewFitted = $0 },
+                chooseActualSize: {
+                    model.mergePreviewFitted = false
+                    model.mergePreviewActualToken += 1
+                },
+                userZoomed: { model.mergePreviewFitted = false }
+            )
+        } else {
+            ZStack {
+                Color.black
+                Text("Reading the two photos.")
+                    .font(.system(size: 13))
+                    .foregroundStyle(.white)
+            }
+            .accessibilityIdentifier("Merge preview")
+        }
     }
 
     private var editorBar: some View {

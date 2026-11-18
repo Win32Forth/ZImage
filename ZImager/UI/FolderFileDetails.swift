@@ -31,10 +31,9 @@ struct FolderFileDetails: View {
                     .foregroundStyle(ChromePalette.ink)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            Spacer()
         }
         .padding(16)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
         .background(ChromePalette.panel)
         .accessibilityIdentifier("Date inspector")
         .task(id: model.selectedFolderKey) {

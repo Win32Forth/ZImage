@@ -294,6 +294,7 @@ enum LibraryItemMenu {
     static let quickTimeBundleID = "com.apple.QuickTimePlayerX"
     static let showInFinder = "Show in Finder"
     static let openWith = "Open With"
+    static let rename = "Rename"
     static let sizeUnavailable = "Size unavailable"
     static let noDate = "No date"
 
@@ -578,6 +579,58 @@ enum FolderMove {
         return trimmed
     }
 
+    struct FileOutcome: Equatable {
+        var moved = 0
+        var stayed = 0
+        var directories: [URL] = []
+    }
+
+    /// Where a Disk file would land. Unchecked uses the opened root, the way Server uses Photos.
+    /// Checked uses the folder on screen. The file must already be inside that folder.
+    static func diskDestination(root: URL, openFolder: URL, file: URL, folderName raw: String, subfolder: Bool) -> URL? {
+        guard let name = folderName(raw) else { return nil }
+        let rootKey = FolderEntry.cacheKey(for: root)
+        let openKey = FolderEntry.cacheKey(for: openFolder)
+        let fileKey = FolderEntry.cacheKey(for: file)
+        guard openKey == rootKey || openKey.hasPrefix(rootKey + "/") else { return nil }
+        guard fileKey.hasPrefix(openKey + "/") else { return nil }
+        let base = subfolder ? openFolder : root
+        let dest = base.appendingPathComponent(name, isDirectory: true)
+        let destKey = FolderEntry.cacheKey(for: dest)
+        guard destKey == rootKey || destKey.hasPrefix(rootKey + "/") else { return nil }
+        return dest
+    }
+
+    /// Moves Disk files into the named folders. A file already there stays put.
+    static func perform(files: [(source: URL, directory: URL)]) -> FileOutcome {
+        var outcome = FileOutcome()
+        var seen: [String] = []
+        for item in files {
+            let parentKey = FolderEntry.cacheKey(for: item.source.deletingLastPathComponent())
+            let directoryKey = FolderEntry.cacheKey(for: item.directory)
+            if parentKey == directoryKey {
+                outcome.stayed += 1
+                continue
+            }
+            guard let claimed = claim(directory: item.directory, fileName: item.source.lastPathComponent) else {
+                outcome.stayed += 1
+                continue
+            }
+            do {
+                try FileManager.default.createDirectory(at: item.directory, withIntermediateDirectories: true)
+                try FileManager.default.moveItem(at: item.source, to: claimed)
+                outcome.moved += 1
+                if !seen.contains(directoryKey) {
+                    seen.append(directoryKey)
+                    outcome.directories.append(item.directory)
+                }
+            } catch {
+                outcome.stayed += 1
+            }
+        }
+        return outcome
+    }
+
     /// Directory under the library root.
     /// Unchecked lands in `Photos/<name>`. Checked lands in the open folder.
     static func directory(displayFolder: String, fileRelPath: String, folderName raw: String, subfolder: Bool = false) -> String? {
@@ -705,6 +758,12 @@ enum FolderMove {
     }
 }
 
+/// Two stills that can be joined, or the sentence that says why not.
+enum MergePairLookup {
+    case ready(first: URL, second: URL, directory: URL, folder: String)
+    case refused(String)
+}
+
 /// One page of the catalog grid. Cells scale the stored preview JPEG.
 @MainActor
 @Observable
@@ -724,6 +783,8 @@ final class LibraryBrowser {
     private(set) var rescanBusy = false
     /// True while Move to Folder is moving the current batch.
     private(set) var moveBusy = false
+    /// True while the merged TIFF is being written. The preview does not set this.
+    private(set) var mergeBusy = false
     /// Bumped after Move to Folder writes a directory, so the folder tree rereads that parent.
     private(set) var folderTreeRevision = 0
     /// Parents whose child lists are stale. Empty until a move lands files in a directory.
@@ -776,6 +837,8 @@ final class LibraryBrowser {
     var selectedUID: String?
     /// Shift-click in a folder grid fills this from the anchor through the clicked photo.
     var selectedUIDs: Set<String> = []
+    /// Click order. The first id is the left or the top when two photos are merged.
+    var selectionOrder: [String] = []
     var selectionAnchorUID: String?
     /// Edited folder JPEG, preferred over the helper thumbnail.
     var editedJPEG: [String: Data] = [:]
@@ -824,6 +887,7 @@ final class LibraryBrowser {
         previewTried = []
         selectedUID = nil
         selectedUIDs = []
+        selectionOrder = []
         selectionAnchorUID = nil
         editedJPEG = [:]
         selectedEventUID = nil
@@ -831,6 +895,7 @@ final class LibraryBrowser {
         rescanGeneration += 1
         rescanBusy = false
         moveBusy = false
+        mergeBusy = false
         rescanMeter = nil
         reorg = nil
         reorgNotice = nil
@@ -1207,6 +1272,7 @@ final class LibraryBrowser {
     private func trimSelectionToRows() {
         let alive = Set(rows.map(\.uid))
         selectedUIDs = selectedUIDs.intersection(alive)
+        selectionOrder = selectionOrder.filter { selectedUIDs.contains($0) }
         if let selectedUID, !alive.contains(selectedUID) {
             self.selectedUID = nil
         }
@@ -1292,7 +1358,7 @@ final class LibraryBrowser {
     /// Moves the selection into the named folder, then rescans so the catalog follows the files.
     /// `subfolder` creates that folder inside the folder on screen. Otherwise it is created under Photos.
     func moveSelected(to typed: String, subfolder: Bool = false) async {
-        guard !moveBusy, !dateBusy, !removalBusy, !cleanBusy, !rescanBusy else { return }
+        guard !moveBusy, !mergeBusy, !dateBusy, !removalBusy, !cleanBusy, !rescanBusy else { return }
         guard let name = FolderMove.folderName(typed) else {
             notice = "Type a folder name."
             return
@@ -1348,7 +1414,7 @@ final class LibraryBrowser {
 
     /// Writes the typed date on every selected file and moves each one into its date folder.
     func setCaptureDate(_ text: String) async {
-        guard !dateBusy, !removalBusy, !cleanBusy, !rescanBusy, !moveBusy else { return }
+        guard !dateBusy, !removalBusy, !cleanBusy, !rescanBusy, !moveBusy, !mergeBusy else { return }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let wire = LibraryItemMenu.captureRequest(trimmed) else {
             notice = "The date was not saved. Use YYYY-MM-DD or a four-digit year."
@@ -1391,7 +1457,7 @@ final class LibraryBrowser {
 
     /// Drops leftover catalog rows in the open folder. A row goes only when its file is gone and another file here has the same name and size.
     func cleanDisplayFolder() async {
-        guard !cleanBusy, !removalBusy, !dateBusy, !moveBusy else { return }
+        guard !cleanBusy, !removalBusy, !dateBusy, !moveBusy, !mergeBusy else { return }
         cleanBusy = true
         defer { cleanBusy = false }
         notice = "Cleaning leftover records."
@@ -1420,7 +1486,7 @@ final class LibraryBrowser {
     /// Deletes every file in Photos/_Removed, then asks the helper to drop those catalog rows.
     func deleteAllRemoved() async {
         guard DisplayFolder.isRemovedShelf(displayFolder) else { return }
-        guard !removalBusy, !rescanBusy, !dateBusy, !cleanBusy, !moveBusy else { return }
+        guard !removalBusy, !rescanBusy, !dateBusy, !cleanBusy, !moveBusy, !mergeBusy else { return }
         removalBusy = true
         notice = "Deleting photos in Photos/_Removed."
         let root = libraryRoot
@@ -1451,7 +1517,7 @@ final class LibraryBrowser {
 
     /// Catalogs the displayed folder and its subfolders, and deletes rows whose files are gone.
     func rescanDisplayFolder() {
-        guard !rescanBusy, !removalBusy, !dateBusy, !cleanBusy, !moveBusy else { return }
+        guard !rescanBusy, !removalBusy, !dateBusy, !cleanBusy, !moveBusy, !mergeBusy else { return }
         rescanBusy = true
         rescanGeneration += 1
         let generation = rescanGeneration
@@ -2064,7 +2130,7 @@ final class LibraryBrowser {
 
     /// Journal-moves each file into Photos/_Removed, one at a time. A failure leaves that file in place.
     func removeFromLibrary(_ assets: [LibraryAsset]) async {
-        guard !assets.isEmpty, !removalBusy, !dateBusy, !cleanBusy, !rescanBusy, !moveBusy else { return }
+        guard !assets.isEmpty, !removalBusy, !dateBusy, !cleanBusy, !rescanBusy, !moveBusy, !mergeBusy else { return }
         removalBusy = true
         defer { removalBusy = false }
         var moved = 0
@@ -2325,9 +2391,88 @@ final class LibraryBrowser {
             extend: extend,
             existing: selectedUIDs
         )
+        selectionOrder = SelectionOrder.update(
+            previous: selectionOrder,
+            gridOrder: order,
+            anchor: selectionAnchorUID,
+            clicked: uid,
+            shift: shift,
+            extend: extend,
+            keys: choice.keys
+        )
         selectedUIDs = choice.keys
         selectionAnchorUID = choice.anchor
         selectedUID = choice.primary
+    }
+
+    /// Selected stills in click order. A row chosen without a click follows the page.
+    func mergeTargets() -> [LibraryAsset] {
+        let pool = rows.filter { isStill($0) && selectedUIDs.contains($0.uid) && fileURL(for: $0) != nil }
+        var ordered: [LibraryAsset] = []
+        for uid in selectionOrder {
+            if let asset = pool.first(where: { $0.uid == uid }) {
+                ordered.append(asset)
+            }
+        }
+        for asset in pool where !ordered.contains(where: { $0.uid == asset.uid }) {
+            ordered.append(asset)
+        }
+        return ordered
+    }
+
+    func mergeFolderPair() -> (first: String, second: String)? {
+        let assets = mergeTargets()
+        guard assets.count == 2 else { return nil }
+        return (filename(for: assets[0]), filename(for: assets[1]))
+    }
+
+    /// The two selected stills, in click order, when they can be previewed.
+    func mergePair() -> MergePairLookup {
+        guard !mergeBusy, !moveBusy, !dateBusy, !removalBusy, !cleanBusy, !rescanBusy else {
+            return .refused("An export is already running.")
+        }
+        let assets = mergeTargets()
+        guard assets.count == 2 else { return .refused("Select two photos.") }
+        guard let firstRel = assets[0].relPath, let secondRel = assets[1].relPath,
+              let firstURL = fileURL(for: assets[0]), let secondURL = fileURL(for: assets[1]) else {
+            return .refused("The photos could not be read.")
+        }
+        let parent = (firstRel as NSString).deletingLastPathComponent
+        guard parent == (secondRel as NSString).deletingLastPathComponent else {
+            return .refused("Select two photos in the same folder.")
+        }
+        let firstPath = firstURL.standardizedFileURL.resolvingSymlinksInPath()
+        let secondPath = secondURL.standardizedFileURL.resolvingSymlinksInPath()
+        guard firstPath != secondPath else { return .refused("Select two different photos.") }
+        let folder = parent.isEmpty ? displayFolder : parent
+        return .ready(
+            first: firstURL,
+            second: secondURL,
+            directory: firstURL.deletingLastPathComponent(),
+            folder: folder
+        )
+    }
+
+    /// Holds the other folder actions while the TIFF is written.
+    func claimMergeWrite() -> Bool {
+        guard !mergeBusy, !moveBusy, !dateBusy, !removalBusy, !cleanBusy, !rescanBusy else {
+            notice = "An export is already running."
+            return false
+        }
+        mergeBusy = true
+        notice = "Merging the two photos."
+        return true
+    }
+
+    /// Clears the write and rescans the folder that received the TIFF.
+    func finishMergeWrite(_ result: Result<String, PhotoMergeFailure>, folder: String) async {
+        mergeBusy = false
+        switch result {
+        case .success(let name):
+            await rescanMovedFolders([folder], notice: "Merged into \(name).")
+        case .failure(let error):
+            notice = error.message
+        }
     }
 
     /// A review-list click keeps one photo selected.
@@ -2336,9 +2481,11 @@ final class LibraryBrowser {
         if let uid {
             selectedUIDs = [uid]
             selectionAnchorUID = uid
+            selectionOrder = [uid]
         } else {
             selectedUIDs = []
             selectionAnchorUID = nil
+            selectionOrder = []
         }
     }
 
@@ -2454,6 +2601,40 @@ final class LibraryBrowser {
         guard let url = fileURL(for: asset) else { return }
         selectedUID = asset.uid
         NSWorkspace.shared.activateFileViewerSelecting([url])
+    }
+
+    /// Gives one catalog file a new name in its current folder, then rescans that folder.
+    func rename(_ asset: LibraryAsset, to typed: String) {
+        guard !mergeBusy, !moveBusy, !dateBusy, !removalBusy, !cleanBusy, !rescanBusy else {
+            notice = "An export is already running."
+            return
+        }
+        guard let url = fileURL(for: asset), let relative = asset.relPath else {
+            notice = "The file could not be renamed."
+            return
+        }
+        switch FileRename.perform(source: url, typed: typed) {
+        case .failure(let problem):
+            let label: String
+            if case .success(let cleaned) = FileRename.cleaned(typed) {
+                label = cleaned
+            } else {
+                label = typed
+            }
+            if let message = FileRename.message(for: problem, name: label) {
+                notice = message
+            }
+        case .success(let dest):
+            var updated = asset
+            updated.relPath = FileRename.relocatedPath(relative, fileName: dest.lastPathComponent)
+            updated.ext = dest.pathExtension
+            replace(updated)
+            let parent = (relative as NSString).deletingLastPathComponent
+            let folder = parent.isEmpty ? displayFolder : parent
+            let line = "Renamed to \(dest.lastPathComponent)."
+            notice = line
+            Task { await rescanMovedFolders([folder], notice: line) }
+        }
     }
 
     /// Applications that can open this file. ZImager is first for a still. QuickTime Player is first for a video.
