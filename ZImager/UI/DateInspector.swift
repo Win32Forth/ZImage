@@ -7,6 +7,10 @@ struct DateInspector: View {
     @Bindable var browser: LibraryBrowser
     @State private var captureText = ""
     @State private var header = ReviewHeaderFacts(opened: false, lines: [])
+    @State private var confirmsOrganize = false
+    @State private var organizeFolder = ""
+    @State private var confirmsEmptyClean = false
+    @State private var cleanFolder = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -39,7 +43,27 @@ struct DateInspector: View {
                 let typed = captureText
                 Task { await browser.setCaptureDate(typed) }
             }
-            .disabled(browser.dateTargets().isEmpty || browser.dateBusy || browser.removalBusy || browser.cleanBusy || browser.rescanBusy || browser.moveBusy || browser.mergeBusy)
+            .disabled(browser.dateTargets().isEmpty || browser.dateBusy || browser.organizeBusy || browser.removalBusy || browser.cleanBusy || browser.rescanBusy || browser.moveBusy || browser.mergeBusy)
+            if browser.librarySection == "Photos" {
+                Button("Organize") {
+                    organizeFolder = browser.displayFolder
+                    if !browser.nameFilter.isEmpty {
+                        browser.notice = "Clear the name filter before Organize."
+                    } else {
+                        confirmsOrganize = true
+                    }
+                }
+                .disabled(!browser.canOrganizeFirstPage() || browser.organizeBusy || browser.dateBusy || browser.removalBusy || browser.cleanBusy || browser.rescanBusy || browser.moveBusy || browser.mergeBusy)
+                .accessibilityIdentifier("Organize")
+                .help("Asks before it reads this folder. A photo with no date goes to Photos/_Review. A dated photo goes to Photos/YYYY/YYYY-MM-DD. A photo already in that year and day folder stays. A matching DateTimeOriginal, DateTimeDigitized, or DateTime can raise catalog confidence from 0.00 to 1.00. Yes does this page. Continue does this page and the pages after it. No leaves every file where it is.")
+                Button("Clean") {
+                    cleanFolder = browser.displayFolder
+                    confirmsEmptyClean = true
+                }
+                .disabled(browser.organizeBusy || browser.dateBusy || browser.removalBusy || browser.cleanBusy || browser.rescanBusy || browser.moveBusy || browser.mergeBusy)
+                .accessibilityIdentifier("Clean")
+                .help("Deletes Thumbs.db, desktop.ini, .DS_Store, and AppleDouble files, then deletes this folder and its subfolders when nothing else remains. A photo or any other file keeps its folder.")
+            }
             if showsUserConfidence {
                 Text("Confidence 1.0")
                     .font(.system(size: 13))
@@ -50,6 +74,33 @@ struct DateInspector: View {
         .frame(maxWidth: .infinity, alignment: .topLeading)
         .background(ChromePalette.panel)
         .accessibilityIdentifier("Date inspector")
+        .alert(
+            "Organize \(organizeFolder)?",
+            isPresented: $confirmsOrganize
+        ) {
+            Button("Continue") {
+                Task { await browser.organizeDisplayFolder(repeating: true) }
+            }
+            Button("Yes") {
+                Task { await browser.organizeDisplayFolder(repeating: false) }
+            }
+            .keyboardShortcut(.defaultAction)
+            Button("No", role: .cancel) {}
+        } message: {
+            Text("This reads the first page of photos in this folder. A photo with no date goes to Photos/_Review. A photo with a date goes to Photos/YYYY/YYYY-MM-DD. A photo already in that year and day folder stays there. When DateTimeOriginal, DateTimeDigitized, or DateTime matches that folder and catalog confidence is 0.00, confidence becomes 1.00. A photo that moves and matches another file of the same size leaves a preview in Photos/_Duplicates. Yes does this page. Continue does this page and the pages after it, and stops when a page neither moves a photo nor raises confidence. A large folder can take a long time. No leaves every file where it is.")
+        }
+        .alert(
+            "Clean empty folders in \(cleanFolder)?",
+            isPresented: $confirmsEmptyClean
+        ) {
+            Button("Yes", role: .destructive) {
+                let folder = cleanFolder
+                Task { await browser.cleanEmptyDisplayFolder(folder) }
+            }
+            Button("No", role: .cancel) {}
+        } message: {
+            Text("This deletes Thumbs.db, desktop.ini, .DS_Store, and AppleDouble files in that folder and its subfolders. It then deletes a folder that has nothing else in it. A photo or any other file keeps its folder. No photo is deleted. Photos itself stays.")
+        }
         .task(id: browser.selectedUID) {
             await showSelection()
         }
@@ -170,6 +221,7 @@ struct MoveFolderPanel: View {
                 || browser.moveTargets().isEmpty
                 || browser.moveBusy
                 || browser.dateBusy
+                || browser.organizeBusy
                 || browser.removalBusy
                 || browser.cleanBusy
                 || browser.rescanBusy

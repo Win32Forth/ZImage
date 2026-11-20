@@ -33,10 +33,10 @@ struct LibraryGrid: View {
                         libraryPushButton("Rescan", identifier: "Rescan Folder") {
                             browser.rescanDisplayFolder()
                         }
-                        .disabled(browser.rescanBusy || browser.removalBusy || browser.dateBusy || browser.cleanBusy || browser.moveBusy || browser.mergeBusy)
+                        .disabled(browser.rescanBusy || browser.removalBusy || browser.dateBusy || browser.organizeBusy || browser.cleanBusy || browser.moveBusy || browser.mergeBusy)
                         .help("Adds new files in this folder and its subfolders, and removes catalog records whose files are gone.")
                     }
-                    Text(browser.displayFolder)
+                    Text(folderHeading)
                         .font(.system(size: 13))
                         .foregroundStyle(ChromePalette.ink)
                         .lineLimit(1)
@@ -47,7 +47,7 @@ struct LibraryGrid: View {
                         libraryPushButton("Delete ALL", identifier: "Delete ALL") {
                             confirmsRemovedDelete = true
                         }
-                        .disabled(browser.removalBusy || browser.rescanBusy || browser.dateBusy || browser.cleanBusy || browser.moveBusy || browser.mergeBusy)
+                        .disabled(browser.removalBusy || browser.rescanBusy || browser.dateBusy || browser.organizeBusy || browser.cleanBusy || browser.moveBusy || browser.mergeBusy)
                         .help("Deletes every file in Photos/_Removed from the server.")
                     } else {
                         FolderNameFilterBar(
@@ -61,6 +61,14 @@ struct LibraryGrid: View {
                 }
                 .padding(.horizontal, 16)
                 .padding(.top, 10)
+                if let meter = browser.organizeMeter {
+                    TouchupProgressBar(
+                        meter: meter,
+                        identifier: "Organize progress",
+                        caption: rescanProgressCaption(meter)
+                    )
+                    .padding(.horizontal, 8)
+                }
                 if live, let meter = browser.rescanMeter {
                     TouchupProgressBar(
                         meter: meter,
@@ -108,7 +116,7 @@ struct LibraryGrid: View {
             .modifier(KeptScroll(
                 visible: onScreen,
                 key: "\(media ?? "")|\(browser.displayFolder)|\(browser.folderPage)",
-                holdOffset: browser.removalBusy || browser.dateBusy || browser.cleanBusy || browser.rescanBusy || browser.moveBusy || browser.mergeBusy
+                holdOffset: browser.removalBusy || browser.dateBusy || browser.organizeBusy || browser.cleanBusy || browser.rescanBusy || browser.moveBusy || browser.mergeBusy
             ))
         }
         .background(ChromePalette.panel)
@@ -152,9 +160,9 @@ struct LibraryGrid: View {
             await browser.showFocus()
             await browser.reload(media: media)
             while !Task.isCancelled {
-                if await browser.previewVisibleOne() { continue }
+                if await browser.previewVisibleBatch() > 0 { continue }
                 // The page on screen is done. Keep going through the rest of this folder.
-                if await browser.previewNextFolderStill() { continue }
+                if await browser.previewOffscreenBatch() > 0 { continue }
                 let consumed = await browser.checkpointOne()
                 if !browser.awaitsPreviews && !consumed {
                     await browser.waitForAnotherFolderPage()
@@ -167,6 +175,12 @@ struct LibraryGrid: View {
                 }
             }
         }
+    }
+
+    /// The open folder, with its still count at the end once that count is known.
+    private var folderHeading: String {
+        let count = media == "photo" && !browser.folderPageCounting ? browser.folderPhotoTotal : nil
+        return FolderPage.heading(folder: browser.displayFolder, photoCount: count)
     }
 
     private var renamePresented: Binding<Bool> {
@@ -286,7 +300,7 @@ struct LibraryGrid: View {
                 }
                 .disabled(
                     browser.fileURL(for: asset) == nil
-                        || browser.removalBusy || browser.dateBusy || browser.cleanBusy
+                        || browser.removalBusy || browser.dateBusy || browser.organizeBusy || browser.cleanBusy
                         || browser.rescanBusy || browser.moveBusy || browser.mergeBusy
                         || model.mergePreviewBusy
                 )
@@ -309,7 +323,7 @@ struct LibraryGrid: View {
                 let targets = browser.libraryRemovalTargets(clicked: asset)
                 Task { await browser.removeFromLibrary(targets) }
             }
-            .disabled(browser.removalBusy || browser.dateBusy || browser.cleanBusy || browser.rescanBusy || browser.moveBusy || browser.mergeBusy || browser.libraryRemovalTargets(clicked: asset).isEmpty)
+            .disabled(browser.removalBusy || browser.dateBusy || browser.organizeBusy || browser.cleanBusy || browser.rescanBusy || browser.moveBusy || browser.mergeBusy || browser.libraryRemovalTargets(clicked: asset).isEmpty)
             Divider()
             Text(browser.sizeLabel(for: asset))
         }

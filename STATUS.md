@@ -14,6 +14,78 @@ Each entry uses this shape:
 - Scope: design section or PR name
 - Notes: facts, decisions, and the next step
 
+## 2026-11-19 — ZImager 1.8.4
+
+- Status: done
+- Scope: ZImager 1.8.4. Folder rename, Organize, Clean, rotation that keeps repairs in place, and previews off the main thread. The helper source adds folder rename and catalog confirm. The NAS binary was not replaced for this release.
+- Notes: Marketing version 1.8.4 is on the ZImager target. The test target stays 1.0. `CURRENT_PROJECT_VERSION` stays 1. `.zimg` `appVersion` stays `1.0.0`. Disk and Server reduce four photographs at a time, off the main thread. Disk previews stay in the temporary cache with a 200 MB cap. Server previews stay on the NAS. Server Folder view shows the still count as `(12345)`. Videos are left out of that number. Organize and Clean are on the Server Date panel. Organize asks first. Continue reads this page and the pages after it, and stops when a page neither moves a photo nor raises confidence. Yes reads this page. No leaves every file where it is. A photo with no date goes to Photos/_Review. A dated photo goes to Photos/YYYY/YYYY-MM-DD. A photo already in that year and day folder stays. When DateTimeOriginal, DateTimeDigitized, or DateTime matches that folder and catalog confidence is 0.00, confidence becomes 1.00. A moved photo that matches another file of the same size leaves a preview in Photos/_Duplicates. Clean deletes Thumbs.db, ehthumbs.db, desktop.ini, .DS_Store, and AppleDouble `._` files, then deletes a folder that has nothing else in it. Photos itself stays. A symbolic link is left in place. Right-click Rename on a folder keeps it in its parent. Photos and the three shelves keep their names. A folder under Photos is renamed on disk, then the helper rewrites catalog paths and keeps each file id, including videos. The Mac waits three minutes for that write. Rotate left or right keeps Vertical on the top and bottom edges on screen and Horizontal on the left and right. A crop, Spot, Scratch, or Red Eye repair made before that turn stays on the same pixels. The Release archive is arm64, signed with the development certificate, and is not notarized. The disk image is `Releases/ZImager-1.8.4-macOS.dmg`, sha256 `798c432d2f857b6b5319f0f72154fed3bb68f4591a0f15c1e136d7d27178d1cd`. It contains ZImager.app and README.txt. It does not include the helper. Reorganize, Review, and Duplicates still do not work and can lose photos. Leave them alone.
+
+## 2026-11-19 — Folder rename waits for the catalog
+
+- Status: done
+- Scope: Mac folder rename. Helper source only. The running NAS binary was not replaced.
+- Notes: `Photos/Debbie Grok` was still the directory on disk after the catalog paths had moved to `Photos/DebbieGrok`. Those rows are videos. The directory was renamed to `DebbieGrok`. It is the same directory, with 31 entries, and it is not a symbolic link. The Mac had been waiting 10 seconds. The helper can spend two minutes acquiring the catalog write, so the folder was put back while that write finished. The rename request now waits 3 minutes. A timed-out reply is asked once more. When that reply also does not arrive, the new directory stays and the notice says the catalog may still be catching up. A helper that cannot be reached still puts the folder back. Helper source treats a later try as success when the catalog is already under the new name, the old name has no rows, and the new directory is the one on disk. That source is not installed. Port 8742 was left running. Reorganize was not started. Quit ZImager and rerun the scheme before the next rename.
+
+## 2026-11-19 — Helper binary with folder rename
+
+- Status: done
+- Scope: NAS helper binary. The DSM task was already stopped.
+- Notes: Port 8742 was refusing connections. `go test ./...` in `Helper/` passed. The new static ARM64 binary is at `PhotoVideoAudio/.zimage/bin/zimage-helper`, 17,940,914 bytes, mode 0700, BuildID sha1 `8eba488895124fcdf7cfa4f517829db664d020c1`. It replaces BuildID `adfe145bf8205c87f69260729a53be4d30fd3056`. `config.yaml` was left in place. This binary adds `POST /v1/folders/rename`, which rewrites catalog paths for a folder the Mac has already renamed and keeps each photo's id. It does not move the directory and it does not write a journal row. Health was still connection refused after the copy. The DSM task was not started. Starting it begins the startup walk from the beginning. Reorganize was not started.
+
+## 2026-11-19 — Rename a folder from the tree
+
+- Status: done
+- Scope: Disk and Server folder trees. Helper source gained `POST /v1/folders/rename`. The binary on the NAS was not replaced.
+- Notes: Right-click a folder and choose Rename. The folder stays in its parent. Spaces inside the name stay. Photos, Photos/_Removed, Photos/_Duplicates, and Photos/_Review keep their names. A symbolic link is left in place. A Disk folder outside the library is renamed on disk. A folder under Photos is renamed on disk, then the helper rewrites each catalog path under that folder and keeps the photo id. Edits and previews stay with that id. The helper that is installed now has no rename route, so a Photos folder is put back and the notice says the catalog could not follow the new name. Replacing that binary is a separate step, and this session did not replace it. The ZImager scheme compiled. The new folder-rename tests passed. Quit ZImager and rerun the scheme.
+
+## 2026-11-19 — Geometry follows a left or right rotation
+
+- Status: done
+- Scope: Editor Geometry, crop, and Spot, Scratch, and Red Eye. The helper is unchanged.
+- Notes: Vertical still changes the top and bottom edges of the picture on screen, and Horizontal the left and right, after Rotate left or Rotate right. Keystone is applied after the quarter-turn. A crop made before that turn stays on the same part of the photograph. A Spot, Scratch, or Red Eye repair made before that turn stays on the pixels it repaired. Corner pins stay in the photograph's original frame. Quit ZImager and rerun the scheme.
+
+## 2026-11-19 — Clean removes thumbnail cache files
+
+- Status: done
+- Scope: Server Folder view, Date panel. The helper is unchanged.
+- Notes: Clean deletes Thumbs.db, ehthumbs.db, desktop.ini, .DS_Store, and AppleDouble `._` files, then deletes a folder that has nothing else in it. A photo or any other file keeps its folder. Photos itself stays. A symbolic link is left in place. `Photos/1980 Ansel Adams` stayed because `1980-7-22 Ansel Adams` held `Thumbs.db`. Quit ZImager and rerun the scheme.
+
+## 2026-11-19 — Helper binary with catalog confirm
+
+- Status: done
+- Scope: NAS helper binary. The DSM task was already stopped.
+- Notes: Port 8742 was refusing connections. `go test ./...` in `Helper/` passed. The new static ARM64 binary is at `PhotoVideoAudio/.zimage/bin/zimage-helper`, 17,934,888 bytes, mode 0700, BuildID sha1 `adfe145bf8205c87f69260729a53be4d30fd3056`. It replaces BuildID `f54dc04370799b6e495e6bff2742eb41548585ef`. `config.yaml` was left in place. This binary adds `POST /v1/assets/{uid}/confirm`, which sets catalog confidence to 1.00 when the file is already in its year-and-day folder and the stored confidence is 0.00. It does not move the file and it does not write a journal row. Health was still connection refused after the copy. The DSM task was not started. Starting it begins the startup walk from the beginning. Reorganize was not started.
+
+## 2026-11-19 — Organize asks before it moves a photo
+
+- Status: done
+- Scope: Server Folder view, Date panel. Helper source gained `POST /v1/assets/{uid}/confirm`. The binary on the NAS was not replaced.
+- Notes: Organize opens a dialog. Continue reads this page and the pages after it, and stops when a page neither moves a photo nor raises confidence. Yes reads this page. No leaves every file where it is. A photo with no date goes to Photos/_Review. A dated photo goes to Photos/YYYY/YYYY-MM-DD. A photo already in that year and day folder stays, including a file in a folder inside that day. When DateTimeOriginal, DateTimeDigitized, or DateTime matches that folder and catalog confidence is 0.00, confidence becomes 1.00. The catalog date still chooses the folder. It does not raise confidence by itself. A photo that moves and matches another file of the same size leaves a preview in Photos/_Duplicates. A photo that stays does not. The ZImager scheme compiled. The two new helper tests passed against a temporary catalog. The Mac tests were not run. Quit ZImager and rerun the scheme. The helper that is running now does not store that confidence. Replacing its binary is a separate step, and this session did not replace it. Reorganize was not started.
+
+## 2026-11-19 — Clean deletes empty folders
+
+- Status: done
+- Scope: Server Folder view, Date panel. The helper is unchanged.
+- Notes: Clean sits under Organize. Yes deletes the open folder and the folders inside it when they contain no files. No leaves them. A file, including a hidden file, keeps its folder. Photos itself stays. A symbolic link is left in place and is not followed. `rmdir` deletes a directory only when it is empty. The folder tree rereads the parent. Quit ZImager and rerun the scheme.
+
+## 2026-11-19 — Organize the first page of a folder
+
+- Status: done
+- Scope: Server Folder view, Date panel. The helper is unchanged. Reorganize is not started.
+- Notes: Organize moves the first page of the open folder. A still with no catalog date, DateTimeOriginal, DateTimeDigitized, or DateTime goes to Photos/_Review. A valid day goes to Photos/YYYY/YYYY-MM-DD. The preview JPEG is sent again after the folder is reread, when the new catalog row can be found. A same-size neighbor, or a file that had to be renamed, leaves that preview in Photos/_Duplicates. The bar is Organize, with the current step and the count against the photos in the folder. The folder is then reread. Quit ZImager and rerun the scheme.
+
+## 2026-11-19 — Folder path shows the image count
+
+- Status: done
+- Scope: Server Folder view, the path to the right of Rescan.
+- Notes: The path ends with the number of stills in that folder, as `(12345)`, once the folder has been counted. Videos are left out of the number. A long path still keeps the count visible. Quit ZImager and rerun the scheme.
+
+## 2026-11-19 — Folder previews stay off the main thread
+
+- Status: done
+- Scope: Disk folder grid and Server folder grid. The helper is unchanged.
+- Notes: A folder that still needs previews was reduced one file at a time. On Server that reduction ran on the main thread, so the pointer spun and Activity Monitor stayed near one core. Disk and Server now reduce four photographs at a time, and the ImageIO work runs off the main thread. The page on screen still comes before the rest of the folder. The one-file calls the tests use still reduce a single photograph. The ZImager scheme compiled. Disk previews remain small JPEGs in the temporary folder-preview cache. The default cap is 200 MB, and the oldest files are removed past that cap. Server catalog previews stay on the NAS. Quit ZImager and rerun the scheme.
+
 ## 2026-11-17 — ZImager 1.8.3
 
 - Status: done

@@ -21,6 +21,7 @@ nonisolated enum FolderExportWorker {
             base: shaped,
             operations: state.inpaints,
             imageToken: Touchup.imageToken(path: tokenPath, geometry: state.geometry, crop: state.crop),
+            displayTurns: state.geometry.quarterTurns,
             context: context,
             progress: progress
         )

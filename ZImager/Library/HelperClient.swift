@@ -221,6 +221,16 @@ enum ScanCall: Equatable, Sendable {
     case offline
 }
 
+/// The catalog answer after a folder rename. `unsupported` is a helper that has no rename route.
+enum FolderRenameCall: Equatable, Sendable {
+    case updated(Int)
+    case unsupported
+    case offline
+    case refused
+    /// The wait ended before a reply. The catalog write may still finish.
+    case timedOut
+}
+
 struct TrimCall: Equatable, Sendable {
     var status: TrimStatus?
     var error: String?
@@ -1028,6 +1038,47 @@ final class HelperClient {
         throw HelperError.offline
     }
 
+    /// Points catalog rows at a folder that has already been renamed on disk. Asset ids stay.
+    func renameFolder(from: String, to: String) async -> FolderRenameCall {
+        let body: Data
+        do {
+            body = try JSONSerialization.data(withJSONObject: ["from": from, "to": to])
+        } catch {
+            return .offline
+        }
+        do {
+            // beginWrite retries a busy catalog for two minutes. This wait outlasts that.
+            let response = try await perform(
+                path: "/v1/folders/rename",
+                method: "POST",
+                body: body,
+                authorize: true,
+                timeout: 180,
+                contentType: "application/json"
+            )
+            if response.status == 200 {
+                struct Reply: Decodable { var renamed: Int? }
+                let count = (try? JSONDecoder().decode(Reply.self, from: response.body))?.renamed ?? 0
+                return .updated(count)
+            }
+            if response.status == 404 {
+                struct ErrBody: Decodable { var error: String? }
+                if (try? JSONDecoder().decode(ErrBody.self, from: response.body))?.error == "missing" {
+                    return .refused
+                }
+                return .unsupported
+            }
+            if response.status == 400 || response.status == 409 {
+                return .refused
+            }
+            return .refused
+        } catch let error as URLError where error.code == .timedOut {
+            return .timedOut
+        } catch {
+            return .offline
+        }
+    }
+
     /// Starts a catalog walk of one folder and its subfolders. The helper answers before the walk finishes.
     func startFolderRescan(prefix: String) async -> FolderScanCall {
         let body: Data
@@ -1144,6 +1195,13 @@ final class HelperClient {
     /// Park rows from the server `review=1` query.
     func reviewAssets() async throws -> LibraryPage {
         try await page(path: "/v1/assets?review=1&limit=200")
+    }
+
+    /// Sets catalog confidence to 1 when the file is already in that year and day folder.
+    /// The file stays where it is. A helper without this route answers as offline.
+    func confirmCaptureDate(uid: String, captureTime: String) async throws -> AssetCall {
+        let body = try JSONSerialization.data(withJSONObject: ["captureTime": captureTime])
+        return try await assetPost(path: "/v1/assets/\(uid)/confirm", body: body)
     }
 
     /// Stores the typed date and journal-moves that file into its date folder.

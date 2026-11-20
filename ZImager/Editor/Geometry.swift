@@ -25,7 +25,8 @@ extension CornerPin {
     )
 }
 
-/// Stage 2 of the fixed render order: lens, perspective, quarter-turns, straighten, offset, then sharpness.
+/// Stage 2 of the fixed render order: lens, corner pins, quarter-turns, keystone, straighten, offset, then sharpness.
+/// Vertical and Horizontal keystone run after the quarter-turns, so they stay the top, bottom, left, and right edges on screen.
 /// Identity geometry returns the base image unchanged.
 nonisolated enum GeometryPipeline {
     /// Keystone strength. `1` moves the top-left corner to `(-1/6, -1/6)`.
@@ -48,8 +49,13 @@ nonisolated enum GeometryPipeline {
         var image = base
         if hasTransform(geometry) {
             image = lens(base, geometry.lens)
-            image = perspective(image, geometry)
+            if geometry.corners != nil {
+                image = perspective(image, pins: geometry.corners)
+            }
             image = rotate(image, quarterTurns: geometry.quarterTurns)
+            if geometry.corners == nil {
+                image = perspective(image, pins: keystonePins(geometry))
+            }
             image = straighten(image, degrees: geometry.straightenDegrees)
             image = finite(image)
         }
@@ -175,10 +181,22 @@ nonisolated enum GeometryPipeline {
         return output.cropped(to: extent)
     }
 
-    private static func perspective(_ image: CIImage, _ geometry: GeometryState) -> CIImage {
+    /// Slider keystone in the picture's current orientation. Corner pins do not use this.
+    private static func keystonePins(_ geometry: GeometryState) -> CornerPin? {
+        guard geometry.verticalKeystone != 0 || geometry.horizontalKeystone != 0 else { return nil }
+        let vertical = geometry.verticalKeystone
+        let horizontal = geometry.horizontalKeystone
+        return CornerPin(
+            topLeft: keystonePoint(NormPoint(x: 0, y: 0), vertical: vertical, horizontal: horizontal),
+            topRight: keystonePoint(NormPoint(x: 1, y: 0), vertical: vertical, horizontal: horizontal),
+            bottomRight: keystonePoint(NormPoint(x: 1, y: 1), vertical: vertical, horizontal: horizontal),
+            bottomLeft: keystonePoint(NormPoint(x: 0, y: 1), vertical: vertical, horizontal: horizontal)
+        )
+    }
+
+    private static func perspective(_ image: CIImage, pins: CornerPin?) -> CIImage {
         let extent = image.extent
         guard extent.width >= 1, extent.height >= 1 else { return image }
-        let pins = destinationPins(geometry)
         guard let pins, !isUnit(pins) else { return image }
         let width = extent.width
         let height = extent.height
@@ -196,21 +214,6 @@ nonisolated enum GeometryPipeline {
         filter.setValue(vector(pins.bottomLeft), forKey: "inputBottomLeft")
         guard let output = filter.outputImage else { return image }
         return finite(output)
-    }
-
-    private static func destinationPins(_ geometry: GeometryState) -> CornerPin? {
-        if let corners = geometry.corners {
-            return corners
-        }
-        guard geometry.verticalKeystone != 0 || geometry.horizontalKeystone != 0 else { return nil }
-        let vertical = geometry.verticalKeystone
-        let horizontal = geometry.horizontalKeystone
-        return CornerPin(
-            topLeft: keystonePoint(NormPoint(x: 0, y: 0), vertical: vertical, horizontal: horizontal),
-            topRight: keystonePoint(NormPoint(x: 1, y: 0), vertical: vertical, horizontal: horizontal),
-            bottomRight: keystonePoint(NormPoint(x: 1, y: 1), vertical: vertical, horizontal: horizontal),
-            bottomLeft: keystonePoint(NormPoint(x: 0, y: 1), vertical: vertical, horizontal: horizontal)
-        )
     }
 
     private static func isUnit(_ pins: CornerPin) -> Bool {

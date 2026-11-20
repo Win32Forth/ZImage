@@ -1245,6 +1245,180 @@ final class LibraryGridTests: XCTestCase {
         XCTAssertTrue(fake.paths.contains("/v1/folders/rescan"))
         XCTAssertEqual(browser.notice, "Moved 1 file to Photos/Tom Schoenect.")
     }
+
+    func testRenameFolderRewritesTheOpenFolderAndKeepsThePhotoOnDisk() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("zimage-catalog-rename-\(UUID().uuidString)", isDirectory: true)
+        let album = root.appendingPathComponent("Photos/Album", isDirectory: true)
+        let sibling = root.appendingPathComponent("Photos/Album2", isDirectory: true)
+        try FileManager.default.createDirectory(at: album, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: sibling, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let photo = album.appendingPathComponent("a.jpg")
+        try Data("a".utf8).write(to: photo)
+        try Data("b".utf8).write(to: sibling.appendingPathComponent("b.jpg"))
+        let fake = GridFakeListener()
+        let empty = Data(#"{"rows":[],"nextCursor":""}"#.utf8)
+        fake.enqueue(.success(HelperResponse(status: 200, body: Data(#"{"renamed":1}"#.utf8))))
+        for _ in 0..<4 {
+            fake.enqueue(.success(HelperResponse(status: 200, body: empty)))
+        }
+        let browser = LibraryBrowser(
+            client: HelperClient(credentials: HelperCredentials(host: "192.168.1.20", pin: Data([1]), token: "t")) { request in
+                try await fake.send(request)
+            },
+            libraryRoot: root,
+            openFile: { _, _ in }
+        )
+        browser.displayFolder = "Photos/Album"
+        await browser.renameFolder("Photos/Album", to: "  Trip Album  ")
+        let dest = root.appendingPathComponent("Photos/Trip Album/a.jpg")
+        XCTAssertEqual(try Data(contentsOf: dest), Data("a".utf8))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: photo.path))
+        XCTAssertEqual(try Data(contentsOf: sibling.appendingPathComponent("b.jpg")), Data("b".utf8))
+        XCTAssertEqual(browser.displayFolder, "Photos/Trip Album")
+        XCTAssertEqual(browser.notice, "Renamed to Trip Album.")
+        XCTAssertFalse(browser.moveBusy)
+        XCTAssertEqual(browser.folderTreeRevision, 1)
+        XCTAssertEqual(browser.folderTreeParents, ["Photos"])
+        XCTAssertTrue(fake.paths.contains("/v1/folders/rename"))
+        let body = try JSONDecoder().decode(RenameBody.self, from: fake.bodies[0])
+        XCTAssertEqual(body.from, "Photos/Album")
+        XCTAssertEqual(body.to, "Photos/Trip Album")
+    }
+
+    func testRenameFolderMovesBackWhenTheHelperHasNoRoute() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("zimage-catalog-restore-\(UUID().uuidString)", isDirectory: true)
+        let album = root.appendingPathComponent("Photos/Album", isDirectory: true)
+        try FileManager.default.createDirectory(at: album, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let photo = album.appendingPathComponent("a.jpg")
+        try Data("a".utf8).write(to: photo)
+        let fake = GridFakeListener()
+        fake.enqueue(.success(HelperResponse(status: 404, body: Data("404 page not found".utf8))))
+        let browser = LibraryBrowser(
+            client: HelperClient(credentials: HelperCredentials(host: "192.168.1.20", pin: Data([1]), token: "t")) { request in
+                try await fake.send(request)
+            },
+            libraryRoot: root,
+            openFile: { _, _ in }
+        )
+        browser.displayFolder = "Photos/Album"
+        await browser.renameFolder("Photos/Album", to: "Trip")
+        XCTAssertEqual(try Data(contentsOf: photo), Data("a".utf8))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("Photos/Trip").path))
+        XCTAssertEqual(browser.displayFolder, "Photos/Album")
+        XCTAssertEqual(browser.notice, "The folder stayed as it is. The catalog could not follow the new name.")
+        XCTAssertFalse(browser.moveBusy)
+        XCTAssertEqual(browser.folderTreeRevision, 0)
+        XCTAssertEqual(fake.paths, ["/v1/folders/rename"])
+    }
+
+    func testRenameFolderKeepsTheNewNameWhenTheHelperAnswersAfterATimeout() async throws {
+        let harness = try folderRenameHarness()
+        defer { try? FileManager.default.removeItem(at: harness.root) }
+        harness.fake.enqueue(.failure(URLError(.timedOut)))
+        harness.fake.enqueue(.success(HelperResponse(status: 200, body: Data(#"{"renamed":1}"#.utf8))))
+        enqueueEmptyFolderPages(harness.fake)
+        await harness.browser.renameFolder("Photos/Album", to: "Trip")
+        let moved = harness.root.appendingPathComponent("Photos/Trip/a.jpg")
+        XCTAssertEqual(try Data(contentsOf: moved), Data("a".utf8))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: harness.photo.path))
+        XCTAssertEqual(harness.browser.notice, "Renamed to Trip.")
+        XCTAssertEqual(harness.browser.displayFolder, "Photos/Trip")
+        XCTAssertEqual(harness.fake.paths.filter { $0 == "/v1/folders/rename" }.count, 2)
+    }
+
+    func testRenameFolderKeepsTheNewNameWhenARetrySaysTheNameIsTaken() async throws {
+        let harness = try folderRenameHarness()
+        defer { try? FileManager.default.removeItem(at: harness.root) }
+        harness.fake.enqueue(.failure(URLError(.timedOut)))
+        harness.fake.enqueue(.success(HelperResponse(status: 409, body: Data(#"{"error":"taken"}"#.utf8))))
+        enqueueEmptyFolderPages(harness.fake)
+        await harness.browser.renameFolder("Photos/Album", to: "Trip")
+        XCTAssertEqual(try Data(contentsOf: harness.root.appendingPathComponent("Photos/Trip/a.jpg")), Data("a".utf8))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: harness.photo.path))
+        XCTAssertEqual(harness.browser.notice, "Renamed to Trip.")
+    }
+
+    func testRenameFolderLeavesTheNewNameWhenTheHelperNeverAnswers() async throws {
+        let harness = try folderRenameHarness()
+        defer { try? FileManager.default.removeItem(at: harness.root) }
+        harness.fake.enqueue(.failure(URLError(.timedOut)))
+        harness.fake.enqueue(.failure(URLError(.timedOut)))
+        enqueueEmptyFolderPages(harness.fake)
+        await harness.browser.renameFolder("Photos/Album", to: "Trip")
+        XCTAssertEqual(try Data(contentsOf: harness.root.appendingPathComponent("Photos/Trip/a.jpg")), Data("a".utf8))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: harness.photo.path))
+        XCTAssertEqual(harness.browser.notice, "Renamed to Trip. The catalog may still be catching up.")
+        XCTAssertEqual(harness.fake.paths.filter { $0 == "/v1/folders/rename" }.count, 2)
+    }
+
+    func testRenameFolderMovesBackWhenTheHelperIsUnreachable() async throws {
+        let harness = try folderRenameHarness()
+        defer { try? FileManager.default.removeItem(at: harness.root) }
+        harness.fake.enqueue(.failure(URLError(.cannotConnectToHost)))
+        await harness.browser.renameFolder("Photos/Album", to: "Trip")
+        XCTAssertEqual(try Data(contentsOf: harness.photo), Data("a".utf8))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: harness.root.appendingPathComponent("Photos/Trip").path))
+        XCTAssertEqual(harness.browser.notice, "The folder stayed as it is. The catalog could not follow the new name.")
+        XCTAssertEqual(harness.fake.paths, ["/v1/folders/rename"])
+    }
+
+    func testRenameFolderLeavesPhotosAndTheShelves() async {
+        let browser = LibraryBrowser(
+            client: HelperClient(credentials: HelperCredentials(host: "192.168.1.20", pin: Data([1]), token: "t")) { _ in
+                throw URLError(.cannotConnectToHost)
+            },
+            libraryRoot: URL(fileURLWithPath: "/tmp/zimage-shelf-rename"),
+            openFile: { _, _ in }
+        )
+        await browser.renameFolder("Photos", to: "Library")
+        XCTAssertEqual(browser.notice, "Photos stays at the top of the library.")
+        await browser.renameFolder("Photos/_Duplicates", to: "Copies")
+        XCTAssertEqual(browser.notice, "That folder keeps its name.")
+        XCTAssertEqual(browser.folderTreeRevision, 0)
+    }
+}
+
+private struct RenameBody: Decodable {
+    var from: String
+    var to: String
+}
+
+private struct FolderRenameHarness {
+    var root: URL
+    var photo: URL
+    var browser: LibraryBrowser
+    var fake: GridFakeListener
+}
+
+@MainActor
+private func folderRenameHarness() throws -> FolderRenameHarness {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("zimage-catalog-rename-\(UUID().uuidString)", isDirectory: true)
+    let album = root.appendingPathComponent("Photos/Album", isDirectory: true)
+    try FileManager.default.createDirectory(at: album, withIntermediateDirectories: true)
+    let photo = album.appendingPathComponent("a.jpg")
+    try Data("a".utf8).write(to: photo)
+    let fake = GridFakeListener()
+    let browser = LibraryBrowser(
+        client: HelperClient(credentials: HelperCredentials(host: "192.168.1.20", pin: Data([1]), token: "t")) { request in
+            try await fake.send(request)
+        },
+        libraryRoot: root,
+        openFile: { _, _ in }
+    )
+    browser.displayFolder = "Photos/Album"
+    return FolderRenameHarness(root: root, photo: photo, browser: browser, fake: fake)
+}
+
+private func enqueueEmptyFolderPages(_ fake: GridFakeListener) {
+    let empty = Data(#"{"rows":[],"nextCursor":""}"#.utf8)
+    for _ in 0..<4 {
+        fake.enqueue(.success(HelperResponse(status: 200, body: empty)))
+    }
 }
 
 private func queryValue(_ name: String, _ url: URL) -> String? {
@@ -1255,6 +1429,7 @@ private final class GridFakeListener: @unchecked Sendable {
     private let lock = NSLock()
     private var script: [Result<HelperResponse, Error>] = []
     private var seen: [URL] = []
+    private var seenBodies: [Data] = []
 
     var paths: [String] {
         lock.lock()
@@ -1280,16 +1455,23 @@ private final class GridFakeListener: @unchecked Sendable {
         lock.unlock()
     }
 
+    var bodies: [Data] {
+        lock.lock()
+        defer { lock.unlock() }
+        return seenBodies
+    }
+
     func send(_ request: URLRequest) async throws -> HelperResponse {
-        let next = take(request.url)
+        let next = take(request.url, request.httpBody)
         guard let next else { throw URLError(.cannotConnectToHost) }
         return try next.get()
     }
 
-    private func take(_ url: URL?) -> Result<HelperResponse, Error>? {
+    private func take(_ url: URL?, _ body: Data?) -> Result<HelperResponse, Error>? {
         lock.lock()
         defer { lock.unlock() }
         if let url { seen.append(url) }
+        seenBodies.append(body ?? Data())
         return script.isEmpty ? nil : script.removeFirst()
     }
 }

@@ -51,6 +51,27 @@ nonisolated enum CropRect {
         ))
     }
 
+    /// Turns the rectangle with the photograph. `quarterTurns` is clockwise, in the same top-left space as the crop.
+    static func rotated(_ rect: NormRect, quarterTurns: Int) -> NormRect {
+        let turns = GeometryPipeline.wrap(quarterTurns)
+        guard turns != 0 else { return rect }
+        let upright = clamped(rect)
+        var points = [
+            (upright.x, upright.y),
+            (upright.x + upright.width, upright.y),
+            (upright.x + upright.width, upright.y + upright.height),
+            (upright.x, upright.y + upright.height),
+        ]
+        for _ in 0..<turns {
+            points = points.map { point in (1 - point.1, point.0) }
+        }
+        let minX = points.map(\.0).min() ?? upright.x
+        let minY = points.map(\.1).min() ?? upright.y
+        let maxX = points.map(\.0).max() ?? upright.x
+        let maxY = points.map(\.1).max() ?? upright.y
+        return NormRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY)
+    }
+
     /// A point on the cropped image, mapped into the geometry output.
     static func sourcePoint(_ point: NormPoint, within crop: NormRect?) -> NormPoint {
         guard let crop else { return point }

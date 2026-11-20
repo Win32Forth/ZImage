@@ -26,10 +26,22 @@ struct InspectorGeometry: View {
                     slider("Straighten", value: model.draftGeometry.straightenDegrees, range: -45...45, readout: String(format: "%+.1f°", model.draftGeometry.straightenDegrees)) { value in
                         model.nudgeGeometry("Straighten") { $0.straightenDegrees = value }
                     }
-                    slider("Vertical", value: model.draftGeometry.verticalKeystone, range: -1...1, readout: String(format: "%+.2f", model.draftGeometry.verticalKeystone)) { value in
+                    slider(
+                        "Vertical",
+                        value: model.draftGeometry.verticalKeystone,
+                        range: -1...1,
+                        readout: String(format: "%+.2f", model.draftGeometry.verticalKeystone),
+                        help: "Changes the top and bottom edges of the picture on screen, including after Rotate left or Rotate right."
+                    ) { value in
                         model.nudgeGeometry("Vertical") { $0.verticalKeystone = value }
                     }
-                    slider("Horizontal", value: model.draftGeometry.horizontalKeystone, range: -1...1, readout: String(format: "%+.2f", model.draftGeometry.horizontalKeystone)) { value in
+                    slider(
+                        "Horizontal",
+                        value: model.draftGeometry.horizontalKeystone,
+                        range: -1...1,
+                        readout: String(format: "%+.2f", model.draftGeometry.horizontalKeystone),
+                        help: "Changes the left and right edges of the picture on screen, including after Rotate left or Rotate right."
+                    ) { value in
                         model.nudgeGeometry("Horizontal") { $0.horizontalKeystone = value }
                     }
                     slider(

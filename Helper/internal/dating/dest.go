@@ -86,6 +86,16 @@ func PlannedPath(rel, policy, folder, bucket string, d Decision) (string, bool) 
 	return dest, true
 }
 
+// InDayFolder reports a file that already sits in Photos/YYYY/YYYY-MM-DD or a folder inside it.
+func InDayFolder(rel string, d Decision) bool {
+	if !d.HasCapture || !d.FullDay {
+		return false
+	}
+	prefix := "Photos/" + d.Capture.Format("2006") + "/" + d.Capture.Format("2006-01-02") + "/"
+	rel = strings.TrimPrefix(rel, "/")
+	return strings.HasPrefix(rel, prefix)
+}
+
 func eventDir(title string, hasTitle bool) string {
 	if hasTitle {
 		return title

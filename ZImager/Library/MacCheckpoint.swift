@@ -7,9 +7,9 @@ enum MacCheckpointError: Error {
     case unreadable
 }
 
-/// One still at a time. ImageIO stops at 1024 px.
-/// The stored preview JPEG has a long edge of 256. Detail scoring still uses a long edge of 512.
-enum MacCheckpoint {
+/// ImageIO stops at 1024 px. The stored preview JPEG has a long edge of 256.
+/// Detail scoring still uses a long edge of 512. Callers run this off the main thread.
+nonisolated enum MacCheckpoint {
     static func payloads(for url: URL) throws -> (facts: Data, detail: Data) {
         guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else {
             throw MacCheckpointError.unreadable

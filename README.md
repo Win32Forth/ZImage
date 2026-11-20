@@ -1,6 +1,6 @@
 # ZImage
 
-ZImager 1.8.3 is the app. It is one window. Disk is the editor. Server is the library. The separate ZImage editor and ZImage Library are no longer in this project.
+ZImager 1.8.4 is the app. It is one window. Disk is the editor. Server is the library. The separate ZImage editor and ZImage Library are no longer in this project.
 
 `DESIGN.md` is the plan. `STATUS.md` is the iteration log, newest first.
 
@@ -9,6 +9,22 @@ ZImager 1.8.3 is the app. It is one window. Disk is the editor. Server is the li
 Reorganize, Review, and Duplicates do not work yet. Using them can lose photos. The Events and Reorganize buttons are hidden until those tools are ready. Leave Reorganize, Review, and Duplicates alone. Do not press Start, Pause, Continue, Find duplicates, or Delete all duplicates.
 
 Disk, and Server browsing of a folder, are the parts to use. Rotate, paste, export, print, and the image adjustments save the photo and rebuild its preview.
+
+## What 1.8.4 changes
+
+Folder view stays responsive while previews are built. Disk and Server prepare four photographs at a time, and that work stays off the main thread. The page on screen still comes first. Disk previews remain temporary JPEGs on this Mac, capped at 200 MB, and the oldest files are removed past that cap. Server previews stay on the NAS.
+
+In Server Folder view, the path to the right of Rescan ends with the number of stills in that folder, as `(12345)`, once the count is finished. Videos are left out of the number.
+
+The Date panel in Server Folder view has Organize and Clean. Organize opens a dialog. Continue reads this page and the pages after it, and stops when a page neither moves a photo nor raises confidence. Yes reads this page. No leaves every file where it is. A photo with no date goes to `Photos/_Review`. A dated photo goes to `Photos/YYYY/YYYY-MM-DD`. A photo already in that year and day folder stays. When DateTimeOriginal, DateTimeDigitized, or DateTime matches that folder and catalog confidence is 0.00, confidence becomes 1.00. A photo that moves and matches another file of the same size leaves a preview in `Photos/_Duplicates`.
+
+Clean asks before it deletes anything. Yes deletes Thumbs.db, ehthumbs.db, desktop.ini, .DS_Store, and AppleDouble `._` files in that folder and its subfolders, then deletes a folder that has nothing else in it. No leaves them. A photo or any other file keeps its folder. Photos itself stays. A symbolic link is left in place.
+
+Right-click a folder in the Disk tree or the Server tree and choose Rename. The folder stays in its parent. Spaces inside the name stay. Photos, Photos/_Removed, Photos/_Duplicates, and Photos/_Review keep their names. A symbolic link is left in place. A Disk folder outside the library is renamed on this Mac. A folder under Photos is renamed on disk, then the catalog follows that name and keeps each file's id, including a folder that holds only videos. Edits and previews stay with that id. The app waits up to three minutes for the catalog write. If the helper cannot be reached, the folder is put back.
+
+Rotate left or Rotate right keeps Vertical on the top and bottom edges of the picture on screen, and Horizontal on the left and right. A crop made before that turn stays on the same part of the photograph. A Spot, Scratch, or Red Eye repair made before that turn stays on the pixels it repaired.
+
+The helper source adds folder rename and the confidence update Organize uses. The disk image does not include the helper. The copy running on the NAS already has those two routes. This source also accepts a rename the catalog has already recorded. Stop the DSM task before you replace the binary. 1.8.3 behavior below is still in this app.
 
 ## What 1.8.3 changes
 
@@ -108,7 +124,7 @@ Clean folder is in the Server three-bar menu. It removes catalog records in the 
 
 ## Install ZImager
 
-The disk image is `Releases/ZImager-1.8.3-macOS.dmg`. It contains `ZImager.app` and `README.txt`.
+The disk image is `Releases/ZImager-1.8.4-macOS.dmg`. It contains `ZImager.app` and `README.txt`.
 
 1. Open the disk image.
 2. Drag **ZImager.app** into Applications.
@@ -122,7 +138,7 @@ After that, double-click ZImager and it will run. ZImager is built on this Mac w
 
 Skip this if you only use Disk.
 
-Server mode needs `zimage-helper` running on the NAS. The disk image does not include it. The Mac never opens `catalog.db`. The 1.8.0 helper source adds Rescan. Stop the DSM task before you replace the binary.
+Server mode needs `zimage-helper` running on the NAS. The disk image does not include it. The Mac never opens `catalog.db`. The 1.8.0 helper source adds Rescan. The 1.8.4 helper source adds folder rename and the confidence update Organize uses. Stop the DSM task before you replace the binary.
 
 1. On a Mac, from `Helper/` in this repo:
 

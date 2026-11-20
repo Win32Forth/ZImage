@@ -378,6 +378,76 @@ func (s *Server) assetDate(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, item)
 }
 
+// confirmDate sets catalog confidence to 1 when the file is already in its year and day folder
+// and the stored confidence is 0. It does not move the file and it does not write a journal row.
+func (s *Server) confirmDate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method"})
+		return
+	}
+	if s.Catalog == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "library_unavailable"})
+		return
+	}
+	uid := r.PathValue("uid")
+	if !plainUID(uid) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not_found"})
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	var body struct {
+		CaptureTime string `json:"captureTime"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "body"})
+		return
+	}
+	decision, ok := dating.User(body.CaptureTime)
+	if !ok || !decision.FullDay {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "date"})
+		return
+	}
+	var id int64
+	var rel string
+	var confidence float64
+	err := s.Catalog.Read.QueryRow(`
+		SELECT id, rel_path, capture_confidence FROM assets WHERE uid = ?`, uid).Scan(&id, &rel, &confidence)
+	if err == sql.ErrNoRows {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not_found"})
+		return
+	}
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "catalog"})
+		return
+	}
+	if confidence != 0 || !dating.InDayFolder(rel, decision) {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "confidence"})
+		return
+	}
+	stored := decision.StoredTime()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	res, err := s.Catalog.Write.Exec(`
+		UPDATE assets
+		SET capture_time = ?, capture_offset_known = 0, capture_source = 'user', capture_confidence = 1,
+			candidate_capture_time = ?, updated_at = ?
+		WHERE id = ? AND capture_confidence = 0`,
+		stored, stored, now, id)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "catalog"})
+		return
+	}
+	changed, _ := res.RowsAffected()
+	if changed == 0 {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "confidence"})
+		return
+	}
+	item, ok := s.loadUID(w, uid)
+	if !ok {
+		return
+	}
+	writeJSON(w, http.StatusOK, item)
+}
+
 func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method"})

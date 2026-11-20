@@ -42,7 +42,8 @@ nonisolated enum InpaintExportError: LocalizedError {
 }
 
 /// Click selection, mask PNG, and the interactive or export fill.
-/// Stage 3 runs after geometry and before tone. Masks are normalized to that image.
+/// Stage 3 runs after geometry and before tone. Masks are drawn on that image.
+/// A later quarter-turn records the orientation they were drawn in, and the fill turns the mask with the photograph.
 nonisolated enum InpaintPipeline {
     static let interactiveLongEdge = 1024
     static let exportLongEdge = 2048
@@ -85,32 +86,34 @@ nonisolated enum InpaintPipeline {
         base: CIImage,
         operations: [InpaintOp],
         imageToken: Int = 0,
+        displayTurns: Int? = nil,
         context: CIContext? = nil,
         isCancelled: @escaping @Sendable () -> Bool = { false },
         progress: Touchup.ProgressHandler? = nil
     ) -> CIImage {
+        let repairs = aligned(operations, displayTurns: displayTurns)
         var image = base
         var chain = imageToken
         var index = 0
-        let total = operations.reduce(into: 0) { count, operation in
+        let total = repairs.reduce(into: 0) { count, operation in
             if !operation.maskPNG.isEmpty { count += 1 }
         }
         var done = 0
         progress?(0, 0, total)
-        while index < operations.count {
+        while index < repairs.count {
             // A cancelled dust run must stop here. Later repairs would otherwise fill on the unrepaired photo.
             if isCancelled() { return base }
-            let operation = operations[index]
+            let operation = repairs[index]
             if operation.maskPNG.isEmpty {
                 index += 1
                 continue
             }
             if repairsTogether(operation) {
                 var end = index + 1
-                while end < operations.count, repairsTogether(operations[end]) {
+                while end < repairs.count, repairsTogether(repairs[end]) {
                     end += 1
                 }
-                let run = Array(operations[index..<end])
+                let run = Array(repairs[index..<end])
                 if run.count >= 2 {
                     let doneBefore = done
                     let filled = Touchup.applyDustRun(
@@ -163,6 +166,11 @@ nonisolated enum InpaintPipeline {
     }
 
     /// Dust at full strength. Several of these in a row can share one picture.
+    private static func aligned(_ operations: [InpaintOp], displayTurns: Int?) -> [InpaintOp] {
+        guard let displayTurns else { return operations }
+        return operations.map { Touchup.oriented($0, displayTurns: displayTurns) }
+    }
+
     private static func repairsTogether(_ operation: InpaintOp) -> Bool {
         operation.modelID == InpaintModel.dust && operation.strength >= 0.999 && !operation.maskPNG.isEmpty
     }

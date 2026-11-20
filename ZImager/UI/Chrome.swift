@@ -28,10 +28,16 @@ final class EditorModel {
     var folderSelectionAnchor: String?
     var folderRotateBusy = false
     var folderRotateNote: String?
-    /// Bumped after a Disk move creates a folder, so the left tree rereads its parent.
+    /// Bumped after a Disk move or rename changes a folder, so the left tree rereads its parent.
     var folderTreeRevision = 0
-    /// Parents of folders a Disk move just created.
+    /// Parents of folders a Disk move or rename just changed.
     var folderTreeParents: [URL] = []
+    /// Set by the window. Nil in tests. A folder inside Photos waits for the catalog.
+    @ObservationIgnored
+    var followLibraryFolderRename: ((URL, URL) async -> LibraryFolderRenameFollow)?
+    /// Relative library path of a folder, or nil when that folder is outside the library.
+    @ObservationIgnored
+    var libraryRelativePath: ((URL) -> String?)?
     /// The joined photo on screen. Nil until Preview has drawn it.
     var mergePreviewImage: CGImage?
     var mergePreviewRight = 0
@@ -507,6 +513,143 @@ final class EditorModel {
             }
             folderRotateNote = "Renamed to \(dest.lastPathComponent)."
         }
+    }
+
+    /// Gives one folder in the Disk tree a new name in the same place.
+    /// A folder inside Photos waits for the catalog, and moves back when the catalog cannot follow.
+    func renameBrowseFolder(_ folder: URL, to typed: String) {
+        guard !showsDiskMergePreview, !mergePreviewBusy, !folderRotateBusy, !exportBusy else {
+            folderRotateNote = "An export is already running."
+            return
+        }
+        guard isInsideFolderScope(folder) else {
+            folderRotateNote = "The folder could not be renamed."
+            return
+        }
+        if let relative = libraryRelativePath?(folder), !FolderRename.catalogAllows(relative) {
+            folderRotateNote = FolderRename.keptMessage(relative: relative)
+            return
+        }
+        let label = folderRenameLabel(typed)
+        switch FolderRename.perform(source: folder, typed: typed) {
+        case .failure(let problem):
+            if let message = FolderRename.message(for: problem, name: label) {
+                folderRotateNote = message
+            }
+        case .success(let dest):
+            guard let follow = followLibraryFolderRename else {
+                applyBrowseFolderRename(from: folder, to: dest)
+                folderRotateNote = "Renamed to \(dest.lastPathComponent)."
+                return
+            }
+            folderRotateBusy = true
+            let old = folder
+            Task {
+                let outcome = await follow(old, dest)
+                switch outcome {
+                case .failed:
+                    if FolderRename.restore(from: dest, to: old) {
+                        self.folderRotateNote = "The folder stayed as it is. The catalog could not follow the new name."
+                    } else {
+                        self.applyBrowseFolderRename(from: old, to: dest)
+                        self.folderRotateNote = "Renamed to \(dest.lastPathComponent). The catalog could not follow the new name."
+                    }
+                case .unsettled:
+                    self.applyBrowseFolderRename(from: old, to: dest)
+                    self.folderRotateNote = "Renamed to \(dest.lastPathComponent). The catalog may still be catching up."
+                case .updated, .outside:
+                    self.applyBrowseFolderRename(from: old, to: dest)
+                    self.folderRotateNote = "Renamed to \(dest.lastPathComponent)."
+                }
+                self.folderRotateBusy = false
+            }
+        }
+    }
+
+    private func folderRenameLabel(_ typed: String) -> String {
+        if case .success(let cleaned) = FolderRename.cleaned(typed) {
+            return cleaned
+        }
+        return typed
+    }
+
+    /// Points the open folder, the grid, and an open photo at the renamed directory.
+    private func applyBrowseFolderRename(from old: URL, to dest: URL) {
+        let renamedRoot = browseRoot.map { FolderEntry.cacheKey(for: $0) == FolderEntry.cacheKey(for: old) } ?? false
+        let openWasInside = folderURL.map { FolderRename.shifted($0, from: old, to: dest) != nil } ?? false
+        if let oldRel = libraryRelativePath?(old),
+           let newRel = libraryRelativePath?(dest),
+           let rel = catalogRelPath,
+           let shifted = FolderRename.shiftedRelative(rel, from: oldRel, to: newRel) {
+            catalogRelPath = shifted
+        }
+        func shiftKey(_ key: String) -> String {
+            FolderRename.shiftedPath(key, from: old, to: dest) ?? key
+        }
+        selectedFolderKey = selectedFolderKey.map(shiftKey)
+        selectedFolderKeys = Set(selectedFolderKeys.map(shiftKey))
+        folderSelectionOrder = folderSelectionOrder.map(shiftKey)
+        folderSelectionAnchor = folderSelectionAnchor.map(shiftKey)
+        folderEntries = folderEntries.map { entry in
+            guard let url = FolderRename.shifted(entry.url, from: old, to: dest) else { return entry }
+            return FolderEntry(url: url, name: url.lastPathComponent, isDirectory: entry.isDirectory, isVideo: entry.isVideo)
+        }
+        func shiftURL(_ url: URL?) -> URL? {
+            guard let url else { return nil }
+            return FolderRename.shifted(url, from: old, to: dest) ?? url
+        }
+        pendingOpenURL = shiftURL(pendingOpenURL)
+        sourceFileURL = shiftURL(sourceFileURL)
+        documentURL = shiftURL(documentURL)
+        videoSourceURL = shiftURL(videoSourceURL)
+        if let videoKey {
+            self.videoKey = shiftKey(videoKey)
+        }
+        previewJPEGByPath = remapFolderPaths(previewJPEGByPath, from: old, to: dest)
+        editedPreviewData = remapFolderPaths(editedPreviewData, from: old, to: dest)
+        editSaveToken = remapFolderPaths(editSaveToken, from: old, to: dest)
+        videoGrades = remapFolderPaths(videoGrades, from: old, to: dest)
+        var nextEdits: [String: PhotoEdits] = [:]
+        for (key, edits) in editsBySource {
+            var copy = edits
+            if let doc = copy.documentURL {
+                copy.documentURL = FolderRename.shifted(doc, from: old, to: dest) ?? doc
+            }
+            nextEdits[shiftKey(key)] = copy
+        }
+        editsBySource = nextEdits
+        if let root = browseRoot, let shifted = FolderRename.shifted(root, from: old, to: dest) {
+            browseRoot = shifted
+        }
+        if let folder = folderURL, let shifted = FolderRename.shifted(folder, from: old, to: dest) {
+            folderURL = shifted
+        }
+        if let scope = folderScopeURL, let shifted = FolderRename.shifted(scope, from: old, to: dest) {
+            _ = shifted.startAccessingSecurityScopedResource()
+            folderScopeURL = shifted
+            if FolderEntry.cacheKey(for: scope) == FolderEntry.cacheKey(for: old) {
+                scope.stopAccessingSecurityScopedResource()
+            }
+        }
+        if browseRoot != nil, folderURL != nil {
+            rememberBrowseFolder()
+        }
+        if !renamedRoot {
+            folderTreeParents = [old.deletingLastPathComponent()]
+            folderTreeRevision += 1
+        }
+        if openWasInside {
+            reloadFolderListing()
+        }
+    }
+
+    private func remapFolderPaths<T>(_ map: [String: T], from old: URL, to dest: URL) -> [String: T] {
+        var out: [String: T] = [:]
+        out.reserveCapacity(map.count)
+        for (key, value) in map {
+            out[FolderRename.shiftedPath(key, from: old, to: dest) ?? key] = value
+        }
+        return out
     }
 
     /// Selected files in the Disk folder. Directories stay where they are.
@@ -2342,7 +2485,8 @@ final class EditorModel {
         let filled = InpaintPipeline.applyInteractive(
             base: shaped,
             operations: state.inpaints,
-            imageToken: touchupImageToken()
+            imageToken: touchupImageToken(),
+            displayTurns: state.geometry.quarterTurns
         )
         let longEdge = max(filled.extent.width, filled.extent.height)
         let toned = TonePipeline.apply(base: filled, tone: state.tone, longEdge: max(longEdge, 1))
@@ -2676,7 +2820,7 @@ final class EditorModel {
         }
     }
 
-    /// Builds one preview at a time and shows it as soon as that file is ready.
+    /// Builds a few previews at a time, off the main thread, and shows each as soon as it is ready.
     /// The page on screen goes first. The rest of the folder follows.
     private func preparePreviews(for entries: [FolderEntry], generation: Int) {
         let folder = entries.filter { !$0.isDirectory }.map(\.url)
@@ -2684,21 +2828,41 @@ final class EditorModel {
             var done = Set<String>()
             while generation == self.folderGeneration {
                 let visible = self.pagedFolderEntries.map(\.url)
-                guard let imageURL = FolderPreviewQueue.nextURL(visible: visible, folder: folder, done: done) else { return }
-                let key = FolderEntry.cacheKey(for: imageURL)
-                done.insert(key)
-                let loaded = await Task.detached { () -> (URL?, Data?) in
-                    let original = try? FolderPreviewCache.ensureJPEG(for: imageURL)
-                    let edited = FolderPreviewCache.readEditedJPEG(for: imageURL)
-                    return (original, edited)
-                }.value
+                var batch: [URL] = []
+                while batch.count < 4 {
+                    guard let imageURL = FolderPreviewQueue.nextURL(visible: visible, folder: folder, done: done) else { break }
+                    done.insert(FolderEntry.cacheKey(for: imageURL))
+                    batch.append(imageURL)
+                }
+                if batch.isEmpty { return }
+                let loaded: [(String, URL?, Data?)] = await withTaskGroup(of: (String, URL?, Data?).self) { group in
+                    for imageURL in batch {
+                        let key = FolderEntry.cacheKey(for: imageURL)
+                        group.addTask {
+                            let pair = await Task.detached { () -> (URL?, Data?) in
+                                let original = try? FolderPreviewCache.ensureJPEG(for: imageURL)
+                                let edited = FolderPreviewCache.readEditedJPEG(for: imageURL)
+                                return (original, edited)
+                            }.value
+                            return (key, pair.0, pair.1)
+                        }
+                    }
+                    var rows: [(String, URL?, Data?)] = []
+                    for await row in group {
+                        rows.append(row)
+                    }
+                    return rows
+                }
                 guard generation == self.folderGeneration else { return }
-                if let jpeg = loaded.0 {
-                    self.previewJPEGByPath[key] = jpeg
+                for item in loaded {
+                    if let jpeg = item.1 {
+                        self.previewJPEGByPath[item.0] = jpeg
+                    }
+                    if let edited = item.2 {
+                        self.editedPreviewData[item.0] = edited
+                    }
                 }
-                if let edited = loaded.1 {
-                    self.editedPreviewData[key] = edited
-                }
+                await Task.yield()
             }
         }
     }
@@ -3804,6 +3968,7 @@ final class EditorModel {
         previewBanner = touchupStatusBanner(job.banner)
         let work = job.work
         let empty = job.empty
+        let turns = draftGeometry.quarterTurns
         Task { @MainActor in
             if spotBatch.count >= 2 {
                 let rendered = await Touchup.finishSpotsOffMain(
@@ -3814,7 +3979,8 @@ final class EditorModel {
                     priorOperations: prior,
                     priorToken: imageToken,
                     baseChain: baseChain,
-                    frameToken: imageToken
+                    frameToken: imageToken,
+                    displayTurns: turns
                 )
                 guard generation == self.touchupGeneration else { return }
                 if let repaired = rendered.repaired, !rendered.operations.isEmpty {
@@ -3841,7 +4007,8 @@ final class EditorModel {
                     priorOperations: prior,
                     priorToken: imageToken,
                     baseChain: baseChain,
-                    frameToken: imageToken
+                    frameToken: imageToken,
+                    displayTurns: turns
                 )
                 guard generation == self.touchupGeneration else { return }
                 if let built = rendered.built, let repaired = rendered.repaired {
@@ -4463,7 +4630,12 @@ final class EditorModel {
                 for operation in head.operations where !operation.maskPNG.isEmpty {
                     chain = Touchup.advance(chain, operation)
                 }
-                let image = InpaintPipeline.applyInteractive(base: head.image, operations: suffix, imageToken: chain)
+                let image = InpaintPipeline.applyInteractive(
+                    base: head.image,
+                    operations: suffix,
+                    imageToken: chain,
+                    displayTurns: draftGeometry.quarterTurns
+                )
                 storeTouchupHead(token: token, operations: operations, image: image)
                 return image
             }
@@ -4472,7 +4644,12 @@ final class EditorModel {
             storeTouchupHead(token: token, operations: operations, image: stamped)
             return stamped
         }
-        let image = InpaintPipeline.applyInteractive(base: shaped, operations: operations, imageToken: token)
+        let image = InpaintPipeline.applyInteractive(
+            base: shaped,
+            operations: operations,
+            imageToken: token,
+            displayTurns: draftGeometry.quarterTurns
+        )
         storeTouchupHead(token: token, operations: operations, image: image)
         return image
     }
@@ -4682,6 +4859,7 @@ final class EditorModel {
             base: shaped,
             operations: operations,
             token: token,
+            displayTurns: draftGeometry.quarterTurns,
             progress: progress
         ) else {
             hideTouchupMeter(meter)
@@ -4872,7 +5050,7 @@ struct Chrome: View {
                                 MergePhotosPanel(
                                     firstName: browser.mergeFolderPair()?.first,
                                     secondName: browser.mergeFolderPair()?.second,
-                                    busy: browser.mergeBusy || browser.moveBusy || browser.dateBusy
+                                    busy: browser.mergeBusy || browser.moveBusy || browser.dateBusy || browser.organizeBusy
                                         || browser.removalBusy || browser.cleanBusy || browser.rescanBusy
                                         || model.mergePreviewBusy,
                                     previewing: model.showsServerMergePreview,
@@ -4919,6 +5097,12 @@ struct Chrome: View {
         .background(ChromePalette.panel)
         .foregroundStyle(ChromePalette.ink)
         .onAppear {
+            model.libraryRelativePath = { url in
+                DisplayFolder.prefix(selected: url, libraryRoot: browser.libraryRoot)
+            }
+            model.followLibraryFolderRename = { old, dest in
+                await browser.recordRenamedFolder(from: old, to: dest)
+            }
             browser.openFile = { url, _ in
                 model.openSecurityScopedFile(at: url, switchToImageTab: false)
                 UserDefaults.standard.set(false, forKey: "ZImager.serverShowsFolder")

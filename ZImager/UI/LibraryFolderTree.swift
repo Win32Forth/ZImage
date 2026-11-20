@@ -7,6 +7,8 @@ struct LibraryFolderTree: View {
 
     @State private var children: [String: [LibraryFolderNode]] = [:]
     @State private var expanded: Set<String> = [DisplayFolder.root]
+    @State private var renameRel: String?
+    @State private var renameName = ""
 
     var body: some View {
         ScrollView {
@@ -33,6 +35,28 @@ struct LibraryFolderTree: View {
             let parents = browser.folderTreeParents
             Task { await reload(parents) }
         }
+        .alert("Rename Folder", isPresented: renamePresented) {
+            TextField("Folder name", text: $renameName)
+            Button("Rename") {
+                let rel = renameRel
+                let typed = renameName
+                renameRel = nil
+                guard let rel else { return }
+                Task { await browser.renameFolder(rel, to: typed) }
+            }
+            Button("Cancel", role: .cancel) {
+                renameRel = nil
+            }
+        } message: {
+            Text("The folder stays in the same place.")
+        }
+    }
+
+    private var renamePresented: Binding<Bool> {
+        Binding(
+            get: { renameRel != nil },
+            set: { if !$0 { renameRel = nil } }
+        )
     }
 
     private var visibleRows: [(node: LibraryFolderNode, depth: Int)] {
@@ -84,6 +108,10 @@ struct LibraryFolderTree: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .modifier(FolderRenameMenu(allowed: FolderRename.catalogAllows(node.rel), enabled: folderRenameEnabled) {
+                renameName = node.name
+                renameRel = node.rel
+            })
         }
         .font(.system(size: 13))
         .foregroundStyle(ChromePalette.ink)
@@ -94,6 +122,15 @@ struct LibraryFolderTree: View {
         .background(browser.displayFolder == node.rel ? ChromePalette.listSelected : ChromePalette.listWash)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(node.rel)
+        .modifier(FolderRenameMenu(allowed: FolderRename.catalogAllows(node.rel), enabled: folderRenameEnabled) {
+            renameName = node.name
+            renameRel = node.rel
+        })
+    }
+
+    private var folderRenameEnabled: Bool {
+        !browser.moveBusy && !browser.mergeBusy && !browser.dateBusy && !browser.organizeBusy
+            && !browser.removalBusy && !browser.cleanBusy && !browser.rescanBusy
     }
 
     private func toggle(_ rel: String) {

@@ -51,6 +51,8 @@ struct EditorFolderTree: View {
 
     @State private var children: [String: [EditorFolderNode]] = [:]
     @State private var expanded: Set<String> = []
+    @State private var renameURL: URL?
+    @State private var renameName = ""
 
     var body: some View {
         Group {
@@ -92,6 +94,28 @@ struct EditorFolderTree: View {
             let parents = model.folderTreeParents
             Task { await reload(parents) }
         }
+        .alert("Rename Folder", isPresented: renamePresented) {
+            TextField("Folder name", text: $renameName)
+            Button("Rename") {
+                let folder = renameURL
+                let typed = renameName
+                renameURL = nil
+                guard let folder else { return }
+                model.renameBrowseFolder(folder, to: typed)
+            }
+            Button("Cancel", role: .cancel) {
+                renameURL = nil
+            }
+        } message: {
+            Text("The folder stays in the same place.")
+        }
+    }
+
+    private var renamePresented: Binding<Bool> {
+        Binding(
+            get: { renameURL != nil },
+            set: { if !$0 { renameURL = nil } }
+        )
     }
 
     private func visibleRows(root: URL) -> [(node: EditorFolderNode, depth: Int)] {
@@ -145,6 +169,10 @@ struct EditorFolderTree: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .modifier(FolderRenameMenu(allowed: canRename(node.url), enabled: folderRenameEnabled) {
+                renameName = node.name
+                renameURL = node.url
+            })
         }
         .font(.system(size: 13))
         .foregroundStyle(ChromePalette.ink)
@@ -155,6 +183,20 @@ struct EditorFolderTree: View {
         .background(selected ? ChromePalette.listSelected : ChromePalette.listWash)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(node.name)
+        .modifier(FolderRenameMenu(allowed: canRename(node.url), enabled: folderRenameEnabled) {
+            renameName = node.name
+            renameURL = node.url
+        })
+    }
+
+    private var folderRenameEnabled: Bool {
+        !model.folderRotateBusy && !model.exportBusy && !model.mergePreviewBusy && !model.showsDiskMergePreview
+    }
+
+    /// A folder outside the library can be renamed. Photos and its three shelves keep their names.
+    private func canRename(_ url: URL) -> Bool {
+        guard let relative = model.libraryRelativePath?(url) else { return true }
+        return FolderRename.catalogAllows(relative)
     }
 
     private func toggle(_ node: EditorFolderNode) {

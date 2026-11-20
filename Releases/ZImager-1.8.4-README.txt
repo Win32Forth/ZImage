@@ -1,0 +1,101 @@
+ZImager 1.8.4
+
+ZImager is the photo editor and the library in one app.
+Disk opens folders on this Mac. Server talks to a helper on a Synology.
+
+This disk image contains ZImager.app and this README. It does not
+include the helper.
+
+What 1.8.4 changes
+------------------
+Folder view stays responsive while previews are built. Disk and Server
+prepare four photographs at a time, and that work stays off the main
+thread. The page on screen still comes first. Disk previews remain
+temporary JPEGs on this Mac, capped at 200 MB, and the oldest files are
+removed past that cap. Server previews stay on the NAS.
+
+In Server Folder view, the path to the right of Rescan ends with the
+number of stills in that folder, as (12345), once the count is
+finished. Videos are left out of the number.
+
+The Date panel in Server Folder view has Organize and Clean. Organize
+opens a dialog. Continue reads this page and the pages after it, and
+stops when a page neither moves a photo nor raises confidence. Yes
+reads this page. No leaves every file where it is. A photo with no date
+goes to Photos/_Review. A dated photo goes to Photos/YYYY/YYYY-MM-DD.
+A photo already in that year and day folder stays. When
+DateTimeOriginal, DateTimeDigitized, or DateTime matches that folder
+and catalog confidence is 0.00, confidence becomes 1.00. A photo that
+moves and matches another file of the same size leaves a preview in
+Photos/_Duplicates.
+
+Clean asks before it deletes anything. Yes deletes Thumbs.db,
+ehthumbs.db, desktop.ini, .DS_Store, and AppleDouble ._ files in that
+folder and its subfolders, then deletes a folder that has nothing else
+in it. No leaves them. A photo or any other file keeps its folder.
+Photos itself stays. A symbolic link is left in place.
+
+Right-click a folder in the Disk tree or the Server tree and choose
+Rename. The folder stays in its parent. Spaces inside the name stay.
+Photos, Photos/_Removed, Photos/_Duplicates, and Photos/_Review keep
+their names. A symbolic link is left in place. A Disk folder outside
+the library is renamed on this Mac. A folder under Photos is renamed
+on disk, then the catalog follows that name and keeps each file's id,
+including a folder that holds only videos. Edits and previews stay
+with that id. The app waits up to three minutes for the catalog write.
+If the helper cannot be reached, the folder is put back.
+
+Rotate left or Rotate right keeps Vertical on the top and bottom edges
+of the picture on screen, and Horizontal on the left and right. A crop
+made before that turn stays on the same part of the photograph. A Spot,
+Scratch, or Red Eye repair made before that turn stays on the pixels
+it repaired.
+
+The helper source adds folder rename and the confidence update Organize
+uses. This disk image does not include the helper. The copy running on
+the NAS already has those two routes. This source also accepts a rename
+the catalog has already recorded. Stop the DSM task before you replace
+the binary.
+
+1.8.3, 1.8.2, 1.8.1, and 1.8.0 are still in this app: Merge two photos,
+Rename a file, Move to Folder on Disk and on Server, Delete ALL on
+Photos/_Removed, previews for the rest of the open folder, Red Eye, a
+folder name filter, pages past 200 photos, later-page previews, fast
+Spot and Scratch repair, Flatten, and Rescan. 1.7.2, 1.7.1, 1.7.0, and
+1.6.0 are still here too: in-app video with graded export, Horizon,
+stacked spot repairs, ZImager as the only app, Folder View and Edit
+View, arrow keys between photos, folder Export and Print, Copy settings
+and Paste settings, Tone Auto and Reset, Spectrum, Remove from library
+into Photos/_Removed, and Set date into the date folder.
+
+This build is Apple Silicon. It runs on macOS 26. It does not require
+macOS 27.
+
+Do not use Reorganize, Review, or Duplicates
+---------------------------------------------
+Those three do not work yet. Using them can lose photos.
+The Events and Reorganize buttons are hidden.
+Leave Reorganize, Review, and Duplicates alone.
+Do not press Start, Pause, Continue, Find duplicates, or Delete all duplicates.
+
+Install
+-------
+1. Open this disk image.
+2. Drag ZImager.app into Applications.
+3. Follow Approval below once.
+
+Approval
+--------
+ZImager is built by Tom Zimmer on his Mac using Apple's development tools.
+It is not notarized for distribution. macOS asks you to approve it once
+before it will run.
+
+1. Double-click ZImager.app.
+2. macOS says Apple could not verify that ZImager is free of malware.
+   Close that dialog.
+3. Open System Settings → Privacy & Security.
+4. Scroll to Security until you see that ZImager was blocked.
+5. Click Open Anyway.
+6. Confirm Open Anyway again if asked, then enter your password.
+
+After that, double-click ZImager and it will run.

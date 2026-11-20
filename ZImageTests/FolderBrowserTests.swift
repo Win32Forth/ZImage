@@ -336,6 +336,164 @@ final class FolderBrowserTests: XCTestCase {
         XCTAssertEqual(model.folderTreeParents.map { FolderEntry.cacheKey(for: $0) }, [FolderEntry.cacheKey(for: vacation)])
     }
 
+    @MainActor
+    func testFolderRenameKeepsSpacesAndRefusesAShelfACollisionAndASymlink() throws {
+        XCTAssertEqual(FolderRename.cleaned("  Trip Album  "), .success("Trip Album"))
+        XCTAssertEqual(FolderRename.cleaned("   "), .failure(.empty))
+        XCTAssertEqual(FolderRename.cleaned("A/B"), .failure(.invalid))
+        XCTAssertEqual(FolderRename.cleaned("A:B"), .failure(.invalid))
+        XCTAssertEqual(FolderRename.cleaned("_Review"), .failure(.invalid))
+        XCTAssertEqual(FolderRename.cleaned("_Removed"), .failure(.invalid))
+        XCTAssertEqual(FolderRename.cleaned("_Duplicates"), .failure(.invalid))
+        XCTAssertFalse(FolderRename.catalogAllows("Photos"))
+        XCTAssertFalse(FolderRename.catalogAllows("Photos/_Removed"))
+        XCTAssertFalse(FolderRename.catalogAllows("Photos/_Duplicates"))
+        XCTAssertFalse(FolderRename.catalogAllows("Photos/_Review"))
+        XCTAssertTrue(FolderRename.catalogAllows("Photos/2024/_Removed"))
+        XCTAssertFalse(FolderRename.catalogAllows("Photos/../Secret"))
+        XCTAssertEqual(FolderRename.keptMessage(relative: "Photos"), "Photos stays at the top of the library.")
+        XCTAssertEqual(FolderRename.keptMessage(relative: "Photos/_Removed"), "That folder keeps its name.")
+        XCTAssertEqual(
+            FolderRename.shiftedRelative("Photos/Album/a.jpg", from: "Photos/Album", to: "Photos/Trip Album"),
+            "Photos/Trip Album/a.jpg"
+        )
+        XCTAssertEqual(
+            FolderRename.shiftedRelative("Photos/Album", from: "Photos/Album", to: "Photos/Trip Album"),
+            "Photos/Trip Album"
+        )
+        XCTAssertNil(FolderRename.shiftedRelative("Photos/Album2/b.jpg", from: "Photos/Album", to: "Photos/Trip Album"))
+
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("zimage-folder-rename-\(UUID().uuidString)", isDirectory: true)
+        let album = root.appendingPathComponent("Album", isDirectory: true)
+        let other = root.appendingPathComponent("Other", isDirectory: true)
+        let real = root.appendingPathComponent("Real", isDirectory: true)
+        try FileManager.default.createDirectory(at: album, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: other, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: real, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let photo = album.appendingPathComponent("a.jpg")
+        try Data("a".utf8).write(to: photo)
+        try Data("b".utf8).write(to: other.appendingPathComponent("b.jpg"))
+        let link = root.appendingPathComponent("Link")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: real)
+
+        XCTAssertEqual(FolderRename.perform(source: album, typed: "Other"), .failure(.taken))
+        XCTAssertEqual(try Data(contentsOf: photo), Data("a".utf8))
+        XCTAssertEqual(try Data(contentsOf: other.appendingPathComponent("b.jpg")), Data("b".utf8))
+        XCTAssertEqual(FolderRename.perform(source: link, typed: "Away"), .failure(.link))
+        XCTAssertEqual(try link.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink, true)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: real.path))
+
+        let cased = try XCTUnwrap(try? FolderRename.perform(source: album, typed: "album").get())
+        XCTAssertEqual(cased.lastPathComponent, "album")
+        XCTAssertEqual(try Data(contentsOf: cased.appendingPathComponent("a.jpg")), Data("a".utf8))
+        let spaced = try XCTUnwrap(try? FolderRename.perform(source: cased, typed: "  Trip Album  ").get())
+        XCTAssertEqual(spaced.lastPathComponent, "Trip Album")
+        XCTAssertEqual(try Data(contentsOf: spaced.appendingPathComponent("a.jpg")), Data("a".utf8))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: album.path))
+    }
+
+    @MainActor
+    func testRenameBrowseFolderUpdatesTheOpenFolderAndTheSelection() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("zimage-browse-rename-\(UUID().uuidString)", isDirectory: true)
+        let album = root.appendingPathComponent("Album", isDirectory: true)
+        try FileManager.default.createDirectory(at: album, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let photo = album.appendingPathComponent("a.jpg")
+        try writeJPEG(width: 8, height: 8, to: photo)
+        let bytes = try Data(contentsOf: photo)
+        let model = EditorModel()
+        model.browseRoot = root
+        model.folderURL = album
+        let entry = FolderEntry(url: photo, name: photo.lastPathComponent, isDirectory: false)
+        model.folderEntries = [entry]
+        model.selectFolderEntry(entry, shift: false)
+
+        model.renameBrowseFolder(album, to: "  Trip Album  ")
+        let dest = root.appendingPathComponent("Trip Album", isDirectory: true)
+        let moved = dest.appendingPathComponent("a.jpg")
+        XCTAssertEqual(try Data(contentsOf: moved), bytes)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: photo.path))
+        XCTAssertEqual(model.folderURL.map { FolderEntry.cacheKey(for: $0) }, FolderEntry.cacheKey(for: dest))
+        XCTAssertEqual(model.folderRotateNote, "Renamed to Trip Album.")
+        XCTAssertEqual(model.folderTreeRevision, 1)
+        XCTAssertEqual(model.folderTreeParents.map { FolderEntry.cacheKey(for: $0) }, [FolderEntry.cacheKey(for: root)])
+        try await waitUntil { model.folderListingReady && model.folderEntries.contains { $0.name == "a.jpg" } }
+        XCTAssertEqual(model.selectedFolderKey, FolderEntry.cacheKey(for: moved))
+        XCTAssertFalse(model.folderRotateBusy)
+
+        let kept = root.appendingPathComponent("Kept", isDirectory: true)
+        model.followLibraryFolderRename = { _, _ in .updated }
+        model.renameBrowseFolder(dest, to: "Kept")
+        try await waitUntil { model.folderRotateNote == "Renamed to Kept." && !model.folderRotateBusy }
+        XCTAssertEqual(try Data(contentsOf: kept.appendingPathComponent("a.jpg")), bytes)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: moved.path))
+        XCTAssertEqual(model.folderURL.map { FolderEntry.cacheKey(for: $0) }, FolderEntry.cacheKey(for: kept))
+    }
+
+    @MainActor
+    func testRenameBrowseFolderMovesBackWhenTheCatalogCannotFollow() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("zimage-browse-restore-\(UUID().uuidString)", isDirectory: true)
+        let album = root.appendingPathComponent("Album", isDirectory: true)
+        try FileManager.default.createDirectory(at: album, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let photo = album.appendingPathComponent("a.jpg")
+        try Data("a".utf8).write(to: photo)
+        let model = EditorModel()
+        model.browseRoot = root
+        model.folderURL = album
+        model.libraryRelativePath = { _ in "Photos/Album" }
+        model.followLibraryFolderRename = { _, _ in .failed }
+
+        model.renameBrowseFolder(album, to: "Trip")
+        try await waitUntil {
+            model.folderRotateNote == "The folder stayed as it is. The catalog could not follow the new name."
+                && !model.folderRotateBusy
+        }
+        XCTAssertEqual(try Data(contentsOf: photo), Data("a".utf8))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("Trip").path))
+        XCTAssertEqual(model.folderURL.map { FolderEntry.cacheKey(for: $0) }, FolderEntry.cacheKey(for: album))
+        XCTAssertEqual(model.folderTreeRevision, 0)
+    }
+
+    @MainActor
+    func testRenameBrowseFolderRefusesPhotosAndRenamesTheOpenedRoot() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("zimage-browse-root-\(UUID().uuidString)", isDirectory: true)
+        let photos = root.appendingPathComponent("Photos", isDirectory: true)
+        try FileManager.default.createDirectory(at: photos, withIntermediateDirectories: true)
+        let renamedName = "Pictures-\(UUID().uuidString)"
+        defer {
+            try? FileManager.default.removeItem(at: root)
+            try? FileManager.default.removeItem(at: root.deletingLastPathComponent().appendingPathComponent(renamedName))
+        }
+        try Data("a".utf8).write(to: photos.appendingPathComponent("a.jpg"))
+        let model = EditorModel()
+        model.browseRoot = root
+        model.folderURL = photos
+        model.libraryRelativePath = { url in
+            url.lastPathComponent == "Photos" ? "Photos" : nil
+        }
+        model.renameBrowseFolder(photos, to: "Library")
+        XCTAssertEqual(model.folderRotateNote, "Photos stays at the top of the library.")
+        XCTAssertEqual(try Data(contentsOf: photos.appendingPathComponent("a.jpg")), Data("a".utf8))
+        XCTAssertEqual(model.folderTreeRevision, 0)
+
+        model.folderURL = root
+        model.libraryRelativePath = { _ in nil }
+        model.renameBrowseFolder(root, to: renamedName)
+        let renamed = root.deletingLastPathComponent().appendingPathComponent(renamedName, isDirectory: true)
+        XCTAssertEqual(try Data(contentsOf: renamed.appendingPathComponent("Photos").appendingPathComponent("a.jpg")), Data("a".utf8))
+        XCTAssertEqual(model.browseRoot.map { FolderEntry.cacheKey(for: $0) }, FolderEntry.cacheKey(for: renamed))
+        XCTAssertEqual(model.folderURL.map { FolderEntry.cacheKey(for: $0) }, FolderEntry.cacheKey(for: renamed))
+        XCTAssertEqual(model.folderRotateNote, "Renamed to \(renamedName).")
+        XCTAssertEqual(model.folderTreeRevision, 0)
+        try await waitUntil { model.folderListingReady && model.folderEntries.contains { $0.name == "Photos" } }
+    }
+
     func testFolderNameFilterMatchesPartOfTheFileName() {
         XCTAssertTrue(FolderNameFilter.matches("Red eye test.jpg", query: "Red"))
         XCTAssertTrue(FolderNameFilter.matches("red-eye-2.JPG", query: " red "))
@@ -375,6 +533,12 @@ final class FolderBrowserTests: XCTestCase {
             page2
         )
         XCTAssertNil(FolderPreviewQueue.nextURL(visible: [page1], folder: [page1], done: done))
+    }
+
+    func testFolderHeadingEndsWithTheImageCount() {
+        XCTAssertEqual(FolderPage.heading(folder: "Photos/Trips", photoCount: nil), "Photos/Trips")
+        XCTAssertEqual(FolderPage.heading(folder: "Photos/Trips", photoCount: 12_345), "Photos/Trips (12345)")
+        XCTAssertEqual(FolderPage.heading(folder: "Photos", photoCount: 0), "Photos (0)")
     }
 
     func testFolderPageRangeOmitsTheTotalUntilTheCountIsKnown() {

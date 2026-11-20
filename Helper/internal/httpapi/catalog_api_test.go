@@ -216,6 +216,82 @@ func TestDatingRoutesDoNotMoveBytes(t *testing.T) {
 	}
 }
 
+func TestConfirmDateSetsConfidenceAndLeavesTheFile(t *testing.T) {
+	root := t.TempDir()
+	catalog, err := db.Open(filepath.Join(root, ".zimage", "catalog", "catalog.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer catalog.Close()
+	rel := "Photos/2024/2024-06-15/a.jpg"
+	full := filepath.Join(root, filepath.FromSlash(rel))
+	if err := os.MkdirAll(filepath.Dir(full), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	payload := []byte("stay-put")
+	if err := os.WriteFile(full, payload, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	insertAPIAsset(t, catalog, "placed", rel, 0, "")
+	insertAPIAsset(t, catalog, "nested", "Photos/2024/2024-06-15/event/b.jpg", 0, "")
+	insertAPIAsset(t, catalog, "other", "Photos/Inbox/c.jpg", 0, "")
+	insertAPIAsset(t, catalog, "sure", "Photos/2024/2024-06-15/d.jpg", 0.95, "2024-06-15T00:00:00Z")
+	pair, leaf, err := GenerateCert()
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(root, true, true, "token-value", catalog, pair, leaf)
+	client, base := startServer(t, server)
+	body, _ := json.Marshal(map[string]any{"captureTime": "2024-06-15"})
+	resp := authorizedSend(t, client, http.MethodPost, base+"/v1/assets/placed/confirm", body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("confirm %d %s", resp.StatusCode, readAll(t, resp))
+	}
+	readAll(t, resp)
+	var conf float64
+	var source, captured, gotRel string
+	if err := catalog.Read.QueryRow(`
+		SELECT capture_confidence, COALESCE(capture_source, ''), COALESCE(capture_time, ''), rel_path
+		FROM assets WHERE uid = 'placed'`).Scan(&conf, &source, &captured, &gotRel); err != nil {
+		t.Fatal(err)
+	}
+	if conf != 1 || source != "user" || captured != "2024-06-15T00:00:00Z" || gotRel != rel {
+		t.Fatalf("stored %v %s %s %s", conf, source, captured, gotRel)
+	}
+	got, err := os.ReadFile(full)
+	if err != nil || string(got) != string(payload) {
+		t.Fatal("bytes moved")
+	}
+	var journals int
+	if err := catalog.Read.QueryRow(`SELECT COUNT(*) FROM journal`).Scan(&journals); err != nil {
+		t.Fatal(err)
+	}
+	if journals != 0 {
+		t.Fatalf("journal %d", journals)
+	}
+	nested := authorizedSend(t, client, http.MethodPost, base+"/v1/assets/nested/confirm", body)
+	if nested.StatusCode != http.StatusOK {
+		t.Fatalf("nested %d %s", nested.StatusCode, readAll(t, nested))
+	}
+	readAll(t, nested)
+	other := authorizedSend(t, client, http.MethodPost, base+"/v1/assets/other/confirm", body)
+	if other.StatusCode != http.StatusConflict {
+		t.Fatalf("other %d %s", other.StatusCode, readAll(t, other))
+	}
+	readAll(t, other)
+	sure := authorizedSend(t, client, http.MethodPost, base+"/v1/assets/sure/confirm", body)
+	if sure.StatusCode != http.StatusConflict {
+		t.Fatalf("sure %d %s", sure.StatusCode, readAll(t, sure))
+	}
+	readAll(t, sure)
+	if err := catalog.Read.QueryRow(`SELECT capture_confidence FROM assets WHERE uid = 'sure'`).Scan(&conf); err != nil || conf != 0.95 {
+		t.Fatalf("sure confidence %v %v", conf, err)
+	}
+	if err := catalog.Read.QueryRow(`SELECT capture_confidence FROM assets WHERE uid = 'other'`).Scan(&conf); err != nil || conf != 0 {
+		t.Fatalf("other confidence %v %v", conf, err)
+	}
+}
+
 func insertAPIAsset(t *testing.T, catalog *db.Catalog, uid, rel string, confidence float64, capture string) {
 	t.Helper()
 	var stored any

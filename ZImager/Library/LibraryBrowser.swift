@@ -567,6 +567,8 @@ enum FolderMove {
         var moved = 0
         var stayed = 0
         var directories: [String] = []
+        /// Where each file is after the step. A failed move is left out.
+        var placed: [String] = []
     }
 
     static func folderName(_ typed: String) -> String? {
@@ -684,6 +686,7 @@ enum FolderMove {
             // Already in that folder. A second move would rename it to name-2.
             if (item.sourceRel as NSString).deletingLastPathComponent == item.destDir {
                 outcome.stayed += 1
+                outcome.placed.append(item.sourceRel)
                 continue
             }
             guard let claimed = claim(directory: directory, fileName: source.lastPathComponent) else {
@@ -694,6 +697,7 @@ enum FolderMove {
                 try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
                 try FileManager.default.moveItem(at: source, to: claimed)
                 outcome.moved += 1
+                outcome.placed.append(item.destDir + "/" + claimed.lastPathComponent)
                 if !seen.contains(item.destDir) {
                     seen.append(item.destDir)
                 }
@@ -703,6 +707,22 @@ enum FolderMove {
         }
         outcome.directories = seen
         return outcome
+    }
+
+    /// Writes a new file under Photos. An existing name gets `-2`. The relative path is returned.
+    static func writeNewFile(libraryRoot: URL, directory: String, fileName: String, data: Data) -> String? {
+        guard !data.isEmpty, data.count <= 2_000_000 else { return nil }
+        guard let folder = directoryInsideLibrary(libraryRoot: libraryRoot, relative: directory),
+              let claimed = claim(directory: folder, fileName: fileName) else {
+            return nil
+        }
+        do {
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            try data.write(to: claimed, options: .atomic)
+            return directory + "/" + claimed.lastPathComponent
+        } catch {
+            return nil
+        }
     }
 
     private static func claim(directory: URL, fileName: String) -> URL? {
@@ -777,11 +797,15 @@ final class LibraryBrowser {
     private(set) var removalBusy = false
     /// True while Set date is writing the date and moving the current batch.
     private(set) var dateBusy = false
-    /// True while Clean folder is dropping leftover catalog rows.
+    /// True while Organize is reading the open folder.
+    private(set) var organizeBusy = false
+    /// The Organize bar. Nil hides it.
+    private(set) var organizeMeter: TouchupMeter?
+    /// True while Clean is deleting empty folders, or leftover catalog rows are being dropped.
     private(set) var cleanBusy = false
     /// True while Rescan is walking the displayed folder.
     private(set) var rescanBusy = false
-    /// True while Move to Folder is moving the current batch.
+    /// True while Move to Folder is moving the current batch, or a folder rename is writing the catalog.
     private(set) var moveBusy = false
     /// True while the merged TIFF is being written. The preview does not set this.
     private(set) var mergeBusy = false
@@ -895,6 +919,9 @@ final class LibraryBrowser {
         rescanGeneration += 1
         rescanBusy = false
         moveBusy = false
+        organizeBusy = false
+        cleanBusy = false
+        organizeMeter = nil
         mergeBusy = false
         rescanMeter = nil
         reorg = nil
@@ -1358,7 +1385,7 @@ final class LibraryBrowser {
     /// Moves the selection into the named folder, then rescans so the catalog follows the files.
     /// `subfolder` creates that folder inside the folder on screen. Otherwise it is created under Photos.
     func moveSelected(to typed: String, subfolder: Bool = false) async {
-        guard !moveBusy, !mergeBusy, !dateBusy, !removalBusy, !cleanBusy, !rescanBusy else { return }
+        guard !moveBusy, !mergeBusy, !dateBusy, !organizeBusy, !removalBusy, !cleanBusy, !rescanBusy else { return }
         guard let name = FolderMove.folderName(typed) else {
             notice = "Type a folder name."
             return
@@ -1414,7 +1441,7 @@ final class LibraryBrowser {
 
     /// Writes the typed date on every selected file and moves each one into its date folder.
     func setCaptureDate(_ text: String) async {
-        guard !dateBusy, !removalBusy, !cleanBusy, !rescanBusy, !moveBusy, !mergeBusy else { return }
+        guard !dateBusy, !organizeBusy, !removalBusy, !cleanBusy, !rescanBusy, !moveBusy, !mergeBusy else { return }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let wire = LibraryItemMenu.captureRequest(trimmed) else {
             notice = "The date was not saved. Use YYYY-MM-DD or a four-digit year."
@@ -1455,9 +1482,395 @@ final class LibraryBrowser {
         await reload(media: "photo")
     }
 
+    /// The first page of stills in the open folder. Later pages wait for the next Organize.
+    func canOrganizeFirstPage() -> Bool {
+        librarySection == "Photos" && FolderOrganize.allows(displayFolder) && !organizePage().isEmpty
+    }
+
+    /// Yes reads the first page. Continue reads that page and the pages after it.
+    /// A photo with no date goes to Photos/_Review. A dated photo goes to Photos/YYYY/YYYY-MM-DD.
+    /// A photo already in that year and day folder stays. A matching file date can raise catalog confidence from 0.00 to 1.00.
+    /// A moved duplicate leaves its preview in Photos/_Duplicates.
+    func organizeDisplayFolder(repeating: Bool) async {
+        guard !organizeBusy, !dateBusy, !removalBusy, !cleanBusy, !rescanBusy, !moveBusy, !mergeBusy else { return }
+        guard librarySection == "Photos", FolderOrganize.allows(displayFolder) else {
+            notice = "Organize runs on a folder of photos."
+            return
+        }
+        guard nameFilter.isEmpty else {
+            notice = "Clear the name filter before Organize."
+            return
+        }
+        guard !organizePage().isEmpty else {
+            notice = "This folder has no photos on the first page."
+            return
+        }
+        organizeBusy = true
+        defer {
+            organizeBusy = false
+            organizeMeter = nil
+        }
+        if repeating {
+            showOrganize(status: "Reading this folder", done: 0, total: 0)
+            resetFolderPages()
+            await reload(media: "photo")
+        }
+        var folderCount = (!folderPageCounting ? folderPhotoTotal : nil) ?? organizePage().count
+        var reviewed = 0
+        var dated = 0
+        var duplicates = 0
+        var stayed = 0
+        var confirmed = 0
+        var confidenceMissed = false
+        var acceptConfirm = true
+        var pages = 0
+        var pageIndex = 0
+        var seen: Set<String> = []
+        var needsReload = false
+        while librarySection == "Photos", FolderOrganize.allows(displayFolder), nameFilter.isEmpty {
+            if !folderPageCounting, let folderPhotoTotal, folderPhotoTotal > folderCount {
+                folderCount = folderPhotoTotal
+            }
+            let targets = organizePage(at: pageIndex)
+            if targets.isEmpty { break }
+            pages += 1
+            let step = await organizeOnePage(
+                targets,
+                folderCount: folderCount,
+                seen: &seen,
+                acceptConfirm: &acceptConfirm
+            )
+            reviewed += step.reviewed
+            dated += step.dated
+            duplicates += step.duplicates
+            stayed += step.stayed
+            confirmed += step.confirmed
+            if step.confidenceMissed { confidenceMissed = true }
+            let running = FolderOrganize.summary(
+                reviewed: reviewed,
+                dated: dated,
+                duplicates: duplicates,
+                stayed: stayed,
+                confirmed: confirmed,
+                pages: pages,
+                confidenceMissed: confidenceMissed
+            )
+            let moved = step.reviewed + step.dated + step.duplicates > 0
+            if moved {
+                let prefixes = FolderMove.rescanPrefixes(displayFolder: displayFolder, destinations: step.destinations)
+                organizeMeter = nil
+                await refreshOrganizedFolders(prefixes, notice: running, previews: step.carried)
+                needsReload = false
+                pageIndex = 0
+            } else {
+                needsReload = needsReload || step.confirmed > 0
+                pageIndex += 1
+            }
+            let progressed = step.reviewed + step.dated + step.confirmed > 0
+            if !repeating || !progressed { break }
+        }
+        let done = FolderOrganize.summary(
+            reviewed: reviewed,
+            dated: dated,
+            duplicates: duplicates,
+            stayed: stayed,
+            confirmed: confirmed,
+            pages: max(pages, 1),
+            confidenceMissed: confidenceMissed
+        )
+        if pages == 0 {
+            notice = "This folder has no photos on the first page."
+            return
+        }
+        if needsReload {
+            organizeMeter = nil
+            await refreshOrganizedFolders([], notice: done, previews: [])
+        }
+        notice = done
+    }
+
+    private struct OrganizePageStep {
+        var reviewed = 0
+        var dated = 0
+        var duplicates = 0
+        var stayed = 0
+        var confirmed = 0
+        var confidenceMissed = false
+        var destinations: [String] = []
+        var carried: [(path: String, jpeg: Data)] = []
+    }
+
+    private enum OrganizeConfirm {
+        case marked
+        case refused
+        case unavailable
+    }
+
+    /// One page. A photo already in its year and day folder is left there.
+    /// Confidence 0.00 becomes 1.00 when DateTimeOriginal, DateTimeDigitized, or DateTime matches that folder.
+    private func organizeOnePage(
+        _ targets: [LibraryAsset],
+        folderCount: Int,
+        seen: inout Set<String>,
+        acceptConfirm: inout Bool
+    ) async -> OrganizePageStep {
+        var step = OrganizePageStep()
+        let root = libraryRoot
+        for asset in targets {
+            guard let rel = asset.relPath, let source = fileURL(for: asset) else {
+                step.stayed += 1
+                markOrganized(asset.uid, status: "Skipping a file with no path", seen: &seen, folderCount: folderCount)
+                continue
+            }
+            let fileName = (rel as NSString).lastPathComponent
+            if parkedInLibrary(asset) {
+                step.stayed += 1
+                markOrganized(asset.uid, status: "Leaving \(fileName) in place", seen: &seen, folderCount: folderCount)
+                continue
+            }
+            let catalog = asset.captureTime
+            let knownPreview = displayImageData(uid: asset.uid) ?? cells[asset.uid]?.imageData
+            let thumbRel = asset.thumbRel
+            let confidence = asset.captureConfidence
+            markOrganized(asset.uid, status: "Reading the date", seen: &seen, folderCount: folderCount)
+            let scan = await Task.detached(priority: .userInitiated) { () -> (day: FolderOrganize.Day?, matches: Bool, preview: Data?) in
+                let lines = ReviewHeaderFacts.read(source).lines
+                let day = FolderOrganize.day(catalog: catalog, headerLines: lines)
+                let matches = day.map { FolderOrganize.headerMatches(day: $0, headerLines: lines) } ?? false
+                if let day, FolderOrganize.alreadyPlaced(path: rel, day: day) {
+                    return (day, matches, nil)
+                }
+                var preview = knownPreview
+                if preview == nil || (preview?.count ?? 0) > 2_000_000, let thumbRel {
+                    preview = try? Data(contentsOf: root.appending(path: thumbRel))
+                }
+                if let current = preview, current.count > 2_000_000 {
+                    preview = nil
+                }
+                if preview == nil {
+                    preview = FolderOrganize.previewJPEG(from: source)
+                }
+                return (day, matches, preview)
+            }.value
+            if let day = scan.day, FolderOrganize.alreadyPlaced(path: rel, day: day) {
+                if acceptConfirm, FolderOrganize.confidenceIsZero(confidence), scan.matches {
+                    markOrganized(asset.uid, status: "Setting catalog confidence for \(fileName)", seen: &seen, folderCount: folderCount)
+                    switch await confirmPlacedDate(uid: asset.uid, day: day) {
+                    case .marked:
+                        step.confirmed += 1
+                        noteConfirmed(asset.uid, day: day)
+                    case .refused:
+                        break
+                    case .unavailable:
+                        step.confidenceMissed = true
+                        acceptConfirm = false
+                    }
+                }
+                step.stayed += 1
+                markOrganized(asset.uid, status: "Leaving \(fileName) in its date folder", seen: &seen, folderCount: folderCount)
+                continue
+            }
+            let directory = FolderOrganize.folder(for: scan.day)
+            let preview = scan.preview
+            markOrganized(asset.uid, status: "Moving \(fileName) to \(directory)", seen: &seen, folderCount: folderCount)
+            let move = await Task.detached(priority: .userInitiated) { () -> (placed: String?, moved: Bool, reference: String?) in
+                let outcome = FolderMove.perform(libraryRoot: root, items: [(rel, directory)])
+                guard let placed = outcome.placed.first, outcome.moved > 0 else {
+                    return (nil, false, nil)
+                }
+                let placedURL = root.appending(path: placed)
+                let size = Int64((try? placedURL.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0)
+                let neighbors = FolderOrganize.neighbors(of: placedURL.deletingLastPathComponent())
+                let duplicate = FolderOrganize.isDuplicate(
+                    sourceName: fileName,
+                    placedName: placedURL.lastPathComponent,
+                    placedSize: size,
+                    neighbors: neighbors
+                )
+                var reference: String?
+                if duplicate, let preview {
+                    reference = FolderMove.writeNewFile(
+                        libraryRoot: root,
+                        directory: FolderOrganize.duplicatesFolder,
+                        fileName: FolderOrganize.referenceFileName(placedPath: placed),
+                        data: preview
+                    )
+                }
+                return (placed, true, reference)
+            }.value
+            if move.moved, let placed = move.placed {
+                if scan.day == nil {
+                    step.reviewed += 1
+                } else {
+                    step.dated += 1
+                }
+                if let preview = scan.preview {
+                    step.carried.append((placed, preview))
+                }
+                let parent = (placed as NSString).deletingLastPathComponent
+                if !step.destinations.contains(parent) {
+                    step.destinations.append(parent)
+                }
+            } else {
+                step.stayed += 1
+            }
+            if move.reference != nil {
+                step.duplicates += 1
+                if !step.destinations.contains(FolderOrganize.duplicatesFolder) {
+                    step.destinations.append(FolderOrganize.duplicatesFolder)
+                }
+            }
+            markOrganized(asset.uid, status: "Moving \(fileName) to \(directory)", seen: &seen, folderCount: folderCount)
+        }
+        return step
+    }
+
+    private func markOrganized(_ uid: String, status: String, seen: inout Set<String>, folderCount: Int) {
+        seen.insert(uid)
+        let done = folderCount > 0 ? min(seen.count, folderCount) : seen.count
+        showOrganize(status: status, done: done, total: folderCount)
+    }
+
+    /// Sets catalog confidence to 1. A helper without this route answers as unavailable.
+    private func confirmPlacedDate(uid: String, day: FolderOrganize.Day) async -> OrganizeConfirm {
+        let stamp = String(format: "%04d-%02d-%02d", day.year, day.month, day.day)
+        do {
+            let call = try await client.confirmCaptureDate(uid: uid, captureTime: stamp)
+            if call.error != nil { return .refused }
+            if call.asset?.captureConfidence == 1 { return .marked }
+            return .refused
+        } catch {
+            return .unavailable
+        }
+    }
+
+    /// The grid shows 1.00 before the folder is read again. The file stays in its date folder.
+    private func noteConfirmed(_ uid: String, day: FolderOrganize.Day) {
+        let stamp = String(format: "%04d-%02d-%02dT00:00:00Z", day.year, day.month, day.day)
+        for page in stillPages.indices {
+            guard let index = stillPages[page].firstIndex(where: { $0.uid == uid }) else { continue }
+            stillPages[page][index].captureConfidence = 1
+            stillPages[page][index].captureSource = "user"
+            stillPages[page][index].captureTime = stamp
+        }
+        guard let index = rows.firstIndex(where: { $0.uid == uid }) else { return }
+        rows[index].captureConfidence = 1
+        rows[index].captureSource = "user"
+        rows[index].captureTime = stamp
+    }
+
+    private func organizePage() -> [LibraryAsset] {
+        organizePage(at: 0)
+    }
+
+    private func organizePage(at index: Int) -> [LibraryAsset] {
+        if stillPages.indices.contains(index) {
+            let page = stillPages[index].filter { isStill($0) }
+            if !page.isEmpty { return page }
+        }
+        if index == 0 {
+            return Array(rows.filter { isStill($0) }.prefix(FolderPage.limit))
+        }
+        return []
+    }
+
+    private func showOrganize(status: String, done: Int, total: Int) {
+        let fraction = total > 0 ? min(1, max(0, Double(done) / Double(total))) : nil
+        let meter = TouchupMeter(title: "Organize. \(status)", done: done, total: total, fraction: fraction)
+        organizeMeter = meter
+        notice = rescanProgressCaption(meter)
+    }
+
+    /// Walks the folders that gained or lost a file, then puts each saved preview on the moved photo.
+    private func refreshOrganizedFolders(_ prefixes: [String], notice done: String, previews: [(path: String, jpeg: Data)]) async {
+        guard !prefixes.isEmpty else {
+            notice = done
+            resetFolderPages()
+            await reload(media: "photo")
+            notice = done
+            return
+        }
+        guard !rescanBusy else {
+            notice = done
+            return
+        }
+        rescanBusy = true
+        rescanGeneration += 1
+        let generation = rescanGeneration
+        var catalogued = true
+        for folder in prefixes {
+            guard generation == rescanGeneration else { return }
+            rescanMeter = TouchupMeter(title: "Rescanning \(folder)", done: 0, total: 0, fraction: nil)
+            let ok = await runFolderRescan(generation: generation, folder: folder, announce: false, reloadGrid: false)
+            if !ok {
+                catalogued = false
+                break
+            }
+        }
+        guard generation == rescanGeneration else { return }
+        rescanMeter = nil
+        rescanBusy = false
+        if catalogued {
+            for (index, item) in previews.enumerated() {
+                showOrganize(status: "Saving the preview", done: index, total: max(previews.count, 1))
+                await restoreMovedPreview(path: item.path, jpeg: item.jpeg)
+            }
+        }
+        organizeMeter = nil
+        let line = catalogued ? done : done + " The folder was not rescanned."
+        notice = line
+        resetFolderPages()
+        await reload(media: "photo")
+        notice = line
+    }
+
+    /// The moved file has a new catalog row. The preview JPEG is stored on that row when the helper can see the path.
+    private func restoreMovedPreview(path: String, jpeg: Data) async {
+        guard let body = FolderOrganize.previewFacts(jpeg: jpeg) else { return }
+        guard let page = try? await client.assets(matching: path) else { return }
+        guard let asset = page.rows.first(where: { $0.relPath == path }) else { return }
+        _ = try? await client.putFacts(uid: asset.uid, body: body)
+    }
+
+    /// Deletes `folder` and the folders inside it when they contain no files. Photos stays.
+    func cleanEmptyDisplayFolder(_ folder: String) async {
+        guard !cleanBusy, !removalBusy, !dateBusy, !organizeBusy, !rescanBusy, !moveBusy, !mergeBusy else { return }
+        guard librarySection == "Photos", EmptyFolderClean.allows(folder) else {
+            notice = "Clean runs on a folder inside Photos."
+            return
+        }
+        cleanBusy = true
+        defer { cleanBusy = false }
+        notice = "Cleaning empty folders."
+        await Task.yield()
+        let root = libraryRoot
+        let outcome = await Task.detached(priority: .userInitiated) {
+            EmptyFolderClean.removeEmpty(libraryRoot: root, folder: folder)
+        }.value
+        let line = outcome.missing ? "That folder could not be opened." : EmptyFolderClean.summary(removed: outcome.removed.count, failed: outcome.failed, files: outcome.removedFiles)
+        notice = line
+        guard !outcome.removed.isEmpty else { return }
+        refreshFolderTree(for: outcome.removed)
+        let gone = Set(outcome.removed)
+        var next = displayFolder
+        while next != DisplayFolder.root && (gone.contains(next) || gone.contains(where: { next.hasPrefix($0 + "/") })) {
+            let parent = (next as NSString).deletingLastPathComponent
+            if parent.isEmpty || parent == next {
+                next = DisplayFolder.root
+                break
+            }
+            next = parent
+        }
+        guard next != displayFolder else { return }
+        displayFolder = next
+        resetFolderPages()
+        await reload(media: "photo")
+        notice = line
+    }
+
     /// Drops leftover catalog rows in the open folder. A row goes only when its file is gone and another file here has the same name and size.
     func cleanDisplayFolder() async {
-        guard !cleanBusy, !removalBusy, !dateBusy, !moveBusy, !mergeBusy else { return }
+        guard !cleanBusy, !removalBusy, !dateBusy, !organizeBusy, !moveBusy, !mergeBusy else { return }
         cleanBusy = true
         defer { cleanBusy = false }
         notice = "Cleaning leftover records."
@@ -1486,7 +1899,7 @@ final class LibraryBrowser {
     /// Deletes every file in Photos/_Removed, then asks the helper to drop those catalog rows.
     func deleteAllRemoved() async {
         guard DisplayFolder.isRemovedShelf(displayFolder) else { return }
-        guard !removalBusy, !rescanBusy, !dateBusy, !cleanBusy, !moveBusy, !mergeBusy else { return }
+        guard !removalBusy, !rescanBusy, !dateBusy, !organizeBusy, !cleanBusy, !moveBusy, !mergeBusy else { return }
         removalBusy = true
         notice = "Deleting photos in Photos/_Removed."
         let root = libraryRoot
@@ -1517,7 +1930,7 @@ final class LibraryBrowser {
 
     /// Catalogs the displayed folder and its subfolders, and deletes rows whose files are gone.
     func rescanDisplayFolder() {
-        guard !rescanBusy, !removalBusy, !dateBusy, !cleanBusy, !moveBusy, !mergeBusy else { return }
+        guard !rescanBusy, !removalBusy, !dateBusy, !organizeBusy, !cleanBusy, !moveBusy, !mergeBusy else { return }
         rescanBusy = true
         rescanGeneration += 1
         let generation = rescanGeneration
@@ -2130,7 +2543,7 @@ final class LibraryBrowser {
 
     /// Journal-moves each file into Photos/_Removed, one at a time. A failure leaves that file in place.
     func removeFromLibrary(_ assets: [LibraryAsset]) async {
-        guard !assets.isEmpty, !removalBusy, !dateBusy, !cleanBusy, !rescanBusy, !moveBusy, !mergeBusy else { return }
+        guard !assets.isEmpty, !removalBusy, !dateBusy, !organizeBusy, !cleanBusy, !rescanBusy, !moveBusy, !mergeBusy else { return }
         removalBusy = true
         defer { removalBusy = false }
         var moved = 0
@@ -2265,6 +2678,9 @@ final class LibraryBrowser {
         }
     }
 
+    /// How many photographs are reduced at once. Each reduction runs off the main thread.
+    private static let previewWorkers = 4
+
     /// Reduces the first visible still that has no preview yet. The page order is the folder on screen.
     /// The helper previews that same folder ahead of the rest of the library.
     func previewVisibleOne() async -> Bool {
@@ -2273,11 +2689,38 @@ final class LibraryBrowser {
         return true
     }
 
+    /// Reduces up to four visible stills together. The page order is the folder on screen.
+    func previewVisibleBatch() async -> Int {
+        await previewBatch(onScreen: true)
+    }
+
     /// Reduces the next still on a page that is not on screen. The page the user is looking at stays put.
     func previewNextFolderStill() async -> Bool {
         guard let asset = nextOffscreenPreview() else { return false }
         await previewAsset(asset)
         return true
+    }
+
+    /// Reduces up to four stills on pages that are not on screen.
+    func previewOffscreenBatch() async -> Int {
+        await previewBatch(onScreen: false)
+    }
+
+    private func previewBatch(onScreen: Bool) async -> Int {
+        var picked: [LibraryAsset] = []
+        while picked.count < Self.previewWorkers {
+            let asset = onScreen ? rows.first(where: needsVisiblePreview) : nextOffscreenPreview()
+            guard let asset else { break }
+            previewTried.insert(asset.uid)
+            picked.append(asset)
+        }
+        guard !picked.isEmpty else { return 0 }
+        await withTaskGroup(of: Void.self) { group in
+            for asset in picked {
+                group.addTask { await self.previewAsset(asset) }
+            }
+        }
+        return picked.count
     }
 
     /// Pages after the one on screen come first. Earlier pages follow.
@@ -2304,7 +2747,9 @@ final class LibraryBrowser {
         guard let url = fileURL(for: asset) else { return }
         let facts: Data
         do {
-            facts = try MacCheckpoint.payloads(for: url).facts
+            facts = try await Task.detached {
+                try MacCheckpoint.payloads(for: url).facts
+            }.value
         } catch {
             return
         }
@@ -2335,7 +2780,9 @@ final class LibraryBrowser {
         guard let url = fileURL(for: asset) else { return true }
         let payloads: (facts: Data, detail: Data)
         do {
-            payloads = try MacCheckpoint.payloads(for: url)
+            payloads = try await Task.detached {
+                try MacCheckpoint.payloads(for: url)
+            }.value
         } catch {
             return true
         }
@@ -2428,7 +2875,7 @@ final class LibraryBrowser {
 
     /// The two selected stills, in click order, when they can be previewed.
     func mergePair() -> MergePairLookup {
-        guard !mergeBusy, !moveBusy, !dateBusy, !removalBusy, !cleanBusy, !rescanBusy else {
+        guard !mergeBusy, !moveBusy, !dateBusy, !organizeBusy, !removalBusy, !cleanBusy, !rescanBusy else {
             return .refused("An export is already running.")
         }
         let assets = mergeTargets()
@@ -2455,7 +2902,7 @@ final class LibraryBrowser {
 
     /// Holds the other folder actions while the TIFF is written.
     func claimMergeWrite() -> Bool {
-        guard !mergeBusy, !moveBusy, !dateBusy, !removalBusy, !cleanBusy, !rescanBusy else {
+        guard !mergeBusy, !moveBusy, !dateBusy, !organizeBusy, !removalBusy, !cleanBusy, !rescanBusy else {
             notice = "An export is already running."
             return false
         }
@@ -2603,9 +3050,150 @@ final class LibraryBrowser {
         NSWorkspace.shared.activateFileViewerSelecting([url])
     }
 
+    /// Gives one folder under Photos a new name. The catalog keeps each photo's id.
+    /// Videos and photos are the same catalog rows. The folder moves back when the helper
+    /// refuses the new name. A lost reply leaves the new name in place.
+    func renameFolder(_ relative: String, to typed: String) async {
+        guard !moveBusy, !mergeBusy, !dateBusy, !organizeBusy, !removalBusy, !cleanBusy, !rescanBusy else {
+            notice = "An export is already running."
+            return
+        }
+        guard FolderRename.catalogAllows(relative) else {
+            notice = FolderRename.keptMessage(relative: relative)
+            return
+        }
+        guard let source = FolderRename.libraryDirectory(libraryRoot: libraryRoot, relative: relative) else {
+            notice = "The folder could not be renamed."
+            return
+        }
+        let label = folderRenameLabel(typed)
+        switch FolderRename.perform(source: source, typed: typed) {
+        case .failure(let problem):
+            if let message = FolderRename.message(for: problem, name: label) {
+                notice = message
+            }
+        case .success(let dest):
+            guard let newRel = DisplayFolder.prefix(selected: dest, libraryRoot: libraryRoot), newRel != relative else {
+                _ = FolderRename.restore(from: dest, to: source)
+                notice = "The folder could not be renamed."
+                return
+            }
+            moveBusy = true
+            notice = "Renaming \(dest.lastPathComponent)…"
+            defer { moveBusy = false }
+            switch await followRenamedFolder(from: relative, to: newRel) {
+            case .updated:
+                await adoptRenamedCatalogFolder(from: relative, to: newRel)
+                notice = "Renamed to \(dest.lastPathComponent)."
+            case .unsettled:
+                await adoptRenamedCatalogFolder(from: relative, to: newRel)
+                notice = "Renamed to \(dest.lastPathComponent). The catalog may still be catching up."
+            case .restore:
+                if FolderRename.restore(from: dest, to: source) {
+                    notice = "The folder stayed as it is. The catalog could not follow the new name."
+                } else {
+                    await adoptRenamedCatalogFolder(from: relative, to: newRel)
+                    notice = "Renamed to \(dest.lastPathComponent). The catalog could not follow the new name."
+                }
+            }
+        }
+    }
+
+    /// Records a folder the Disk tree already renamed. Asset ids stay. The caller moves the folder back on failure.
+    func recordRenamedFolder(from old: URL, to dest: URL) async -> LibraryFolderRenameFollow {
+        guard let oldRel = DisplayFolder.prefix(selected: old, libraryRoot: libraryRoot) else {
+            return .outside
+        }
+        guard FolderRename.catalogAllows(oldRel),
+              let newRel = DisplayFolder.prefix(selected: dest, libraryRoot: libraryRoot),
+              newRel != oldRel else {
+            return .failed
+        }
+        let held = moveBusy
+        if !held { moveBusy = true }
+        defer { if !held { moveBusy = false } }
+        switch await followRenamedFolder(from: oldRel, to: newRel) {
+        case .updated:
+            await adoptRenamedCatalogFolder(from: oldRel, to: newRel)
+            return .updated
+        case .unsettled:
+            await adoptRenamedCatalogFolder(from: oldRel, to: newRel)
+            return .unsettled
+        case .restore:
+            return .failed
+        }
+    }
+
+    /// Asks the helper to follow a directory that is already at its new name.
+    /// A timed-out reply is asked once more. The directory stays put when that reply
+    /// also fails to arrive, and when the second reply says the name is taken.
+    private func followRenamedFolder(from oldRel: String, to newRel: String) async -> RenamedFolderReply {
+        switch await client.renameFolder(from: oldRel, to: newRel) {
+        case .updated:
+            return .updated
+        case .timedOut:
+            switch await client.renameFolder(from: oldRel, to: newRel) {
+            case .updated, .refused:
+                return .updated
+            case .timedOut, .offline:
+                return .unsettled
+            case .unsupported:
+                return .restore
+            }
+        case .offline, .refused, .unsupported:
+            return .restore
+        }
+    }
+
+    private enum RenamedFolderReply {
+        case updated
+        case restore
+        case unsettled
+    }
+
+    private func folderRenameLabel(_ typed: String) -> String {
+        if case .success(let cleaned) = FolderRename.cleaned(typed) {
+            return cleaned
+        }
+        return typed
+    }
+
+    /// The open folder and the rows on screen follow a renamed directory. A reload reads the new path.
+    private func adoptRenamedCatalogFolder(from oldRel: String, to newRel: String) async {
+        func shiftAsset(_ asset: inout LibraryAsset) {
+            guard let path = asset.relPath,
+                  let next = FolderRename.shiftedRelative(path, from: oldRel, to: newRel) else { return }
+            asset.relPath = next
+        }
+        for index in rows.indices { shiftAsset(&rows[index]) }
+        for index in reviewRows.indices { shiftAsset(&reviewRows[index]) }
+        for page in stillPages.indices {
+            for index in stillPages[page].indices { shiftAsset(&stillPages[page][index]) }
+        }
+        for index in folderVideos.indices { shiftAsset(&folderVideos[index]) }
+        for group in duplicateGroups.indices {
+            if var keeper = duplicateGroups[group].keeper {
+                shiftAsset(&keeper)
+                duplicateGroups[group].keeper = keeper
+            }
+            for index in duplicateGroups[group].members.indices {
+                shiftAsset(&duplicateGroups[group].members[index])
+            }
+        }
+        let previous = displayFolder
+        if let next = FolderRename.shiftedRelative(previous, from: oldRel, to: newRel) {
+            displayFolder = next
+        }
+        refreshFolderTree(for: [newRel])
+        if displayFolder != previous {
+            resetFolderPages()
+            await reload(media: "photo")
+        }
+    }
+
     /// Gives one catalog file a new name in its current folder, then rescans that folder.
     func rename(_ asset: LibraryAsset, to typed: String) {
-        guard !mergeBusy, !moveBusy, !dateBusy, !removalBusy, !cleanBusy, !rescanBusy else {
+        guard !mergeBusy, !moveBusy, !dateBusy, !organizeBusy, !removalBusy, !cleanBusy, !rescanBusy else {
             notice = "An export is already running."
             return
         }

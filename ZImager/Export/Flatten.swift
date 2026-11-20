@@ -256,6 +256,7 @@ nonisolated enum FlattenWriter {
         let filled = InpaintPipeline.applyInteractive(
             base: shaped,
             operations: state.inpaints,
+            displayTurns: state.geometry.quarterTurns,
             context: context
         ) { fraction, done, total in
             let shown = total > 0 ? min(1, max(0, fraction)) : nil

@@ -38,6 +38,26 @@ func TestUserDateAcceptsACalendarDay(t *testing.T) {
 	}
 }
 
+func TestInDayFolderMatchesTheYearAndDay(t *testing.T) {
+	day, ok := User("2024-06-15")
+	if !ok {
+		t.Fatal("date")
+	}
+	if !InDayFolder("Photos/2024/2024-06-15/a.jpg", day) {
+		t.Fatal("day folder")
+	}
+	if !InDayFolder("Photos/2024/2024-06-15/event/a.jpg", day) {
+		t.Fatal("nested")
+	}
+	if InDayFolder("Photos/Inbox/a.jpg", day) || InDayFolder("Photos/2024/2024-06-16/a.jpg", day) {
+		t.Fatal("other folder")
+	}
+	year, ok := User("2024")
+	if !ok || InDayFolder("Photos/2024/2024-06-15/a.jpg", year) {
+		t.Fatal("year only")
+	}
+}
+
 func TestPathDateUsesTheFolderClosestToTheFile(t *testing.T) {
 	now := time.Date(2026, 11, 5, 0, 0, 0, 0, time.UTC)
 	rel := "Photos/2010/20100714_27 Minnisota trip/20100717_100SSCAM day 4/SDC13577.MP4"

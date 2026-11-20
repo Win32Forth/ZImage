@@ -43,6 +43,12 @@ enum FolderPage {
         return (total + limit - 1) / limit
     }
 
+    /// `Photos/Trips (12345)`. The count is omitted until every still in the folder has been counted.
+    static func heading(folder: String, photoCount: Int?) -> String {
+        guard let photoCount else { return folder }
+        return "\(folder) (\(photoCount))"
+    }
+
     /// `201–400 of 1,842`. The total is omitted while a folder is still being counted.
     static func range(page: Int, countOnPage: Int, total: Int?) -> String {
         guard countOnPage > 0 else { return "" }

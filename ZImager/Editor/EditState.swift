@@ -286,14 +286,26 @@ nonisolated struct InpaintOp: Codable, Equatable, Identifiable, Sendable {
     var strength: Double
     /// Present for repairs made after this picture was kept. Older repairs omit it and are filled again.
     var patch: RepairPatch?
+    /// Quarter-turns of the picture this mask was drawn on.
+    /// Nil means the mask already lines up with that picture. Older files omit it and mean the same.
+    var maskQuarterTurns: Int?
 
-    init(id: UUID, maskPNG: Data, modelID: String, featherPx: Int, strength: Double = 1, patch: RepairPatch? = nil) {
+    init(
+        id: UUID,
+        maskPNG: Data,
+        modelID: String,
+        featherPx: Int,
+        strength: Double = 1,
+        patch: RepairPatch? = nil,
+        maskQuarterTurns: Int? = nil
+    ) {
         self.id = id
         self.maskPNG = maskPNG
         self.modelID = modelID
         self.featherPx = featherPx
         self.strength = min(1, max(0, strength))
         self.patch = patch
+        self.maskQuarterTurns = maskQuarterTurns
     }
 
     static func empty(id: UUID = UUID()) -> InpaintOp {
@@ -307,6 +319,7 @@ nonisolated struct InpaintOp: Codable, Equatable, Identifiable, Sendable {
         case featherPx
         case strength
         case patch
+        case maskQuarterTurns
     }
 
     init(from decoder: Decoder) throws {
@@ -318,7 +331,8 @@ nonisolated struct InpaintOp: Codable, Equatable, Identifiable, Sendable {
             modelID: try container.decode(String.self, forKey: .modelID),
             featherPx: try container.decode(Int.self, forKey: .featherPx),
             strength: decodedStrength,
-            patch: try container.decodeIfPresent(RepairPatch.self, forKey: .patch)
+            patch: try container.decodeIfPresent(RepairPatch.self, forKey: .patch),
+            maskQuarterTurns: try container.decodeIfPresent(Int.self, forKey: .maskQuarterTurns)
         )
     }
 
@@ -330,6 +344,7 @@ nonisolated struct InpaintOp: Codable, Equatable, Identifiable, Sendable {
         try container.encode(featherPx, forKey: .featherPx)
         try container.encode(strength, forKey: .strength)
         try container.encodeIfPresent(patch, forKey: .patch)
+        try container.encodeIfPresent(maskQuarterTurns, forKey: .maskQuarterTurns)
     }
 }
 
@@ -341,6 +356,21 @@ nonisolated struct EditState: Codable, Equatable, Sendable {
     var crop: NormRect? = nil
 
     static let identity = EditState()
+
+    /// Keeps the crop and the repairs on the same part of the photograph when the quarter-turns change.
+    /// The mask pixels stay as they were drawn. `maskQuarterTurns` records that orientation on the first turn after the repair.
+    mutating func applyQuarterTurn(from previous: GeometryState, to geometry: GeometryState) {
+        let delta = GeometryPipeline.wrap(geometry.quarterTurns - previous.quarterTurns)
+        let captured = GeometryPipeline.wrap(previous.quarterTurns)
+        self.geometry = geometry
+        guard delta != 0 else { return }
+        if let crop {
+            self.crop = CropRect.rotated(crop, quarterTurns: delta)
+        }
+        for index in inpaints.indices where inpaints[index].maskQuarterTurns == nil {
+            inpaints[index].maskQuarterTurns = captured
+        }
+    }
 
     static func replay(_ commands: [EditCommand]) -> EditState {
         var state = EditState.identity
@@ -436,7 +466,7 @@ nonisolated enum EditCommand: Codable, Equatable, Sendable {
         case .setTone(let tone, _):
             state.tone = tone
         case .setGeometry(let geometry, _):
-            state.geometry = geometry
+            state.applyQuarterTurn(from: state.geometry, to: geometry)
         case .addInpaint(let op):
             state.inpaints.append(op)
         case .setInpaintStrength(let id, let strength, _):

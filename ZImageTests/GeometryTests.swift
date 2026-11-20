@@ -1,5 +1,6 @@
 import CoreGraphics
 import CoreImage
+import ImageIO
 import XCTest
 @testable import ZImager
 
@@ -34,6 +35,81 @@ final class GeometryTests: XCTestCase {
         let half = GeometryPipeline.apply(base: image, geometry: geometry)
         XCTAssertEqual(Int(half.extent.width.rounded()), 40)
         XCTAssertEqual(Int(half.extent.height.rounded()), 16)
+    }
+
+    func testVerticalKeystoneStillNarrowsTheBottomAfterAQuarterTurn() {
+        let image = CIImage(color: CIColor(red: 0.4, green: 0.4, blue: 0.4, alpha: 1))
+            .cropped(to: CGRect(x: 0, y: 0, width: 48, height: 32))
+        let context = TonePipeline.makeContext()
+        func expectVertical(_ turns: Int) {
+            let sample = bottomAlphas(image, turns: turns, vertical: 1, horizontal: 0, context: context)
+            XCTAssertLessThan(sample.left, 32, "turn \(turns) left")
+            XCTAssertLessThan(sample.right, 32, "turn \(turns) right")
+            XCTAssertGreaterThan(sample.mid, 200, "turn \(turns) middle")
+        }
+        expectVertical(0)
+        expectVertical(1)
+        expectVertical(3)
+        let side = bottomAlphas(image, turns: 1, vertical: 0, horizontal: 1, context: context)
+        XCTAssertLessThan(side.mid, 32)
+    }
+
+    func testRotationKeepsTheCropAndTheRepairOnThePhotograph() {
+        var log = HistoryLog()
+        log.commit(.setCrop(NormRect(x: 0, y: 0, width: 0.5, height: 1)))
+        log.commit(.addInpaint(InpaintOp(
+            id: UUID(),
+            maskPNG: Data([1]),
+            modelID: InpaintModel.dust,
+            featherPx: 2
+        )))
+        var turned = GeometryState.identity
+        turned.quarterTurns = 1
+        log.commit(.setGeometry(turned, label: "Rotate clockwise"))
+        let crop = try! XCTUnwrap(log.state.crop)
+        XCTAssertEqual(crop.x, 0, accuracy: 1e-9)
+        XCTAssertEqual(crop.y, 0, accuracy: 1e-9)
+        XCTAssertEqual(crop.width, 1, accuracy: 1e-9)
+        XCTAssertEqual(crop.height, 0.5, accuracy: 1e-9)
+        XCTAssertEqual(log.state.inpaints[0].maskQuarterTurns, 0)
+
+        turned.quarterTurns = 2
+        log.commit(.setGeometry(turned, label: "Rotate clockwise"))
+        let half = try! XCTUnwrap(log.state.crop)
+        XCTAssertEqual(half.x, 0.5, accuracy: 1e-9)
+        XCTAssertEqual(half.y, 0, accuracy: 1e-9)
+        XCTAssertEqual(half.width, 0.5, accuracy: 1e-9)
+        XCTAssertEqual(half.height, 1, accuracy: 1e-9)
+        XCTAssertEqual(log.state.inpaints[0].maskQuarterTurns, 0)
+
+        log.undo()
+        XCTAssertEqual(log.state.crop?.height ?? 1, 0.5, accuracy: 1e-9)
+        log.undo()
+        XCTAssertNil(log.state.inpaints[0].maskQuarterTurns)
+        XCTAssertEqual(log.state.crop?.width ?? 0, 0.5, accuracy: 1e-9)
+    }
+
+    func testARepairMaskTurnsWithThePhotograph() {
+        var pixels = [UInt8](repeating: 0, count: 4)
+        pixels[0] = 255
+        let png = InpaintPipeline.encodeGrayPNG(pixels, width: 2, height: 2)
+        let operation = InpaintOp(
+            id: UUID(),
+            maskPNG: png,
+            modelID: InpaintModel.dust,
+            featherPx: 2,
+            maskQuarterTurns: 0
+        )
+        let turned = Touchup.oriented(operation, displayTurns: 1)
+        let decoded = try! XCTUnwrap(grayPixels(turned.maskPNG))
+        XCTAssertEqual(decoded.width, 2)
+        XCTAssertEqual(decoded.height, 2)
+        XCTAssertEqual(decoded.pixels[0], 0)
+        XCTAssertEqual(decoded.pixels[1], 255)
+        XCTAssertNil(turned.patch)
+
+        let stayed = Touchup.oriented(operation, displayTurns: 0)
+        XCTAssertEqual(stayed.maskPNG, png)
     }
 
     func testHorizonUsesPixelAspect() {
@@ -183,6 +259,43 @@ final class GeometryTests: XCTestCase {
         XCTAssertLessThan(movedBlack.0, 20)
         XCTAssertEqual(movedBlack.3, 255)
         XCTAssertEqual(vacated.3, 0)
+    }
+
+    private func bottomAlphas(
+        _ image: CIImage,
+        turns: Int,
+        vertical: Double,
+        horizontal: Double,
+        context: CIContext
+    ) -> (left: Int, mid: Int, right: Int) {
+        var geometry = GeometryState.identity
+        geometry.quarterTurns = turns
+        geometry.verticalKeystone = vertical
+        geometry.horizontalKeystone = horizontal
+        let rendered = GeometryPipeline.apply(base: image, geometry: geometry)
+        let width = Int(rendered.extent.width.rounded())
+        let left = pixel(rendered, x: 0, y: 1, context: context).3
+        let mid = pixel(rendered, x: width / 2, y: 1, context: context).3
+        let right = pixel(rendered, x: max(0, width - 1), y: 1, context: context).3
+        return (Int(left), Int(mid), Int(right))
+    }
+
+    private func grayPixels(_ png: Data) -> (pixels: [UInt8], width: Int, height: Int)? {
+        guard let source = CGImageSourceCreateWithData(png as CFData, nil),
+              let image = CGImageSourceCreateImageAtIndex(source, 0, nil),
+              let data = image.dataProvider?.data,
+              let pointer = CFDataGetBytePtr(data) else { return nil }
+        let width = image.width
+        let height = image.height
+        guard width > 0, height > 0 else { return nil }
+        var pixels = [UInt8](repeating: 0, count: width * height)
+        let bytesPerPixel = max(1, image.bitsPerPixel / 8)
+        for y in 0..<height {
+            for x in 0..<width {
+                pixels[y * width + x] = pointer[y * image.bytesPerRow + x * bytesPerPixel]
+            }
+        }
+        return (pixels, width, height)
     }
 
     private func pixel(_ image: CIImage, x: Int, y: Int, context: CIContext) -> (UInt8, UInt8, UInt8, UInt8) {
