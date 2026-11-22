@@ -1,0 +1,9 @@
+[package]
+name = "zimager-x3f"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "CPU-only X3F sensor decode for ZImager, built on x3f-core 0.5.0."
+
+[dependencies]
+x3f-core = "=0.5.0"

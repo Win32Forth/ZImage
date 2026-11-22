@@ -3,3 +3,4 @@ xcuserdata/
 DerivedData/
 Helper/zimage-helper
 *.xcuserstate
+Vendor/x3fuse/target/

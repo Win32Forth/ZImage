@@ -25,7 +25,9 @@ struct ToneSliderSpec: Identifiable {
     var range: ClosedRange<Double>
     var keyPath: WritableKeyPath<ToneState, Double>
     var readout: ToneReadout
-    var id: String { title }
+    var historyLabel: String? = nil
+    var help: String? = nil
+    var id: String { historyLabel ?? title }
 
     static let tone: [ToneSliderSpec] = [
         ToneSliderSpec(title: "Exposure", range: -5...5, keyPath: \.exposureEV, readout: .tenth),
@@ -50,6 +52,57 @@ struct ToneSliderSpec: Identifiable {
     static let color: [ToneSliderSpec] = [
         ToneSliderSpec(title: "Temperature", range: 2000...50000, keyPath: \.temperature, readout: .kelvin),
         ToneSliderSpec(title: "Tint", range: -150...150, keyPath: \.tint, readout: .tint),
+    ]
+
+    static let vignette: [ToneSliderSpec] = [
+        ToneSliderSpec(
+            title: "Amount",
+            range: -1...1,
+            keyPath: \.vignetteAmount,
+            readout: .hundredth,
+            historyLabel: "Vignette amount",
+            help: "Negative darkens the edges. Positive lightens them. Double-click returns it to none."
+        ),
+        ToneSliderSpec(
+            title: "Midpoint",
+            range: 0...1,
+            keyPath: \.vignetteMidpoint,
+            readout: .hundredth,
+            historyLabel: "Vignette midpoint",
+            help: "Moves the clear center outward. Double-click returns it to the middle."
+        ),
+        ToneSliderSpec(
+            title: "Roundness",
+            range: -1...1,
+            keyPath: \.vignetteRoundness,
+            readout: .hundredth,
+            historyLabel: "Vignette roundness",
+            help: "Negative follows the frame. Positive pulls the edge toward a circle. Double-click returns it to an ellipse."
+        ),
+        ToneSliderSpec(
+            title: "Feather",
+            range: 0...1,
+            keyPath: \.vignetteFeather,
+            readout: .hundredth,
+            historyLabel: "Vignette feather",
+            help: "Softens the edge. Double-click returns it to the middle."
+        ),
+        ToneSliderSpec(
+            title: "X",
+            range: -1...1,
+            keyPath: \.vignetteCenterX,
+            readout: .hundredth,
+            historyLabel: "Vignette X",
+            help: "Moves the clear center left or right. Positive goes right. Double-click returns it to the middle."
+        ),
+        ToneSliderSpec(
+            title: "Y",
+            range: -1...1,
+            keyPath: \.vignetteCenterY,
+            readout: .hundredth,
+            historyLabel: "Vignette Y",
+            help: "Moves the clear center down or up. Positive goes up. Double-click returns it to the middle."
+        ),
     ]
 }
 
@@ -79,7 +132,7 @@ struct InspectorTone: View {
                         .buttonStyle(LibraryPushButtonStyle())
                         .disabled(!model.canFlattenPhoto)
                         .accessibilityIdentifier("Flatten")
-                        .help("Writes a full-size TIFF beside the edits and uses that file from then on.")
+                        .help("Opens Flatten. Continue saves the edits into a TIFF beside the edits. Duplicate writes that TIFF next to this photo and leaves this photo as it is.")
                 },
                 toggle: { collapsed.toggle() }
             )
@@ -147,7 +200,7 @@ struct ToneSliderControl: View {
             InspectorSlider(
                 value: model.draftTone[keyPath: spec.keyPath],
                 range: spec.range,
-                onChange: { model.nudgeTone(spec.keyPath, to: $0, label: spec.title) },
+                onChange: { model.nudgeTone(spec.keyPath, to: $0, label: spec.historyLabel ?? spec.title) },
                 onEditingChanged: { editing in
                     if editing {
                         model.beginToneDrag()
@@ -157,13 +210,13 @@ struct ToneSliderControl: View {
                 },
                 onReset: SliderReset.resets(title: spec.title) ? {
                     model.beginToneDrag()
-                    model.nudgeTone(spec.keyPath, to: SliderReset.middle(of: spec.range), label: spec.title)
+                    model.nudgeTone(spec.keyPath, to: SliderReset.middle(of: spec.range), label: spec.historyLabel ?? spec.title)
                     model.endToneDrag()
                 } : nil
             )
             .inspectorControlHeight()
             .accessibilityLabel(spec.title)
-            .help(SliderReset.resets(title: spec.title) ? "Double-click the knob to return it to the middle." : "")
+            .help(spec.help ?? (SliderReset.resets(title: spec.title) ? "Double-click the knob to return it to the middle." : ""))
         }
     }
 }

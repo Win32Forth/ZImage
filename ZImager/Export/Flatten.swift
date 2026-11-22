@@ -237,15 +237,17 @@ nonisolated enum FlattenWriter {
 
     /// Renders `state` onto `pixels` at full size, writes an LZW TIFF to `tiff`, and returns the two JPEGs.
     /// `depthFrom` chooses 8-bit or 16-bit. A second flatten passes the existing `.zflat` as `pixels`.
+    /// `heading` is the progress title. Flatten and Duplicate each pass their own.
     static func produce(
         pixels: URL,
         depthFrom: URL,
         state: EditState,
         tiff: URL,
+        heading: String = "Flattening the photograph",
         progress: @escaping @Sendable (String, Int, Int, Double?) -> Void
     ) throws -> Product {
         try InpaintPipeline.validateForExport(state)
-        progress("Flattening the photograph", 0, 0, nil)
+        progress(heading, 0, 0, nil)
         let image = try fullImage(pixels)
         let depth = bitDepth(of: depthFrom)
         var request = ExportRequest.standard(.tiff)
@@ -260,7 +262,7 @@ nonisolated enum FlattenWriter {
             context: context
         ) { fraction, done, total in
             let shown = total > 0 ? min(1, max(0, fraction)) : nil
-            progress("Flattening", done, total, shown)
+            progress(heading, done, total, shown)
         }
         let longEdge = max(filled.extent.width, filled.extent.height)
         let toned = TonePipeline.apply(base: filled, tone: state.tone, longEdge: max(longEdge, 1))
@@ -406,5 +408,21 @@ nonisolated enum FlattenWriter {
         } else {
             try FileManager.default.moveItem(at: temp, to: destination)
         }
+    }
+}
+
+/// A flattened TIFF beside the original photograph. The original name gains `-2`, then `-3`.
+nonisolated enum FlattenDuplicate {
+    /// `Day-2.tiff` beside `Day.jpg`. A name that is already there takes the next number.
+    /// Nil when every number through 999 is taken.
+    static func fileName(sourceName: String, taken: (String) -> Bool) -> String? {
+        var stem = (sourceName as NSString).deletingPathExtension
+        if stem.isEmpty || stem == "." || stem == ".." { stem = "Photo" }
+        if stem.count > 200 { stem = String(stem.prefix(200)) }
+        for number in 2..<1000 {
+            let name = "\(stem)-\(number).tiff"
+            if !taken(name) { return name }
+        }
+        return nil
     }
 }

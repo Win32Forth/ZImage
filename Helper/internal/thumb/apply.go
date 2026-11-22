@@ -71,8 +71,10 @@ func applyNext(root string, catalog *db.Catalog, pause func() bool, limit int, u
 		return 0, err
 	}
 	// A needs_mac JPEG, PNG, GIF, or BMP at or under the pixel ceiling is tried
-	// again. decode_support stays unknown until that attempt finishes, so a
-	// failure can be marked failed and is not selected on the next pass.
+	// again. An X3F whose preview was skipped is tried once. decode_support
+	// stays unknown until a JPEG attempt finishes, so a failure can be marked
+	// failed and is not selected on the next pass. A failed X3F is marked
+	// failed even when its dimensions are unknown.
 	query := `
 		SELECT id, uid, rel_path FROM assets
 		WHERE phase = 'discovered' AND thumb_rel IS NULL
@@ -85,6 +87,10 @@ func applyNext(root string, catalog *db.Catalog, pause func() bool, limit int, u
 				AND native_pixels IS NOT NULL
 				AND native_pixels <= ?
 				AND lower(ext) IN ('jpg', 'jpeg', 'png', 'gif', 'bmp')
+			)
+			OR (
+				lower(ext) = 'x3f'
+				AND COALESCE(decode_support, '') NOT IN ('preview_only', 'full', 'failed')
 			)
 		)`
 	args := []any{maxPixels}
@@ -132,7 +138,7 @@ func applyNext(root string, catalog *db.Catalog, pause func() bool, limit int, u
 		now := time.Now().UTC().Format(time.RFC3339)
 		if result.NeedsMac || len(result.JPEG) == 0 {
 			support := "needs_mac"
-			if !tooBig(result.Width, result.Height) {
+			if strings.EqualFold(filepath.Ext(one.rel), ".x3f") || !tooBig(result.Width, result.Height) {
 				support = "failed"
 			}
 			_, err = catalog.Write.Exec(`

@@ -1,7 +1,7 @@
 import AppKit
 import SwiftUI
 
-/// Joins the two selected photos. On Disk and on the server it is the last panel, under Move selected files.
+/// Joins the two selected photos. On Disk and on the server it sits under Move selected files.
 struct MergePhotosPanel: View {
     var firstName: String?
     var secondName: String?
@@ -16,12 +16,23 @@ struct MergePhotosPanel: View {
     var cancel: () -> Void
 
     @State private var axis = PhotoMergeAxis.horizontal
+    @AppStorage(FolderPanelStore.merge) private var collapsed = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Merge two photos")
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(ChromePalette.ink)
+            InspectorPanelHeader(title: "Merge two photos", collapsed: collapsed) { collapsed.toggle() }
+            if !collapsed {
+                mergeControls
+            }
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .background(ChromePalette.panel)
+        .accessibilityIdentifier("Merge photos panel")
+    }
+
+    private var mergeControls: some View {
+        VStack(alignment: .leading, spacing: 8) {
             Text(intro)
                 .font(.system(size: 13))
                 .foregroundStyle(ChromePalette.ink)
@@ -76,10 +87,6 @@ struct MergePhotosPanel: View {
                 .help("Shows the joined photos. Arrow keys move the second photo before it is saved.")
             }
         }
-        .padding(16)
-        .frame(maxWidth: .infinity, alignment: .topLeading)
-        .background(ChromePalette.panel)
-        .accessibilityIdentifier("Merge photos panel")
     }
 
     private var intro: String {

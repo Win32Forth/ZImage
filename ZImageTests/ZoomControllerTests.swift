@@ -19,17 +19,51 @@ final class ZoomControllerTests: XCTestCase {
         XCTAssertEqual(zoom.factorLabel, "0.10×")
     }
 
-    func testHandCommandClickZoomsAndCommandOptionClickZoomsOut() {
-        XCTAssertEqual(CanvasTool.hand.clickZoom(command: true, option: false), .zoomIn)
-        XCTAssertEqual(CanvasTool.hand.clickZoom(command: true, option: true), .zoomOut)
-        XCTAssertNil(CanvasTool.hand.clickZoom(command: false, option: false))
-        XCTAssertNil(CanvasTool.hand.clickZoom(command: false, option: true))
-        XCTAssertEqual(CanvasTool.zoom.clickZoom(command: false, option: false), .zoomIn)
-        XCTAssertEqual(CanvasTool.zoom.clickZoom(command: false, option: true), .zoomOut)
-        XCTAssertNil(CanvasTool.eyedropper.clickZoom(command: true, option: false))
+    func testViewingToolsPanAndOtherToolsKeepTheDrag() {
+        XCTAssertTrue(CanvasTool.zoom.pansByDrag)
+        XCTAssertTrue(CanvasTool.hand.pansByDrag)
+        XCTAssertFalse(CanvasTool.select.pansByDrag)
+        XCTAssertFalse(CanvasTool.dustSpot.pansByDrag)
+        XCTAssertFalse(CanvasTool.scratchMark.pansByDrag)
+        XCTAssertFalse(CanvasTool.eyedropper.pansByDrag)
+        XCTAssertFalse(CanvasTool.horizon.pansByDrag)
+        XCTAssertFalse(CanvasTool.redEye.pansByDrag)
+        XCTAssertFalse(CanvasTool.removeObject.pansByDrag)
     }
 
-    func testClickAndOptionClickStepBySquareRootOfTwo() {
+    func testScrollUpZoomsInAboutThePointerAndScrollDownReturns() {
+        var zoom = ZoomController()
+        let view = CGSize(width: 800, height: 600)
+        let anchor = CGPoint(x: 100, y: 80)
+        let image = CGSize(width: 400, height: 300)
+        let before = ImageViewMap(viewSize: view, imageSize: image, magnification: 1, offset: .zero)
+            .imagePoint(from: anchor)
+        zoom.multiply(by: ZoomController.scrollFactor(deltaY: 3, precise: false), anchor: anchor, viewSize: view)
+        XCTAssertEqual(zoom.magnification, ZoomController.sqrtTwo, accuracy: 1e-12)
+        let after = ImageViewMap(
+            viewSize: view,
+            imageSize: image,
+            magnification: CGFloat(zoom.magnification),
+            offset: zoom.offset
+        ).imagePoint(from: anchor)
+        XCTAssertEqual(after.x, before.x, accuracy: 1e-6)
+        XCTAssertEqual(after.y, before.y, accuracy: 1e-6)
+        zoom.multiply(by: ZoomController.scrollFactor(deltaY: -1, precise: false), anchor: anchor, viewSize: view)
+        XCTAssertEqual(zoom.magnification, 1, accuracy: 1e-9)
+    }
+
+    func testPreciseScrollMatchesOneNotchAtSixtyPoints() {
+        XCTAssertEqual(ZoomController.scrollFactor(deltaY: 60, precise: true), ZoomController.sqrtTwo, accuracy: 1e-9)
+        XCTAssertEqual(
+            ZoomController.scrollFactor(deltaY: -60, precise: true),
+            1 / ZoomController.sqrtTwo,
+            accuracy: 1e-9
+        )
+        XCTAssertEqual(ZoomController.scrollFactor(deltaY: 0, precise: true), 1, accuracy: 1e-12)
+        XCTAssertEqual(ZoomController.scrollFactor(deltaY: 0, precise: false), 1, accuracy: 1e-12)
+    }
+
+    func testZoomInAndZoomOutStepBySquareRootOfTwo() {
         var zoom = ZoomController()
         let view = CGSize(width: 800, height: 600)
         let anchor = CGPoint(x: 100, y: 80)

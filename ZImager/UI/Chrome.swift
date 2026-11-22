@@ -28,6 +28,11 @@ final class EditorModel {
     var folderSelectionAnchor: String?
     var folderRotateBusy = false
     var folderRotateNote: String?
+    /// True while Build previews is writing JPEGs for the folder on screen.
+    var folderPreviewBuildBusy = false
+    /// The line under Build. Nil until the button has been used.
+    var folderPreviewBuildNote: String?
+    @ObservationIgnored private var folderPreviewBuildGeneration = 0
     /// Bumped after a Disk move or rename changes a folder, so the left tree rereads its parent.
     var folderTreeRevision = 0
     /// Parents of folders a Disk move or rename just changed.
@@ -35,6 +40,9 @@ final class EditorModel {
     /// Set by the window. Nil in tests. A folder inside Photos waits for the catalog.
     @ObservationIgnored
     var followLibraryFolderRename: ((URL, URL) async -> LibraryFolderRenameFollow)?
+    /// Set by the window. Nil in tests. A file inside Photos waits for the catalog.
+    @ObservationIgnored
+    var followLibraryFileRename: ((URL, URL) async -> LibraryFolderRenameFollow)?
     /// Relative library path of a folder, or nil when that folder is outside the library.
     @ObservationIgnored
     var libraryRelativePath: ((URL) -> String?)?
@@ -130,6 +138,9 @@ final class EditorModel {
     /// The library grid replaces its helper thumbnail when this runs.
     @ObservationIgnored
     var onEditedFolderPreview: ((URL, Data?) -> Void)?
+    /// A flattened TIFF was written beside the open photo. The folder is the catalog path of its directory.
+    @ObservationIgnored
+    var onFlattenedDuplicate: ((String, String) -> Void)?
     /// Left and right arrows while Image is showing. Returns true when the key is consumed.
     @ObservationIgnored
     var imageStep: ((Int) -> Bool)?
@@ -166,7 +177,10 @@ final class EditorModel {
     var touchupSpotsRemaining = 0
     /// Display-tone histogram behind the Spectrum handles. Empty until a photograph is open.
     var spectrumBins: [Int] = []
+    /// Channel histograms for the curve graph, taken before the curve runs.
+    var curveHistogram = CurveHistogram.empty
     private var spectrumDragActive = false
+    private var curveDragActive = false
     private var touchupGeneration = 0
     /// The generation that currently owns `touchupBusy`. A finished older job does not clear a newer one.
     private var touchupBusyGeneration = 0
@@ -197,7 +211,7 @@ final class EditorModel {
     private var touchupReplayAgain = false
     /// The bar across the photograph while saved repairs are being rebuilt. Nil when that work is idle.
     var touchupMeter: TouchupMeter?
-    /// True while Flatten is rendering the full-size TIFF.
+    /// True while Flatten or Duplicate is rendering the full-size TIFF.
     var flattenBusy = false
     @ObservationIgnored
     private var flattenGeneration = 0
@@ -249,8 +263,12 @@ final class EditorModel {
     private var panOrigin = CGSize.zero
     var spaceDown = false
     private var keyMonitor: Any?
-    /// Space pans only while Select is off. Select keeps the drag for the crop handles.
-    var handIsActive: Bool { canvasTool != .select && (canvasTool == .hand || spaceDown) }
+    /// Drag pans on Zoom and Hand. Space pans while another tool is on.
+    /// Select keeps the drag for the crop handles, including while Space is held.
+    var handIsActive: Bool {
+        guard canvasTool != .select else { return false }
+        return canvasTool.pansByDrag || spaceDown
+    }
 
     func openFile() {
         let panel = NSOpenPanel()
@@ -478,40 +496,70 @@ final class EditorModel {
                 folderRotateNote = message
             }
         case .success(let dest):
-            let updated = FolderEntry(
-                url: dest,
-                name: dest.lastPathComponent,
-                isDirectory: false,
-                isVideo: entry.isVideo
-            )
-            if let index = folderEntries.firstIndex(where: { $0.id == entry.id }) {
-                folderEntries[index] = updated
+            guard let follow = followLibraryFileRename else {
+                applyBrowseFileRename(from: entry, to: dest)
+                folderRotateNote = "Renamed to \(dest.lastPathComponent)."
+                return
             }
-            let oldKey = entry.id
-            let newKey = updated.id
-            if selectedFolderKeys.contains(oldKey) {
-                selectedFolderKeys.remove(oldKey)
-                selectedFolderKeys.insert(newKey)
+            folderRotateBusy = true
+            let source = entry
+            let originalName = entry.url.lastPathComponent
+            Task {
+                let outcome = await follow(source.url, dest)
+                switch outcome {
+                case .failed:
+                    if case .success = FileRename.perform(source: dest, typed: originalName) {
+                        self.folderRotateNote = "The file stayed as it is. The catalog could not follow the new name."
+                    } else {
+                        self.applyBrowseFileRename(from: source, to: dest)
+                        self.folderRotateNote = "Renamed to \(dest.lastPathComponent). The catalog could not follow the new name."
+                    }
+                case .unsettled:
+                    self.applyBrowseFileRename(from: source, to: dest)
+                    self.folderRotateNote = "Renamed to \(dest.lastPathComponent). The catalog may still be catching up."
+                case .updated, .outside:
+                    self.applyBrowseFileRename(from: source, to: dest)
+                    self.folderRotateNote = "Renamed to \(dest.lastPathComponent)."
+                }
+                self.folderRotateBusy = false
             }
-            if selectedFolderKey == oldKey { selectedFolderKey = newKey }
-            if folderSelectionAnchor == oldKey { folderSelectionAnchor = newKey }
-            folderSelectionOrder = folderSelectionOrder.map { $0 == oldKey ? newKey : $0 }
-            if let jpeg = previewJPEGByPath.removeValue(forKey: oldKey) {
-                previewJPEGByPath[newKey] = jpeg
-            }
-            if let edited = editedPreviewData.removeValue(forKey: oldKey) {
-                editedPreviewData[newKey] = edited
-            }
-            if let pendingOpenURL, FolderEntry.cacheKey(for: pendingOpenURL) == oldKey {
-                self.pendingOpenURL = dest
-            }
-            if let sourceFileURL, FolderEntry.cacheKey(for: sourceFileURL) == oldKey {
-                self.sourceFileURL = dest
-            }
-            if let documentURL, FolderEntry.cacheKey(for: documentURL) == oldKey {
-                self.documentURL = dest
-            }
-            folderRotateNote = "Renamed to \(dest.lastPathComponent)."
+        }
+    }
+
+    /// The Disk grid follows a file that is already at its new name.
+    private func applyBrowseFileRename(from entry: FolderEntry, to dest: URL) {
+        let updated = FolderEntry(
+            url: dest,
+            name: dest.lastPathComponent,
+            isDirectory: false,
+            isVideo: entry.isVideo
+        )
+        if let index = folderEntries.firstIndex(where: { $0.id == entry.id }) {
+            folderEntries[index] = updated
+        }
+        let oldKey = entry.id
+        let newKey = updated.id
+        if selectedFolderKeys.contains(oldKey) {
+            selectedFolderKeys.remove(oldKey)
+            selectedFolderKeys.insert(newKey)
+        }
+        if selectedFolderKey == oldKey { selectedFolderKey = newKey }
+        if folderSelectionAnchor == oldKey { folderSelectionAnchor = newKey }
+        folderSelectionOrder = folderSelectionOrder.map { $0 == oldKey ? newKey : $0 }
+        if let jpeg = previewJPEGByPath.removeValue(forKey: oldKey) {
+            previewJPEGByPath[newKey] = jpeg
+        }
+        if let edited = editedPreviewData.removeValue(forKey: oldKey) {
+            editedPreviewData[newKey] = edited
+        }
+        if let pendingOpenURL, FolderEntry.cacheKey(for: pendingOpenURL) == oldKey {
+            self.pendingOpenURL = dest
+        }
+        if let sourceFileURL, FolderEntry.cacheKey(for: sourceFileURL) == oldKey {
+            self.sourceFileURL = dest
+        }
+        if let documentURL, FolderEntry.cacheKey(for: documentURL) == oldKey {
+            self.documentURL = dest
         }
     }
 
@@ -823,7 +871,7 @@ final class EditorModel {
         proxy = nil
         baseCI = nil
         preview = nil
-        spectrumBins = []
+        clearToneHistograms()
         previewBanner = nil
         decodeSupport = nil
         editBase = nil
@@ -2133,7 +2181,7 @@ final class EditorModel {
             proxy = nil
             baseCI = nil
             preview = nil
-            spectrumBins = []
+            clearToneHistograms()
             invalidateTile()
             resetEditsForNewImage()
         } catch {
@@ -2143,15 +2191,10 @@ final class EditorModel {
 
     private func openX3F(at url: URL, generation: Int) {
         let name = url.lastPathComponent
+        previewBanner = "Opening the Sigma photograph…"
         Task {
             let outcome: Result<X3FOpened, X3FOpenError> = await Task.detached {
-                do {
-                    return .success(try X3FPreview.open(url: url))
-                } catch let error as X3FOpenError {
-                    return .failure(error)
-                } catch {
-                    return .failure(.noPreview(name))
-                }
+                X3FFiles.open(url: url)
             }.value
             guard generation == self.openGeneration else { return }
             switch outcome {
@@ -2273,7 +2316,7 @@ final class EditorModel {
             presentOpenedRepairs(quickLook: savedCanvas)
         } else if !loadedCatalogLog {
             preview = nil
-            spectrumBins = []
+            clearToneHistograms()
             self.refreshPreview()
         } else {
             self.savedCanvas = nil
@@ -2290,7 +2333,7 @@ final class EditorModel {
         proxy = nil
         baseCI = nil
         preview = nil
-        spectrumBins = []
+        clearToneHistograms()
         openedFileName = name
         previewBanner = nil
         decodeSupport = .unsupported
@@ -2765,6 +2808,7 @@ final class EditorModel {
     }
 
     func clearPreviewCache() {
+        cancelFolderPreviewBuild()
         FolderPreviewCache.wipe()
         previewJPEGByPath = [:]
         editedPreviewData = [:]
@@ -2778,6 +2822,7 @@ final class EditorModel {
     }
 
     private func reloadFolderListing() {
+        cancelFolderPreviewBuild()
         guard let folderURL else { return }
         folderPage = 0
         folderListingReady = false
@@ -2818,6 +2863,82 @@ final class EditorModel {
             self.folderMessage = nil
             self.preparePreviews(for: listed, generation: generation)
         }
+    }
+
+    /// Stops a Build previews pass. A folder change and Clear Cache use this.
+    func cancelFolderPreviewBuild() {
+        folderPreviewBuildGeneration += 1
+        folderPreviewBuildBusy = false
+        folderPreviewBuildNote = nil
+    }
+
+    /// Writes a folder JPEG for each still in the open folder that does not already have one.
+    /// Videos and folders are left out. A name filter is refused.
+    func buildMissingFolderPreviews() async {
+        guard !folderPreviewBuildBusy else { return }
+        guard folderURL != nil, folderListingReady else {
+            folderPreviewBuildNote = FolderPreviewBuild.reading
+            return
+        }
+        if !folderNameFilter.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            folderPreviewBuildNote = FolderPreviewBuild.filterNote
+            return
+        }
+        let photos = folderEntries.filter { !$0.isDirectory && !$0.isVideo }
+        let missing = photos.filter { !hasFolderPreview($0) }
+        if missing.isEmpty {
+            folderPreviewBuildNote = FolderPreviewBuild.finished(photos: photos.count, built: 0, missed: 0)
+            return
+        }
+        folderPreviewBuildGeneration += 1
+        let generation = folderPreviewBuildGeneration
+        folderPreviewBuildBusy = true
+        folderPreviewBuildNote = FolderPreviewBuild.progress(done: 0, total: missing.count)
+        let targets = missing.map { (key: $0.id, url: $0.url) }
+        var built = 0
+        var missed = 0
+        var index = 0
+        while index < targets.count {
+            if generation != folderPreviewBuildGeneration { return }
+            let end = min(index + 4, targets.count)
+            let batch = Array(targets[index..<end])
+            let loaded: [(String, URL?)] = await withTaskGroup(of: (String, URL?).self) { group in
+                for item in batch {
+                    group.addTask {
+                        let jpeg = await Task.detached { () -> URL? in
+                            try? FolderPreviewCache.ensureJPEG(for: item.url)
+                        }.value
+                        return (item.key, jpeg)
+                    }
+                }
+                var rows: [(String, URL?)] = []
+                for await row in group {
+                    rows.append(row)
+                }
+                return rows
+            }
+            if generation != folderPreviewBuildGeneration { return }
+            for item in loaded {
+                if let jpeg = item.1 {
+                    previewJPEGByPath[item.0] = jpeg
+                    built += 1
+                } else {
+                    missed += 1
+                }
+            }
+            index = end
+            folderPreviewBuildNote = FolderPreviewBuild.progress(done: index, total: targets.count)
+            await Task.yield()
+        }
+        if generation != folderPreviewBuildGeneration { return }
+        folderPreviewBuildBusy = false
+        folderPreviewBuildNote = FolderPreviewBuild.finished(photos: photos.count, built: built, missed: missed)
+    }
+
+    private func hasFolderPreview(_ entry: FolderEntry) -> Bool {
+        if editedPreviewData[entry.id] != nil { return true }
+        if previewJPEGByPath[entry.id] != nil { return true }
+        return FolderPreviewCache.hasJPEG(for: entry.url)
     }
 
     /// Builds a few previews at a time, off the main thread, and shows each as soon as it is ready.
@@ -2996,6 +3117,15 @@ final class EditorModel {
         scheduleTileAfterZoom()
     }
 
+    /// Scroll up zooms in about the pointer. Scroll down zooms out about the pointer.
+    func scrollZoom(deltaY: Double, precise: Bool, anchor: CGPoint, in viewSize: CGSize) {
+        let factor = ZoomController.scrollFactor(deltaY: deltaY, precise: precise)
+        guard factor != 1 else { return }
+        zoom.multiply(by: factor, anchor: anchor, viewSize: viewSize)
+        pendingFit = false
+        scheduleTileAfterZoom()
+    }
+
     func setZoomSlider(_ position: Double) {
         zoom.setLogarithmicPosition(position)
         pendingFit = false
@@ -3079,21 +3209,29 @@ final class EditorModel {
 
         That TIFF becomes the starting point for later edits. Tone, spots, and the other edits are saved into the TIFF, and the edit list returns to the start. The original photo stays unchanged. The preview and the .zimg stay. Flatten again overwrites the TIFF.
 
+        Duplicate writes that same TIFF next to this photo. The name gains -2, then -3 when that name is taken. This photo and its edits stay as they are.
+
         A large photo is rendered at full size once, with a progress bar.
 
         Revert is available after a flatten. It removes that TIFF and every edit, and the photograph returns to the original file.
         """
         alert.addButton(withTitle: "Continue")
+        alert.addButton(withTitle: "Duplicate")
         alert.addButton(withTitle: "Cancel")
         alert.addButton(withTitle: "Revert")
-        if alert.buttons.count > 2 {
-            alert.buttons[2].isEnabled = hasFlattenedSidecar
+        if let revert = alert.buttons.first(where: { $0.title == "Revert" }) {
+            revert.isEnabled = hasFlattenedSidecar
         }
         NSCursor.arrow.set()
+        let revertResponse = NSApplication.ModalResponse(
+            rawValue: NSApplication.ModalResponse.alertFirstButtonReturn.rawValue + 3
+        )
         switch alert.runModal() {
         case .alertFirstButtonReturn:
             startFlatten()
-        case .alertThirdButtonReturn:
+        case .alertSecondButtonReturn:
+            startFlattenDuplicate()
+        case revertResponse:
             confirmRevertFlatten()
         default:
             break
@@ -3303,6 +3441,74 @@ final class EditorModel {
             case .success(let product):
                 guard self.openGeneration == openGen else { return }
                 self.finishFlatten(product, catalog: catalog, digest: digest, count: count, uti: uti)
+            }
+        }
+    }
+
+    /// Writes the flattened TIFF beside the open photo and leaves this photo's edits in place.
+    private func startFlattenDuplicate() {
+        guard canFlattenPhoto,
+              let source = sourceFileURL,
+              let uid = catalogAssetUID,
+              let edits = libraryEditsFolder(),
+              let relative = catalogRelPath, !relative.isEmpty else { return }
+        commitOpenDrafts()
+        cancelTouchupQueue()
+        let state = log.state
+        let directory = source.deletingLastPathComponent()
+        let zflat = edits.appendingPathComponent(uid + ".zflat")
+        let pixels = FileManager.default.isReadableFile(atPath: zflat.path) ? zflat : source
+        let parent = (relative as NSString).deletingLastPathComponent
+        let heading = "Duplicating the photograph"
+        flattenGeneration += 1
+        let generation = flattenGeneration
+        let openGen = openGeneration
+        flattenBusy = true
+        touchupMeter = TouchupMeter(title: heading, done: 0, total: 0, fraction: nil)
+        Task {
+            let outcome: Result<String, Error> = await Task.detached {
+                do {
+                    guard let name = FlattenDuplicate.fileName(sourceName: source.lastPathComponent, taken: { candidate in
+                        FileManager.default.fileExists(atPath: directory.appendingPathComponent(candidate).path)
+                    }) else {
+                        throw FlattenError.cannotWrite(source.lastPathComponent)
+                    }
+                    let destination = directory.appendingPathComponent(name)
+                    _ = try FlattenWriter.produce(
+                        pixels: pixels,
+                        depthFrom: source,
+                        state: state,
+                        tiff: destination,
+                        heading: heading
+                    ) { title, done, total, fraction in
+                        DispatchQueue.main.async {
+                            MainActor.assumeIsolated {
+                                guard self.flattenGeneration == generation, self.flattenBusy else { return }
+                                self.touchupMeter = TouchupMeter(
+                                    title: title,
+                                    done: done,
+                                    total: total,
+                                    fraction: fraction
+                                )
+                            }
+                        }
+                    }
+                    return .success(name)
+                } catch {
+                    return .failure(error)
+                }
+            }.value
+            guard self.flattenGeneration == generation else { return }
+            self.flattenBusy = false
+            self.touchupMeter = nil
+            switch outcome {
+            case .failure(let error):
+                self.presentAlert(error.localizedDescription)
+            case .success(let name):
+                if self.openGeneration == openGen {
+                    self.previewBanner = "Duplicated as \(name)."
+                }
+                self.onFlattenedDuplicate?(parent, name)
             }
         }
     }
@@ -4456,6 +4662,41 @@ final class EditorModel {
         endToneDrag()
     }
 
+    /// Starts a curve drag. The graph stays still until the handle is released.
+    func beginCurveDrag() {
+        curveDragActive = true
+        beginToneDrag()
+    }
+
+    func endCurveDrag() {
+        curveDragActive = false
+        endToneDrag()
+    }
+
+    /// Moves one channel's curve. One drag is one history step.
+    func setCurve(_ channel: CurveChannel, to curve: ToneCurve) {
+        guard (proxy != nil || showsVideo), curveDragActive else { return }
+        var curves = draftTone.curves
+        channel.write(curve, into: &curves)
+        guard curves != draftTone.curves else { return }
+        draftTone.curves = curves
+        pendingToneLabel = channel.historyLabel
+        refreshPreview()
+    }
+
+    /// Replaces the RGB curve and clears the red, green, and blue curves.
+    func applyCurvePreset(_ preset: CurvePreset) {
+        endToneDrag()
+        guard proxy != nil || showsVideo else { return }
+        var curves = ToneCurves.identity
+        curves.master = preset.curve
+        guard curves != draftTone.curves else { return }
+        draftTone.curves = curves
+        pendingToneLabel = preset.title
+        refreshPreview()
+        commitToneDraft()
+    }
+
     private func applySpectrum(_ next: (low: Double, mid: Double, high: Double), label: String) {
         draftTone.spectrumLow = next.low
         draftTone.spectrumMid = next.mid
@@ -4497,6 +4738,7 @@ final class EditorModel {
     func endToneDrag() {
         toneDragActive = false
         spectrumDragActive = false
+        curveDragActive = false
         toneIdle?.cancel()
         commitToneDraft()
     }
@@ -4519,6 +4761,7 @@ final class EditorModel {
     private func cancelToneGesture() {
         toneDragActive = false
         spectrumDragActive = false
+        curveDragActive = false
         toneIdle?.cancel()
         toneIdle = nil
     }
@@ -4688,7 +4931,7 @@ final class EditorModel {
         if scheduleBackgroundReplay() { return }
         guard let shaped = stage3Image() else {
             preview = nil
-            spectrumBins = []
+            clearToneHistograms()
             return
         }
         paintPreview(from: shaped)
@@ -4702,7 +4945,7 @@ final class EditorModel {
         let extent = toned.extent.integral
         guard extent.width >= 1, extent.height >= 1 else {
             preview = nil
-            spectrumBins = []
+            clearToneHistograms()
             return
         }
         let screen = NSScreen.main?.colorSpace?.cgColorSpace ?? CGColorSpace(name: CGColorSpace.sRGB)!
@@ -4873,11 +5116,12 @@ final class EditorModel {
     }
 
     /// Luminance of the photograph before the Spectrum handles, so the graph stays put while a handle moves.
+    /// The curve graph uses that frame with the curve set aside, so its handles sit on the tones they map.
     private func refreshSpectrumHistogram(using shapedOverride: CIImage? = nil) {
-        guard !spectrumDragActive else { return }
+        guard !spectrumDragActive, !curveDragActive else { return }
         let shaped = shapedOverride ?? videoPoster ?? stage3Image()
         guard let shaped else {
-            spectrumBins = []
+            clearToneHistograms()
             return
         }
         if let preview {
@@ -4887,16 +5131,38 @@ final class EditorModel {
                 preview: preview
             )
         }
-        let extent = shaped.extent
-        let longSide = max(extent.width, extent.height)
-        guard longSide.isFinite, longSide > 1 else {
-            spectrumBins = []
-            return
-        }
         var tone = draftTone
         tone.spectrumLow = 0
         tone.spectrumMid = 0.5
         tone.spectrumHigh = 1
+        guard let bytes = histogramBytes(shaped: shaped, tone: tone) else {
+            clearToneHistograms()
+            return
+        }
+        spectrumBins = SpectrumLevels.bins(rgba: bytes)
+        if tone.curves.isIdentity {
+            curveHistogram = CurveHistogram.make(rgba: bytes)
+        } else {
+            var plain = tone
+            plain.curves = .identity
+            if let plainBytes = histogramBytes(shaped: shaped, tone: plain) {
+                curveHistogram = CurveHistogram.make(rgba: plainBytes)
+            } else {
+                curveHistogram = .empty
+            }
+        }
+    }
+
+    private func clearToneHistograms() {
+        spectrumBins = []
+        curveHistogram = .empty
+    }
+
+    /// sRGB bytes of a long edge of 160. Nil when the frame is too small to graph.
+    private func histogramBytes(shaped: CIImage, tone: ToneState) -> [UInt8]? {
+        let extent = shaped.extent
+        let longSide = max(extent.width, extent.height)
+        guard longSide.isFinite, longSide > 1 else { return nil }
         let scale = min(1, 160 / longSide)
         let small = shaped.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
         let toned = TonePipeline.apply(
@@ -4907,10 +5173,7 @@ final class EditorModel {
         let bounds = toned.extent.integral
         let width = Int(bounds.width)
         let height = Int(bounds.height)
-        guard width >= 2, height >= 2 else {
-            spectrumBins = []
-            return
-        }
+        guard width >= 2, height >= 2 else { return nil }
         var bytes = [UInt8](repeating: 0, count: width * height * 4)
         toneContext.render(
             toned,
@@ -4920,7 +5183,7 @@ final class EditorModel {
             format: .RGBA8,
             colorSpace: CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
         )
-        spectrumBins = SpectrumLevels.bins(rgba: bytes)
+        return bytes
     }
 }
 
@@ -4936,6 +5199,8 @@ struct Chrome: View {
     @AppStorage("ZImager.serverShowsFolder") private var serverShowsFolder = true
     @AppStorage("ZImage.inspectorSpectrumCollapsed") private var spectrumCollapsed = false
     @AppStorage("ZImage.inspectorToneCollapsed") private var toneCollapsed = false
+    @AppStorage("ZImage.inspectorCurveCollapsed") private var curveCollapsed = false
+    @AppStorage("ZImage.inspectorVignetteCollapsed") private var vignetteCollapsed = false
     @AppStorage("ZImage.inspectorGeometryCollapsed") private var geometryCollapsed = false
     @AppStorage("ZImage.inspectorColorCollapsed") private var colorCollapsed = false
     @AppStorage("ZImage.inspectorHistoryCollapsed") private var historyCollapsed = false
@@ -4981,48 +5246,53 @@ struct Chrome: View {
                                 .frame(width: 280)
                         }
                     } else if diskMode {
-                        VStack(spacing: 0) {
-                            if model.showsFolderPager {
-                                FolderPagePanel(
-                                    title: "\(model.folderPhotoCount.formatted()) photos",
-                                    range: model.folderPagerRange,
-                                    canGoBack: model.folderPageIndex > 0,
-                                    canGoForward: model.folderPageIndex + 1 < model.folderPageCount,
-                                    first: { model.showFolderPage(0) },
-                                    previous: { model.showFolderPage(model.folderPageIndex - 1) },
-                                    next: { model.showFolderPage(model.folderPageIndex + 1) },
-                                    last: { model.showFolderPage(model.folderPageCount - 1) }
+                        ScrollView(.vertical) {
+                            VStack(spacing: 0) {
+                                if model.showsFolderPager {
+                                    FolderPagePanel(
+                                        title: "\(model.folderPhotoCount.formatted()) photos",
+                                        range: model.folderPagerRange,
+                                        canGoBack: model.folderPageIndex > 0,
+                                        canGoForward: model.folderPageIndex + 1 < model.folderPageCount,
+                                        first: { model.showFolderPage(0) },
+                                        previous: { model.showFolderPage(model.folderPageIndex - 1) },
+                                        next: { model.showFolderPage(model.folderPageIndex + 1) },
+                                        last: { model.showFolderPage(model.folderPageCount - 1) }
+                                    )
+                                    folderColumnRule
+                                }
+                                FolderFileDetails(model: model)
+                                folderColumnRule
+                                DiskMoveFolderPanel(model: model)
+                                folderColumnRule
+                                MergePhotosPanel(
+                                    firstName: model.mergeFolderPair()?.first,
+                                    secondName: model.mergeFolderPair()?.second,
+                                    busy: model.folderRotateBusy || model.exportBusy || model.mergePreviewBusy,
+                                    previewing: model.showsDiskMergePreview,
+                                    ready: model.mergePreviewImage != nil,
+                                    right: model.mergePreviewRight,
+                                    down: model.mergePreviewDown,
+                                    preview: { axis in model.beginFolderMergePreview(axis: axis) },
+                                    retarget: { axis in model.retargetMergePreview(axis: axis) },
+                                    merge: { model.commitFolderMergePreview() },
+                                    cancel: { model.cancelMergePreview() }
                                 )
-                                Rectangle()
-                                    .fill(ChromePalette.hairline)
-                                    .frame(height: 1)
+                                folderColumnRule
+                                BuildPreviewsPanel(
+                                    note: model.folderPreviewBuildNote,
+                                    busy: model.folderPreviewBuildBusy,
+                                    enabled: model.folderURL != nil && model.folderListingReady,
+                                    build: { Task { await model.buildMissingFolderPreviews() } }
+                                )
                             }
-                            FolderFileDetails(model: model)
-                            Rectangle()
-                                .fill(ChromePalette.hairline)
-                                .frame(height: 1)
-                            DiskMoveFolderPanel(model: model)
-                            Rectangle()
-                                .fill(ChromePalette.hairline)
-                                .frame(height: 1)
-                            MergePhotosPanel(
-                                firstName: model.mergeFolderPair()?.first,
-                                secondName: model.mergeFolderPair()?.second,
-                                busy: model.folderRotateBusy || model.exportBusy || model.mergePreviewBusy,
-                                previewing: model.showsDiskMergePreview,
-                                ready: model.mergePreviewImage != nil,
-                                right: model.mergePreviewRight,
-                                down: model.mergePreviewDown,
-                                preview: { axis in model.beginFolderMergePreview(axis: axis) },
-                                retarget: { axis in model.retargetMergePreview(axis: axis) },
-                                merge: { model.commitFolderMergePreview() },
-                                cancel: { model.cancelMergePreview() }
-                            )
+                            .frame(width: 280)
                         }
-                        .frame(width: 280, alignment: .top)
+                        .frame(width: 280)
                         .frame(maxHeight: .infinity, alignment: .top)
                     } else {
-                        VStack(spacing: 0) {
+                        ScrollView(.vertical) {
+                            VStack(spacing: 0) {
                             if showsServerFolderPager {
                                 FolderPagePanel(
                                     title: browser.folderPagerTitle,
@@ -5086,9 +5356,18 @@ struct Chrome: View {
                                     },
                                     cancel: { model.cancelMergePreview() }
                                 )
+                                folderColumnRule
+                                BuildPreviewsPanel(
+                                    note: browser.folderPreviewBuildNote,
+                                    busy: browser.folderPreviewBuildBusy,
+                                    enabled: true,
+                                    build: { Task { await browser.buildMissingFolderPreviews() } }
+                                )
                             }
+                            }
+                            .frame(width: 280)
                         }
-                        .frame(width: 280, alignment: .top)
+                        .frame(width: 280)
                         .frame(maxHeight: .infinity, alignment: .top)
                     }
                 }
@@ -5102,6 +5381,9 @@ struct Chrome: View {
             }
             model.followLibraryFolderRename = { old, dest in
                 await browser.recordRenamedFolder(from: old, to: dest)
+            }
+            model.followLibraryFileRename = { old, dest in
+                await browser.recordRenamedFile(from: old, to: dest)
             }
             browser.openFile = { url, _ in
                 model.openSecurityScopedFile(at: url, switchToImageTab: false)
@@ -5117,6 +5399,9 @@ struct Chrome: View {
             }
             model.onEditedFolderPreview = { url, jpeg in
                 browser.installEditedPreview(file: url, jpeg: jpeg)
+            }
+            model.onFlattenedDuplicate = { folder, name in
+                browser.catalogAddedFile(name, in: folder)
             }
             FolderPreviewCache.loadStoredCap()
             model.restoreLastFolder()
@@ -5461,11 +5746,15 @@ struct Chrome: View {
                 inspectorRule
                 InspectorTone(model: model, collapsed: $toneCollapsed)
                 inspectorRule
+                InspectorCurve(model: model, collapsed: $curveCollapsed)
+                inspectorRule
                 InspectorEyedropper(model: model, collapsed: $colorCollapsed)
                 inspectorRule
                 InspectorGeometry(model: model, collapsed: $geometryCollapsed)
                 inspectorRule
                 InspectorTouchup(model: model, collapsed: $touchupCollapsed)
+                inspectorRule
+                InspectorVignette(model: model, collapsed: $vignetteCollapsed)
                 inspectorRule
                 HistoryList(log: model.log, collapsed: $historyCollapsed) { index in
                     model.selectCommand(at: index)
@@ -5478,6 +5767,13 @@ struct Chrome: View {
     }
 
     private var inspectorRule: some View {
+        Rectangle()
+            .fill(ChromePalette.hairline)
+            .frame(height: 1)
+            .accessibilityHidden(true)
+    }
+
+    private var folderColumnRule: some View {
         Rectangle()
             .fill(ChromePalette.hairline)
             .frame(height: 1)
@@ -5726,7 +6022,7 @@ struct Chrome: View {
                 .buttonStyle(LibraryPushButtonStyle())
                 .toolToggleBorder(active: model.canvasTool == .zoom)
                 .accessibilityAddTraits(model.canvasTool == .zoom ? .isSelected : [])
-                .help("Click zooms in. Option-click zooms out. Hold Space to pan.")
+                .help("Scroll up zooms in at the pointer. Scroll down zooms out. Drag to move the picture.")
             Slider(
                 value: Binding(
                     get: { model.zoom.logarithmicPosition },

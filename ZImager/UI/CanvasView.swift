@@ -186,6 +186,12 @@ struct CanvasView: View {
             .cropDrag(model.videoPlayback == nil && model.handIsActive, panGesture(in: geo.size))
             .stillGesture(model.videoPlayback == nil, pinchGesture(in: geo.size))
             .stillGesture(model.videoPlayback == nil, zoomClickGesture(in: geo.size))
+            .overlay {
+                CanvasScrollZoom(enabled: model.preview != nil && model.videoPlayback == nil) { anchor, viewSize, delta, precise in
+                    model.scrollZoom(deltaY: delta, precise: precise, anchor: anchor, in: viewSize)
+                }
+                .allowsHitTesting(false)
+            }
             .preference(key: CanvasSizeKey.self, value: geo.size)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -396,21 +402,87 @@ struct CanvasView: View {
                     }
                     return
                 }
-                if model.canvasTool.repairsByHand {
-                    return
-                }
-                let flags = NSEvent.modifierFlags
-                guard let zoom = model.canvasTool.clickZoom(
-                    command: flags.contains(.command),
-                    option: flags.contains(.option)
-                ) else { return }
-                switch zoom {
-                case .zoomIn:
-                    model.zoomIn(about: value.location, in: viewSize)
-                case .zoomOut:
-                    model.zoomOut(about: value.location, in: viewSize)
-                }
             }
+    }
+}
+
+/// Scroll up zooms in about the pointer. Scroll down zooms out. Clicks pass through.
+struct CanvasScrollZoom: NSViewRepresentable {
+    var enabled: Bool
+    var onScroll: (CGPoint, CGSize, Double, Bool) -> Void
+
+    func makeNSView(context: Context) -> CanvasScrollZoomView {
+        let view = CanvasScrollZoomView()
+        view.enabled = enabled
+        view.onScroll = onScroll
+        return view
+    }
+
+    func updateNSView(_ view: CanvasScrollZoomView, context: Context) {
+        view.enabled = enabled
+        view.onScroll = onScroll
+    }
+
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: CanvasScrollZoomView, context: Context) -> CGSize? {
+        proposal.replacingUnspecifiedDimensions()
+    }
+}
+
+final class CanvasScrollZoomView: NSView {
+    var enabled = false
+    var onScroll: ((CGPoint, CGSize, Double, Bool) -> Void)?
+    private var monitor: Any?
+
+    override var isFlipped: Bool { true }
+
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window == nil {
+            removeMonitor()
+        } else {
+            installMonitor()
+        }
+    }
+
+    override func removeFromSuperview() {
+        removeMonitor()
+        super.removeFromSuperview()
+    }
+
+    deinit {
+        if let monitor {
+            NSEvent.removeMonitor(monitor)
+        }
+    }
+
+    private func installMonitor() {
+        removeMonitor()
+        guard window != nil else { return }
+        monitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
+            guard let self, self.handle(event) else { return event }
+            return nil
+        }
+    }
+
+    private func removeMonitor() {
+        guard let monitor else { return }
+        NSEvent.removeMonitor(monitor)
+        self.monitor = nil
+    }
+
+    /// A mouse notch is one step, including a wheel that reports precise deltas with no gesture phase.
+    /// A trackpad scroll is continuous, and its momentum keeps zooming. A clicky wheel does not coast.
+    private func handle(_ event: NSEvent) -> Bool {
+        guard enabled, let window, event.window === window else { return false }
+        let trackpad = event.hasPreciseScrollingDeltas && (!event.phase.isEmpty || !event.momentumPhase.isEmpty)
+        if !trackpad, !event.momentumPhase.isEmpty { return false }
+        let local = convert(event.locationInWindow, from: nil)
+        guard bounds.contains(local), bounds.width > 1, bounds.height > 1 else { return false }
+        guard event.scrollingDeltaY != 0 else { return false }
+        onScroll?(local, bounds.size, Double(event.scrollingDeltaY), trackpad)
+        return true
     }
 }
 

@@ -224,6 +224,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/v1/focus", s.guard(true, s.focus))
 	mux.HandleFunc("/v1/folders/clean", s.guard(true, s.cleanFolder))
 	mux.HandleFunc("/v1/folders/rename", s.guard(true, s.renameFolder))
+	mux.HandleFunc("/v1/files/rename", s.guard(true, s.renameFile))
 	mux.HandleFunc("/v1/folders/rescan", s.guard(true, s.rescanFolder))
 	mux.HandleFunc("/v1/duplicates", s.guard(true, s.duplicates))
 	mux.HandleFunc("/v1/assets/{uid}/thumbnail", s.guard(true, s.assetThumbnail))

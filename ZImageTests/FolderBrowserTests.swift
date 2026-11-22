@@ -39,15 +39,15 @@ final class FolderBrowserTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: root) }
 
         let entries = try FolderListing.list(folder: root)
-        XCTAssertEqual(entries.map(\.name), ["child", "a.jpg", "b.jpg", "wide.jpg"])
-        XCTAssertEqual(entries.map(\.isDirectory), [true, false, false, false])
+        XCTAssertEqual(entries.map(\.name), ["child", "a.jpg", "b.jpg", "sample.x3f", "wide.jpg"])
+        XCTAssertEqual(entries.map(\.isDirectory), [true, false, false, false, false])
         let names = Set(entries.map(\.name))
         XCTAssertFalse(names.contains("nested.jpg"))
         XCTAssertFalse(names.contains("notes.txt"))
         XCTAssertFalse(names.contains("page.pdf"))
-        XCTAssertFalse(names.contains("sample.x3f"))
+        XCTAssertTrue(names.contains("sample.x3f"))
 
-        let images = entries.filter { !$0.isDirectory }
+        let images = entries.filter { !$0.isDirectory && $0.url.pathExtension.lowercased() == "jpg" }
         XCTAssertEqual(images.count, 3)
         for image in images {
             let jpeg = try FolderPreviewCache.ensureJPEG(for: image.url)
@@ -87,7 +87,7 @@ final class FolderBrowserTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: root) }
         let model = EditorModel()
         model.openFolder(at: root)
-        try await waitUntil { model.folderEntries.map(\.name) == ["child", "a.jpg", "b.jpg", "wide.jpg"] }
+        try await waitUntil { model.folderEntries.map(\.name) == ["child", "a.jpg", "b.jpg", "sample.x3f", "wide.jpg"] }
         XCTAssertTrue(model.showsFolderGrid)
         XCTAssertEqual(model.folderURL?.lastPathComponent, root.lastPathComponent)
         XCTAssertEqual(model.browseRoot?.lastPathComponent, root.lastPathComponent)
@@ -170,7 +170,7 @@ final class FolderBrowserTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: root) }
         try Data().write(to: root.appendingPathComponent("clip.mp4"))
         let entries = try FolderListing.list(folder: root)
-        XCTAssertEqual(entries.map(\.name), ["child", "a.jpg", "b.jpg", "clip.mp4", "wide.jpg"])
+        XCTAssertEqual(entries.map(\.name), ["child", "a.jpg", "b.jpg", "clip.mp4", "sample.x3f", "wide.jpg"])
         let video = try XCTUnwrap(entries.first { $0.name == "clip.mp4" })
         XCTAssertTrue(video.isVideo)
         XCTAssertFalse(try XCTUnwrap(entries.first { $0.name == "a.jpg" }).isVideo)
@@ -198,13 +198,29 @@ final class FolderBrowserTests: XCTestCase {
         let entries = try FolderListing.list(folder: root, includeSubfolders: true)
         XCTAssertEqual(
             entries.map(\.name),
-            ["a.jpg", "b.jpg", "child/clip.mp4", "child/nested.jpg", "wide.jpg"]
+            ["a.jpg", "b.jpg", "child/clip.mp4", "child/nested.jpg", "sample.x3f", "wide.jpg"]
         )
         XCTAssertFalse(entries.contains { $0.isDirectory })
         let video = try XCTUnwrap(entries.first { $0.name == "child/clip.mp4" })
         XCTAssertTrue(video.isVideo)
         XCTAssertFalse(try XCTUnwrap(entries.first { $0.name == "child/nested.jpg" }).isVideo)
         XCTAssertEqual(EditorFolderScan.childFolders(of: root).map(\.name), ["child"])
+    }
+
+    func testX3FCellUsesTheEmbeddedPreview() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("zimage-x3f-cell-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = root.appendingPathComponent("plain.x3f")
+        try Data(folderPlainX3F(columns: 400, rows: 10)).write(to: url)
+
+        let entries = try FolderListing.list(folder: root)
+        XCTAssertEqual(entries.map(\.name), ["plain.x3f"])
+        let jpeg = try FolderPreviewCache.ensureJPEG(for: entries[0].url)
+        let edge = try pixelLongEdge(jpeg)
+        XCTAssertGreaterThan(edge, 200)
+        XCTAssertLessThanOrEqual(edge, FolderPreviewCache.maxLongEdge)
     }
 
     @MainActor
@@ -679,6 +695,80 @@ final class FolderBrowserTests: XCTestCase {
     }
 
     @MainActor
+    func testBuildPreviewsSkipsAPhotoThatAlreadyHasOne() async throws {
+        XCTAssertEqual(FolderPreviewBuild.filterNote, "Clear the name filter before building previews.")
+        XCTAssertEqual(FolderPreviewBuild.finished(photos: 0, built: 0, missed: 0), "This folder has no photos.")
+        XCTAssertEqual(FolderPreviewBuild.finished(photos: 2, built: 0, missed: 0), "Every photo in this folder already has a preview.")
+        XCTAssertEqual(FolderPreviewBuild.finished(photos: 2, built: 1, missed: 0), "Built 1 preview.")
+        XCTAssertEqual(FolderPreviewBuild.finished(photos: 3, built: 2, missed: 0), "Built 2 previews.")
+        XCTAssertEqual(FolderPreviewBuild.finished(photos: 2, built: 0, missed: 1), "No preview could be read.")
+        XCTAssertEqual(
+            FolderPreviewBuild.finished(photos: 3, built: 1, missed: 1),
+            "Built 1 preview. 1 photo could not be read."
+        )
+        XCTAssertEqual(
+            FolderPreviewBuild.progress(done: 0, total: 3),
+            "Building previews. \(0.formatted()) of \(3.formatted())."
+        )
+        let only = MacCheckpoint.thumbnailOnlyBody(Data([0xFF, 0xD8]))
+        let onlyText = String(decoding: only, as: UTF8.self)
+        XCTAssertTrue(onlyText.contains("thumbnail"))
+        XCTAssertFalse(onlyText.contains("dhash"))
+
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("zimage-build-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let keptURL = root.appendingPathComponent("kept.jpg")
+        let missingURL = root.appendingPathComponent("missing.jpg")
+        let badURL = root.appendingPathComponent("bad.jpg")
+        let videoURL = root.appendingPathComponent("clip.mov")
+        let child = root.appendingPathComponent("child", isDirectory: true)
+        try FileManager.default.createDirectory(at: child, withIntermediateDirectories: true)
+        try writeJPEG(width: 16, height: 16, to: keptURL)
+        try writeJPEG(width: 16, height: 16, to: missingURL)
+        try Data("not a jpeg".utf8).write(to: badURL)
+        try Data("not a movie".utf8).write(to: videoURL)
+        _ = try FolderPreviewCache.ensureJPEG(for: keptURL)
+        XCTAssertNil(FolderPreviewFacts.body(for: badURL))
+        let facts = try XCTUnwrap(FolderPreviewFacts.body(for: missingURL))
+        XCTAssertTrue(String(decoding: facts, as: UTF8.self).contains("thumbnail"))
+        let keptJPEG = FolderPreviewCache.directory.appendingPathComponent(FolderPreviewCache.fileName(for: keptURL))
+        let keptStamp = try keptJPEG.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+
+        let model = EditorModel()
+        model.folderURL = root
+        model.folderListingReady = true
+        model.folderEntries = [
+            FolderEntry(url: child, name: "child", isDirectory: true),
+            FolderEntry(url: keptURL, name: "kept.jpg", isDirectory: false),
+            FolderEntry(url: missingURL, name: "missing.jpg", isDirectory: false),
+            FolderEntry(url: badURL, name: "bad.jpg", isDirectory: false),
+            FolderEntry(url: videoURL, name: "clip.mov", isDirectory: false, isVideo: true),
+        ]
+        model.folderNameFilter = "red"
+        await model.buildMissingFolderPreviews()
+        XCTAssertEqual(model.folderPreviewBuildNote, FolderPreviewBuild.filterNote)
+        XCTAssertFalse(FolderPreviewCache.hasJPEG(for: missingURL))
+
+        model.folderNameFilter = ""
+        await model.buildMissingFolderPreviews()
+        XCTAssertFalse(model.folderPreviewBuildBusy)
+        XCTAssertEqual(model.folderPreviewBuildNote, FolderPreviewBuild.finished(photos: 3, built: 1, missed: 1))
+        XCTAssertTrue(FolderPreviewCache.hasJPEG(for: missingURL))
+        XCTAssertFalse(FolderPreviewCache.hasJPEG(for: badURL))
+        XCTAssertFalse(FolderPreviewCache.hasJPEG(for: videoURL))
+        let missing = try XCTUnwrap(model.folderEntries.first { $0.name == "missing.jpg" })
+        XCTAssertNotNil(model.previewJPEG(for: missing))
+        let after = try keptJPEG.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+        XCTAssertEqual(keptStamp, after)
+
+        model.folderEntries.removeAll { $0.name == "bad.jpg" }
+        await model.buildMissingFolderPreviews()
+        XCTAssertEqual(model.folderPreviewBuildNote, "Every photo in this folder already has a preview.")
+    }
+
+    @MainActor
     func testLastSelectedFolderReturnsOnTheNextLaunch() throws {
         let suite = "ZImage.lastFolder.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
@@ -727,6 +817,47 @@ final class FolderBrowserTests: XCTestCase {
         XCTAssertNil(gone.browseRoot)
         XCTAssertEqual(gone.folderMessage, EditorFolderBookmark.unavailableMessage)
         XCTAssertTrue(gone.showsFolderGrid)
+    }
+
+    /// A type-2 format-3 preview. Rows are padded to 4 bytes. The color is constant.
+    private func folderPlainX3F(columns: Int, rows: Int) -> Data {
+        let packed = columns * 3
+        let stride = (packed + 3) & ~3
+        var payload = Data(count: stride * rows)
+        for row in 0..<rows {
+            for column in 0..<columns {
+                let at = row * stride + column * 3
+                payload[at] = 20
+                payload[at + 1] = 40
+                payload[at + 2] = 60
+            }
+        }
+        var header = Data("SECi".utf8)
+        header.append(contentsOf: folderLE(0))
+        header.append(contentsOf: folderLE(2))
+        header.append(contentsOf: folderLE(3))
+        header.append(contentsOf: folderLE(UInt32(columns)))
+        header.append(contentsOf: folderLE(UInt32(rows)))
+        header.append(contentsOf: folderLE(UInt32(stride)))
+        var body = Data("FOVb".utf8)
+        let offset = UInt32(body.count)
+        body.append(header)
+        body.append(payload)
+        let length = UInt32(header.count + payload.count)
+        let directory = UInt32(body.count)
+        body.append(contentsOf: Data("SECd".utf8))
+        body.append(contentsOf: folderLE(0))
+        body.append(contentsOf: folderLE(1))
+        body.append(contentsOf: folderLE(offset))
+        body.append(contentsOf: folderLE(length))
+        body.append(contentsOf: Data("IMA2".utf8))
+        body.append(contentsOf: folderLE(directory))
+        return body
+    }
+
+    private func folderLE(_ value: UInt32) -> Data {
+        var little = value.littleEndian
+        return Data(bytes: &little, count: 4)
     }
 
     private func makeFixture() throws -> URL {

@@ -60,6 +60,15 @@ nonisolated enum MacCheckpoint {
         return (try? JSONEncoder().encode(body)) ?? Data()
     }
 
+    /// A grid preview with no hash and no date. Stored width and height stay as they are.
+    static func thumbnailOnlyBody(_ jpeg: Data) -> Data {
+        struct Body: Encodable {
+            var thumbnail: String
+        }
+        let body = Body(thumbnail: jpeg.base64EncodedString())
+        return (try? JSONEncoder().encode(body)) ?? Data()
+    }
+
     static func detailBody(score: Double, nativePixels: Int, width: Int, height: Int, source: String) -> Data {
         struct Body: Encodable {
             var detailScore: Double

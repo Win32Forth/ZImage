@@ -132,6 +132,51 @@ func TestApplyRetriesNeedsMacWithinTheCeiling(t *testing.T) {
 	}
 }
 
+func TestApplyRetriesASkippedX3FOnce(t *testing.T) {
+	root := t.TempDir()
+	catalog := openThumbCatalog(t, root)
+	good := filepath.Join(root, "Photos", "plain.x3f")
+	if err := os.MkdirAll(filepath.Dir(good), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	payload := plainRGBPayload(2, 1, 8, [][]byte{{200, 10, 20, 30, 40, 50}})
+	if err := os.WriteFile(good, x3fContainer([]x3fPart{{kind: "IMA2", data: seci(3, 2, 1, 8, payload)}}), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	insertX3F(t, catalog, "uid-x3f", "Photos/plain.x3f", "unknown")
+
+	broken := filepath.Join(root, "Photos", "broken.x3f")
+	if err := os.WriteFile(broken, []byte("FOVbjunk"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	insertX3F(t, catalog, "uid-broken-x3f", "Photos/broken.x3f", "unknown")
+
+	n, err := ApplyNext(root, catalog, nil, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 || thumbedCount(t, catalog) != 1 {
+		t.Fatalf("n=%d thumbs=%d", n, thumbedCount(t, catalog))
+	}
+	var support, source string
+	if err := catalog.Read.QueryRow(`SELECT decode_support, COALESCE(detail_source, '') FROM assets WHERE uid = 'uid-x3f'`).Scan(&support, &source); err != nil {
+		t.Fatal(err)
+	}
+	if support != "preview_only" || source != "" {
+		t.Fatalf("good support %q source %q", support, source)
+	}
+	if err := catalog.Read.QueryRow(`SELECT decode_support FROM assets WHERE uid = 'uid-broken-x3f'`).Scan(&support); err != nil {
+		t.Fatal(err)
+	}
+	if support != "failed" {
+		t.Fatalf("broken support %q", support)
+	}
+	n, err = ApplyNext(root, catalog, nil, 10)
+	if err != nil || n != 0 {
+		t.Fatalf("second pass n=%d err=%v", n, err)
+	}
+}
+
 func TestApplyNextUnderThumbsOnlyThatFolder(t *testing.T) {
 	root := t.TempDir()
 	catalog := openThumbCatalog(t, root)
@@ -206,6 +251,20 @@ func indexSOS(data []byte) int {
 		}
 	}
 	return -1
+}
+
+func insertX3F(t *testing.T, catalog *db.Catalog, uid, rel, support string) {
+	t.Helper()
+	_, err := catalog.Write.Exec(`
+		INSERT INTO assets (
+			uid, rel_path, byte_size, ext, media_class, reorg_policy, phase,
+			detail_source, decode_support, discovered_at, updated_at
+		) VALUES (?, ?, 10, 'x3f', 'raw', 'move', 'discovered',
+			'needs_mac', ?, '2026-11-04T00:00:00Z', '2026-11-04T00:00:00Z')`,
+		uid, rel, support)
+	if err != nil {
+		t.Fatal(err)
+	}
 }
 
 func insertNeedsMac(t *testing.T, catalog *db.Catalog, uid, rel string, pixels int) {

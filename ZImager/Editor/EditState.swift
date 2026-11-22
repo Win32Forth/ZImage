@@ -21,7 +21,9 @@ nonisolated struct SkinGrade: Codable, Equatable, Sendable {
 }
 
 /// Slider positions. Zero is the identity photograph, except temperature,
-/// whose identity is 6500 K. `TonePipeline` maps these onto Core Image.
+/// whose identity is 6500 K, and the vignette midpoint and feather, whose
+/// defaults are 0.5. Amount 0 leaves the vignette off. The curve starts linear.
+/// `TonePipeline` maps these onto Core Image.
 nonisolated struct ToneState: Codable, Equatable, Sendable {
     var exposureEV: Double = 0
     var brightness: Double = 0
@@ -44,6 +46,20 @@ nonisolated struct ToneState: Codable, Equatable, Sendable {
     var spectrumLow: Double = 0
     var spectrumMid: Double = 0.5
     var spectrumHigh: Double = 1
+    /// −1...1. Negative darkens the edges. Positive lightens them. Zero omits the vignette.
+    var vignetteAmount: Double = 0
+    /// 0...1. How far from the center the vignette starts. The default is the middle.
+    var vignetteMidpoint: Double = 0.5
+    /// −1...1. Zero is an ellipse on the frame. Negative follows the rectangle. Positive pulls toward a circle.
+    var vignetteRoundness: Double = 0
+    /// 0...1. The softness of the edge. The default is the middle.
+    var vignetteFeather: Double = 0.5
+    /// −1...1. Fraction of half the frame width. Positive moves the clear center right.
+    var vignetteCenterX: Double = 0
+    /// −1...1. Fraction of half the frame height. Positive moves the clear center up.
+    var vignetteCenterY: Double = 0
+    /// RGB, then red, green, and blue. The diagonal leaves the photograph alone.
+    var curves: ToneCurves = .identity
 
     static let identity = ToneState()
 
@@ -66,7 +82,14 @@ nonisolated struct ToneState: Codable, Equatable, Sendable {
         skinGrade: SkinGrade? = nil,
         spectrumLow: Double = 0,
         spectrumMid: Double = 0.5,
-        spectrumHigh: Double = 1
+        spectrumHigh: Double = 1,
+        vignetteAmount: Double = 0,
+        vignetteMidpoint: Double = 0.5,
+        vignetteRoundness: Double = 0,
+        vignetteFeather: Double = 0.5,
+        vignetteCenterX: Double = 0,
+        vignetteCenterY: Double = 0,
+        curves: ToneCurves = .identity
     ) {
         self.exposureEV = exposureEV
         self.brightness = brightness
@@ -87,6 +110,13 @@ nonisolated struct ToneState: Codable, Equatable, Sendable {
         self.spectrumLow = spectrumLow
         self.spectrumMid = spectrumMid
         self.spectrumHigh = spectrumHigh
+        self.vignetteAmount = vignetteAmount
+        self.vignetteMidpoint = vignetteMidpoint
+        self.vignetteRoundness = vignetteRoundness
+        self.vignetteFeather = vignetteFeather
+        self.vignetteCenterX = vignetteCenterX
+        self.vignetteCenterY = vignetteCenterY
+        self.curves = curves
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -109,6 +139,13 @@ nonisolated struct ToneState: Codable, Equatable, Sendable {
         case spectrumLow
         case spectrumMid
         case spectrumHigh
+        case vignetteAmount
+        case vignetteMidpoint
+        case vignetteRoundness
+        case vignetteFeather
+        case vignetteCenterX
+        case vignetteCenterY
+        case curves
     }
 
     init(from decoder: Decoder) throws {
@@ -132,6 +169,13 @@ nonisolated struct ToneState: Codable, Equatable, Sendable {
         spectrumLow = try container.decodeIfPresent(Double.self, forKey: .spectrumLow) ?? 0
         spectrumMid = try container.decodeIfPresent(Double.self, forKey: .spectrumMid) ?? 0.5
         spectrumHigh = try container.decodeIfPresent(Double.self, forKey: .spectrumHigh) ?? 1
+        vignetteAmount = try container.decodeIfPresent(Double.self, forKey: .vignetteAmount) ?? 0
+        vignetteMidpoint = try container.decodeIfPresent(Double.self, forKey: .vignetteMidpoint) ?? 0.5
+        vignetteRoundness = try container.decodeIfPresent(Double.self, forKey: .vignetteRoundness) ?? 0
+        vignetteFeather = try container.decodeIfPresent(Double.self, forKey: .vignetteFeather) ?? 0.5
+        vignetteCenterX = try container.decodeIfPresent(Double.self, forKey: .vignetteCenterX) ?? 0
+        vignetteCenterY = try container.decodeIfPresent(Double.self, forKey: .vignetteCenterY) ?? 0
+        curves = try container.decodeIfPresent(ToneCurves.self, forKey: .curves) ?? .identity
     }
 
     func encode(to encoder: Encoder) throws {
@@ -155,6 +199,13 @@ nonisolated struct ToneState: Codable, Equatable, Sendable {
         try container.encode(spectrumLow, forKey: .spectrumLow)
         try container.encode(spectrumMid, forKey: .spectrumMid)
         try container.encode(spectrumHigh, forKey: .spectrumHigh)
+        try container.encode(vignetteAmount, forKey: .vignetteAmount)
+        try container.encode(vignetteMidpoint, forKey: .vignetteMidpoint)
+        try container.encode(vignetteRoundness, forKey: .vignetteRoundness)
+        try container.encode(vignetteFeather, forKey: .vignetteFeather)
+        try container.encode(vignetteCenterX, forKey: .vignetteCenterX)
+        try container.encode(vignetteCenterY, forKey: .vignetteCenterY)
+        try container.encode(curves, forKey: .curves)
     }
 }
 

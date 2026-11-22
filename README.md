@@ -1,6 +1,6 @@
 # ZImage
 
-ZImager 1.8.4 is the app. It is one window. Disk is the editor. Server is the library. The separate ZImage editor and ZImage Library are no longer in this project.
+ZImager 1.8.5 is the app. It is one window. Disk is the editor. Server is the library. The separate ZImage editor and ZImage Library are no longer in this project.
 
 `DESIGN.md` is the plan. `STATUS.md` is the iteration log, newest first.
 
@@ -9,6 +9,22 @@ ZImager 1.8.4 is the app. It is one window. Disk is the editor. Server is the li
 Reorganize, Review, and Duplicates do not work yet. Using them can lose photos. The Events and Reorganize buttons are hidden until those tools are ready. Leave Reorganize, Review, and Duplicates alone. Do not press Start, Pause, Continue, Find duplicates, or Delete all duplicates.
 
 Disk, and Server browsing of a folder, are the parts to use. Rotate, paste, export, print, and the image adjustments save the photo and rebuild its preview.
+
+## What 1.8.5 changes
+
+Dragging the photograph moves it. The scroll wheel zooms in and out around the pointer. Scroll up zooms in. A trackpad pinch still zooms.
+
+Curve sits between Tone and Color. The graph shows the photograph's brightness. RGB shapes the whole picture. Red, Green, and Blue shape one channel after that. Linear, Matte, Film Moody, Punch, and Lo-fi set the RGB curve. Drag a handle. Click the curve to add a point, up to eight. Double-click a middle handle to remove it. Double-click an end to put that corner back.
+
+Vignette sits under Touchup. Amount, Midpoint, Roundness, Feather, X, and Y shape the edges. Negative Amount darkens them. Positive Amount lightens them. Positive X moves the clear center right. Positive Y moves it up.
+
+Flatten asks before it writes. Duplicate, on that dialog, writes a flattened TIFF next to the photograph. The name gains `-2`, then `-3` when that name is taken. The photograph and its edits stay as they are.
+
+Folder view folds each panel on the right from an arrow at the end of its title. Preview is the word above the picture. Build previews sits under Merge two photos, on Disk and on Server Photos. It builds a preview for each photo in the open folder that does not already have one. Videos are skipped. Clear the name filter first. Disk keeps those previews in its temporary cache. Server stores them through the helper.
+
+Sigma X3F files appear in the folder grid. Opening one develops the sensor image on this Mac and edits that picture. Export can write it as a TIFF or a DNG. The color is the bundled converter's sRGB, not Sigma Photo Pro. If that development cannot run, ZImager opens the embedded preview and says so. The helper stores that embedded preview and does not develop the sensor. X3I files are not opened.
+
+Right-click Rename of a file under Photos keeps the same catalog id. Photos/_Removed, Photos/_Duplicates, and Photos/_Review keep their names. The helper on the NAS already has that route and the X3F preview. This disk image does not include the helper. Stop the DSM task before you replace the binary. 1.8.4 behavior below is still in this app.
 
 ## What 1.8.4 changes
 
@@ -70,7 +86,7 @@ Spot and Scratch removal is much faster. Each repair keeps a small before pictur
 
 Spot and Scratch are one tool. A click repairs a spot. A drag repairs a scratch. The automatic Dust and Scratches buttons are the same as before.
 
-Flatten writes a full-size LZW TIFF beside the edit file, with the extension `.zflat`. A photograph with 112 spot and scratch removals flattened in under a minute. Export of that flattened photograph reads the TIFF, so it finishes almost at once. The original file stays as it is. Flatten keeps the JPEG sidecar and the `.zimg`. Flatten again overwrites the TIFF and clears the edit list. Revert, on the Flatten dialog, restores the original when a flattened TIFF is already there.
+Flatten writes a full-size LZW TIFF beside the edit file, with the extension `.zflat`. A photograph with 112 spot and scratch removals flattened in under a minute. Export of that flattened photograph reads the TIFF, so it finishes almost at once. The original file stays as it is. Flatten keeps the JPEG sidecar and the `.zimg`. Flatten again overwrites the TIFF and clears the edit list. Duplicate, on that same dialog, writes the flattened TIFF next to the photograph. The name gains `-2`, then `-3` when that name is taken. The photograph and its edits stay as they are. Revert, on the Flatten dialog, restores the original when a flattened TIFF is already there.
 
 Rescan sits beside Display Folder. It walks that folder and its subfolders, drops catalog rows for files that are gone, and cleans the folder. The Clean folder menu item is removed. A slow rescan shows a progress bar. Rescan is in the helper source. The disk image does not include the helper. Stop the DSM task before you replace that binary.
 
@@ -124,7 +140,7 @@ Clean folder is in the Server three-bar menu. It removes catalog records in the 
 
 ## Install ZImager
 
-The disk image is `Releases/ZImager-1.8.4-macOS.dmg`. It contains `ZImager.app` and `README.txt`.
+The disk image is `Releases/ZImager-1.8.5-macOS.dmg`. It contains `ZImager.app` and `README.txt`.
 
 1. Open the disk image.
 2. Drag **ZImager.app** into Applications.
@@ -138,7 +154,7 @@ After that, double-click ZImager and it will run. ZImager is built on this Mac w
 
 Skip this if you only use Disk.
 
-Server mode needs `zimage-helper` running on the NAS. The disk image does not include it. The Mac never opens `catalog.db`. The 1.8.0 helper source adds Rescan. The 1.8.4 helper source adds folder rename and the confidence update Organize uses. Stop the DSM task before you replace the binary.
+Server mode needs `zimage-helper` running on the NAS. The disk image does not include it. The Mac never opens `catalog.db`. The 1.8.0 helper source adds Rescan. The 1.8.4 helper source adds folder rename and the confidence update Organize uses. The 1.8.5 helper source adds `POST /v1/files/rename` and an X3F embedded preview. The binary on the share is that build, 18,022,007 bytes, BuildID sha1 `761983975506eb91b8213f1d7ab5e8e68696926e`. It does not develop the Foveon sensor. Stop the DSM task before you replace the binary.
 
 1. On a Mac, from `Helper/` in this repo:
 

@@ -241,6 +241,19 @@ final class ExportRoundTripTests: XCTestCase {
         XCTAssertNil(index.tiff(for: dayFile))
     }
 
+    func testFlattenDuplicateBumpsTheFileName() {
+        XCTAssertEqual(FlattenDuplicate.fileName(sourceName: "Day.jpg") { _ in false }, "Day-2.tiff")
+        XCTAssertEqual(FlattenDuplicate.fileName(sourceName: "Day.tiff") { _ in false }, "Day-2.tiff")
+        XCTAssertEqual(
+            FlattenDuplicate.fileName(sourceName: "Day.jpg") { $0 == "Day-2.tiff" || $0 == "Day-3.tiff" },
+            "Day-4.tiff"
+        )
+        XCTAssertEqual(FlattenDuplicate.fileName(sourceName: "") { _ in false }, "Photo-2.tiff")
+        XCTAssertEqual(FlattenDuplicate.fileName(sourceName: ".") { _ in false }, "Photo-2.tiff")
+        let blocked = FlattenDuplicate.fileName(sourceName: "Day.jpg") { _ in true }
+        XCTAssertNil(blocked)
+    }
+
     func testRevertRemovesTheFlattenedTIFFAndClearsTheEditList() throws {
         let edits = try makeTempFolder("zflat-revert")
         defer { try? FileManager.default.removeItem(at: edits) }

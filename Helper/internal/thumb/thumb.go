@@ -61,12 +61,31 @@ func Dimensions(path string) (int, int, bool) {
 }
 
 // Build scales one file to a long edge of 256. A header above maxPixels returns NeedsMac.
+// An X3F file contributes its type-2 preview. The sensor image is not decoded.
 func Build(path string) (Result, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return Result{}, err
 	}
 	defer file.Close()
+	var magic [4]byte
+	if n, _ := file.Read(magic[:]); n == 4 && string(magic[:]) == "FOVb" {
+		if _, err := file.Seek(0, io.SeekStart); err != nil {
+			return Result{}, err
+		}
+		img, width, height, ok := x3fPreview(file, longEdge)
+		if !ok || img == nil {
+			return Result{NeedsMac: true, Width: width, Height: height, DecodeSupport: "unknown"}, nil
+		}
+		encoded, err := encode(img)
+		if err != nil {
+			return Result{}, err
+		}
+		return Result{JPEG: encoded, Width: width, Height: height, DecodeSupport: "preview_only"}, nil
+	}
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return Result{}, err
+	}
 	width, height, preview, ok := header(file)
 	if preview != nil {
 		img, err := jpeg.Decode(bytes.NewReader(preview))

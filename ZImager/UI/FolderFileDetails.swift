@@ -5,39 +5,57 @@ import SwiftUI
 struct FolderFileDetails: View {
     @Bindable var model: EditorModel
     @State private var header = ReviewHeaderFacts(opened: false, lines: [])
+    @AppStorage(FolderPanelStore.preview) private var previewCollapsed = false
+    @AppStorage(FolderPanelStore.date) private var dateCollapsed = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            preview
-            Text("Date")
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(ChromePalette.ink)
-            if let entry {
-                line(entry.name)
-                line(entry.url.path)
-                line(model.sizeLabel(for: entry))
-                if entry.isVideo {
-                    line("Video")
+        VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 8) {
+                InspectorPanelHeader(title: "Preview", collapsed: previewCollapsed) { previewCollapsed.toggle() }
+                if !previewCollapsed {
+                    preview
                 }
-                ForEach(header.lines, id: \.self) { item in
-                    line(item)
-                }
-                if header.opened && !header.hasDate && !entry.isVideo {
-                    line("No DateTimeOriginal, DateTimeDigitized, or DateTime tag was in the file header.")
-                }
-            } else {
-                Text("Select a file to see its preview and the dates in the file.")
-                    .font(.system(size: 13))
-                    .foregroundStyle(ChromePalette.ink)
-                    .fixedSize(horizontal: false, vertical: true)
             }
+            .padding(16)
+            Rectangle()
+                .fill(ChromePalette.hairline)
+                .frame(height: 1)
+            VStack(alignment: .leading, spacing: 8) {
+                InspectorPanelHeader(title: "Date", collapsed: dateCollapsed) { dateCollapsed.toggle() }
+                if !dateCollapsed {
+                    dateFacts
+                }
+            }
+            .padding(16)
         }
-        .padding(16)
         .frame(maxWidth: .infinity, alignment: .topLeading)
         .background(ChromePalette.panel)
         .accessibilityIdentifier("Date inspector")
         .task(id: model.selectedFolderKey) {
             await showSelection()
+        }
+    }
+
+    @ViewBuilder
+    private var dateFacts: some View {
+        if let entry {
+            line(entry.name)
+            line(entry.url.path)
+            line(model.sizeLabel(for: entry))
+            if entry.isVideo {
+                line("Video")
+            }
+            ForEach(header.lines, id: \.self) { item in
+                line(item)
+            }
+            if header.opened && !header.hasDate && !entry.isVideo {
+                line("No DateTimeOriginal, DateTimeDigitized, or DateTime tag was in the file header.")
+            }
+        } else {
+            Text("Select a file to see its preview and the dates in the file.")
+                .font(.system(size: 13))
+                .foregroundStyle(ChromePalette.ink)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 

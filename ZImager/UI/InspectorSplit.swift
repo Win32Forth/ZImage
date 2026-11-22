@@ -130,15 +130,21 @@ struct InspectorPanelHeader<Accessory: View>: View {
     var title: String
     var collapsed: Bool
     var accessory: Accessory
+    /// A long folder title wraps, and the disclosure stays at the right end of the row.
+    var wrapsTitle: Bool = false
     var toggle: () -> Void
 
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(alignment: wrapsTitle ? .top : .center, spacing: 8) {
             Text(title)
                 .font(.system(size: 15, weight: .semibold))
                 .foregroundStyle(ChromePalette.ink)
+                .fixedSize(horizontal: false, vertical: wrapsTitle)
+                .frame(maxWidth: wrapsTitle ? .infinity : nil, alignment: .leading)
             accessory
-            Spacer(minLength: 8)
+            if !wrapsTitle {
+                Spacer(minLength: 8)
+            }
             Button(action: toggle) {
                 Image(systemName: InspectorDisclosure.symbol(collapsed: collapsed))
                     .font(.system(size: 13, weight: .semibold))
@@ -155,9 +161,10 @@ struct InspectorPanelHeader<Accessory: View>: View {
 }
 
 extension InspectorPanelHeader where Accessory == EmptyView {
-    init(title: String, collapsed: Bool, toggle: @escaping () -> Void) {
+    init(title: String, collapsed: Bool, wrapsTitle: Bool = false, toggle: @escaping () -> Void) {
         self.title = title
         self.collapsed = collapsed
+        self.wrapsTitle = wrapsTitle
         self.accessory = EmptyView()
         self.toggle = toggle
     }

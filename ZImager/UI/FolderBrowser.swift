@@ -70,7 +70,54 @@ enum FolderPreviewQueue {
     }
 }
 
-/// Count and page controls for a folder with more than 200 photos. Sits above Date.
+/// Stored open or folded state for the Folder column. Disk and Server share these.
+enum FolderPanelStore {
+    static let page = "ZImage.folderPageCollapsed"
+    static let preview = "ZImage.folderPreviewCollapsed"
+    static let date = "ZImage.folderDateCollapsed"
+    static let move = "ZImage.folderMoveCollapsed"
+    static let merge = "ZImage.folderMergeCollapsed"
+    static let build = "ZImage.folderBuildPreviewsCollapsed"
+}
+
+/// Words under Build previews. A photo that already has a preview is left as it is.
+enum FolderPreviewBuild {
+    static let intro = "Builds a preview for each photo in this folder that does not have one."
+    static let filterNote = "Clear the name filter before building previews."
+    static let reading = "Reading this folder."
+
+    static func progress(done: Int, total: Int) -> String {
+        "Building previews. \(done.formatted()) of \(total.formatted())."
+    }
+
+    static func finished(photos: Int, built: Int, missed: Int) -> String {
+        if photos == 0 { return "This folder has no photos." }
+        if built == 0, missed == 0 { return "Every photo in this folder already has a preview." }
+        if built == 0 { return "No preview could be read." }
+        let noun = built == 1 ? "preview" : "previews"
+        if missed == 0 { return "Built \(built.formatted()) \(noun)." }
+        let unread = missed == 1 ? "1 photo could not be read." : "\(missed.formatted()) photos could not be read."
+        return "Built \(built.formatted()) \(noun). \(unread)"
+    }
+}
+
+/// Facts for one missing server preview. ImageIO is used when it can reduce the file.
+/// Otherwise the folder-preview JPEG is sent, including an X3F embedded preview.
+/// The sensor converter is not run.
+nonisolated enum FolderPreviewFacts {
+    static func body(for url: URL) -> Data? {
+        if let facts = try? MacCheckpoint.payloads(for: url).facts {
+            return facts
+        }
+        guard let jpegURL = try? FolderPreviewCache.ensureJPEG(for: url),
+              let jpeg = try? Data(contentsOf: jpegURL),
+              !jpeg.isEmpty,
+              jpeg.count <= 2_000_000 else { return nil }
+        return MacCheckpoint.thumbnailOnlyBody(jpeg)
+    }
+}
+
+/// Count and page controls for a folder with more than 200 photos. Sits above Preview.
 struct FolderPagePanel: View {
     var title: String
     var range: String
@@ -80,29 +127,30 @@ struct FolderPagePanel: View {
     var previous: () -> Void
     var next: () -> Void
     var last: () -> Void
+    @AppStorage(FolderPanelStore.page) private var collapsed = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(title)
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(ChromePalette.ink)
+            InspectorPanelHeader(title: title, collapsed: collapsed) { collapsed.toggle() }
                 .accessibilityIdentifier("Folder page count")
-            Text(range)
-                .font(.system(size: 13))
-                .foregroundStyle(ChromePalette.ink)
-                .accessibilityIdentifier("Folder page range")
-            Grid(alignment: .leading, horizontalSpacing: 8, verticalSpacing: 8) {
-                GridRow {
-                    libraryPushButton("First", identifier: "First page", action: first)
-                        .disabled(!canGoBack)
-                    libraryPushButton("Prev 200", identifier: "Prev 200", action: previous)
-                        .disabled(!canGoBack)
-                }
-                GridRow {
-                    libraryPushButton("Next 200", identifier: "Next 200", action: next)
-                        .disabled(!canGoForward)
-                    libraryPushButton("Last", identifier: "Last page", action: last)
-                        .disabled(!canGoForward)
+            if !collapsed {
+                Text(range)
+                    .font(.system(size: 13))
+                    .foregroundStyle(ChromePalette.ink)
+                    .accessibilityIdentifier("Folder page range")
+                Grid(alignment: .leading, horizontalSpacing: 8, verticalSpacing: 8) {
+                    GridRow {
+                        libraryPushButton("First", identifier: "First page", action: first)
+                            .disabled(!canGoBack)
+                        libraryPushButton("Prev 200", identifier: "Prev 200", action: previous)
+                            .disabled(!canGoBack)
+                    }
+                    GridRow {
+                        libraryPushButton("Next 200", identifier: "Next 200", action: next)
+                            .disabled(!canGoForward)
+                        libraryPushButton("Last", identifier: "Last page", action: last)
+                            .disabled(!canGoForward)
+                    }
                 }
             }
         }
@@ -231,8 +279,8 @@ enum EditorFolderBookmark {
     }
 }
 
-/// Immediate child folders, ImageIO stills, and video files.
-/// The grid does not list X3F or PDF. Those open from File → Open File.
+/// Immediate child folders, stills the editor can open, and video files.
+/// PDF stays off this grid. X3F is listed. Its cell uses the embedded preview.
 /// With `includeSubfolders`, stills and videos in nested folders are included.
 nonisolated enum FolderListing {
     static func list(folder: URL, includeSubfolders: Bool = false) throws -> [FolderEntry] {
@@ -292,9 +340,13 @@ nonisolated enum FolderListing {
     }
 
     private static func relativeName(file: URL, root: URL) -> String {
-        let rootPath = root.path.hasSuffix("/") ? root.path : root.path + "/"
-        if file.path.hasPrefix(rootPath) {
-            return String(file.path.dropFirst(rootPath.count))
+        let filePath = file.standardizedFileURL.resolvingSymlinksInPath().path
+        var rootPath = root.standardizedFileURL.resolvingSymlinksInPath().path
+        if !rootPath.hasSuffix("/") {
+            rootPath += "/"
+        }
+        if filePath.hasPrefix(rootPath) {
+            return String(filePath.dropFirst(rootPath.count))
         }
         return file.lastPathComponent
     }
@@ -315,8 +367,11 @@ nonisolated enum FolderListing {
     /// ImageIO stills the current editor can open. One directory level only.
     static func isImageIOStill(_ url: URL) -> Bool {
         let ext = url.pathExtension.lowercased()
-        if ext == "x3f" || ext == "pdf" {
+        if ext == "pdf" {
             return false
+        }
+        if ext == "x3f" {
+            return true
         }
         let options = [kCGImageSourceShouldCache: false] as CFDictionary
         guard let source = CGImageSourceCreateWithURL(url as CFURL, options),
@@ -466,6 +521,12 @@ nonisolated enum FolderPreviewCache {
         gate.sync { stampsLocked() }
     }
 
+    /// True when this source already has a folder JPEG. The file is not rewritten.
+    static func hasJPEG(for source: URL) -> Bool {
+        let destination = directory.appendingPathComponent(fileName(for: source), isDirectory: false)
+        return FileManager.default.fileExists(atPath: destination.path)
+    }
+
     /// Stable per source path. The preview size is not part of the name.
     static func fileName(for source: URL) -> String {
         let path = source.standardizedFileURL.resolvingSymlinksInPath().path
@@ -475,6 +536,9 @@ nonisolated enum FolderPreviewCache {
     }
 
     private static func thumbnail(for source: URL) throws -> CGImage {
+        if source.pathExtension.lowercased() == "x3f" {
+            return try X3FPreview.fittedImage(url: source, maxLongEdge: maxLongEdge).image
+        }
         let sourceOptions = [kCGImageSourceShouldCache: false] as CFDictionary
         guard let imageSource = CGImageSourceCreateWithURL(source as CFURL, sourceOptions) else {
             throw FolderPreviewError.unreadable(source.lastPathComponent)

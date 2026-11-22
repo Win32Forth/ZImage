@@ -1,7 +1,7 @@
 import Foundation
 
 /// Sets the six basic tone sliders from a photograph's luminance.
-/// Texture, details, clarity, dehaze, color, and the other sliders stay as they are.
+/// Texture, details, clarity, dehaze, vignette, the curve, color, and the other sliders stay as they are.
 nonisolated enum ToneAuto {
     struct Levels: Equatable, Sendable {
         var black: Double

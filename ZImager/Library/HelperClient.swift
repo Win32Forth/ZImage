@@ -1038,6 +1038,44 @@ final class HelperClient {
         throw HelperError.offline
     }
 
+    /// Points one catalog row at a file that has already been renamed in its folder. The asset id stays.
+    func renameFile(from: String, to: String) async -> FolderRenameCall {
+        let body: Data
+        do {
+            body = try JSONSerialization.data(withJSONObject: ["from": from, "to": to])
+        } catch {
+            return .offline
+        }
+        do {
+            let response = try await perform(
+                path: "/v1/files/rename",
+                method: "POST",
+                body: body,
+                authorize: true,
+                timeout: 180,
+                contentType: "application/json"
+            )
+            if response.status == 200 {
+                return .updated(1)
+            }
+            if response.status == 404 {
+                struct ErrBody: Decodable { var error: String? }
+                if (try? JSONDecoder().decode(ErrBody.self, from: response.body))?.error == "missing" {
+                    return .refused
+                }
+                return .unsupported
+            }
+            if response.status == 400 || response.status == 409 {
+                return .refused
+            }
+            return .refused
+        } catch let error as URLError where error.code == .timedOut {
+            return .timedOut
+        } catch {
+            return .offline
+        }
+    }
+
     /// Points catalog rows at a folder that has already been renamed on disk. Asset ids stay.
     func renameFolder(from: String, to: String) async -> FolderRenameCall {
         let body: Data

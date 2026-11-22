@@ -11,66 +11,29 @@ struct DateInspector: View {
     @State private var organizeFolder = ""
     @State private var confirmsEmptyClean = false
     @State private var cleanFolder = ""
+    @AppStorage(FolderPanelStore.preview) private var previewCollapsed = false
+    @AppStorage(FolderPanelStore.date) private var dateCollapsed = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            preview
-            Text("Date")
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(ChromePalette.ink)
-            if let asset = selectedAsset {
-                ForEach(ReviewCatalogFacts.lines(for: asset), id: \.self) { line in
-                    inspectorLine(line)
+        VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 8) {
+                InspectorPanelHeader(title: "Preview", collapsed: previewCollapsed) { previewCollapsed.toggle() }
+                if !previewCollapsed {
+                    preview
                 }
-                ForEach(PathCapture.lines(for: asset.relPath), id: \.self) { line in
-                    inspectorLine(line)
-                }
-                ForEach(header.lines, id: \.self) { line in
-                    inspectorLine(line)
-                }
-                if header.opened && !header.hasDate && !selectedIsVideo {
-                    inspectorLine("No DateTimeOriginal, DateTimeDigitized, or DateTime tag was in the file header.")
-                }
-            } else {
-                Text("Select a file to see its preview and the date stored for it.")
-                    .font(.system(size: 13))
-                    .foregroundStyle(ChromePalette.ink)
-                    .fixedSize(horizontal: false, vertical: true)
             }
-            TextField("YYYY-MM-DD or year", text: $captureText)
-                .textFieldStyle(.roundedBorder)
-            Button("Set date") {
-                let typed = captureText
-                Task { await browser.setCaptureDate(typed) }
-            }
-            .disabled(browser.dateTargets().isEmpty || browser.dateBusy || browser.organizeBusy || browser.removalBusy || browser.cleanBusy || browser.rescanBusy || browser.moveBusy || browser.mergeBusy)
-            if browser.librarySection == "Photos" {
-                Button("Organize") {
-                    organizeFolder = browser.displayFolder
-                    if !browser.nameFilter.isEmpty {
-                        browser.notice = "Clear the name filter before Organize."
-                    } else {
-                        confirmsOrganize = true
-                    }
+            .padding(16)
+            Rectangle()
+                .fill(ChromePalette.hairline)
+                .frame(height: 1)
+            VStack(alignment: .leading, spacing: 8) {
+                InspectorPanelHeader(title: "Date", collapsed: dateCollapsed) { dateCollapsed.toggle() }
+                if !dateCollapsed {
+                    dateFacts
                 }
-                .disabled(!browser.canOrganizeFirstPage() || browser.organizeBusy || browser.dateBusy || browser.removalBusy || browser.cleanBusy || browser.rescanBusy || browser.moveBusy || browser.mergeBusy)
-                .accessibilityIdentifier("Organize")
-                .help("Asks before it reads this folder. A photo with no date goes to Photos/_Review. A dated photo goes to Photos/YYYY/YYYY-MM-DD. A photo already in that year and day folder stays. A matching DateTimeOriginal, DateTimeDigitized, or DateTime can raise catalog confidence from 0.00 to 1.00. Yes does this page. Continue does this page and the pages after it. No leaves every file where it is.")
-                Button("Clean") {
-                    cleanFolder = browser.displayFolder
-                    confirmsEmptyClean = true
-                }
-                .disabled(browser.organizeBusy || browser.dateBusy || browser.removalBusy || browser.cleanBusy || browser.rescanBusy || browser.moveBusy || browser.mergeBusy)
-                .accessibilityIdentifier("Clean")
-                .help("Deletes Thumbs.db, desktop.ini, .DS_Store, and AppleDouble files, then deletes this folder and its subfolders when nothing else remains. A photo or any other file keeps its folder.")
             }
-            if showsUserConfidence {
-                Text("Confidence 1.0")
-                    .font(.system(size: 13))
-                    .foregroundStyle(ChromePalette.ink)
-            }
+            .padding(16)
         }
-        .padding(16)
         .frame(maxWidth: .infinity, alignment: .topLeading)
         .background(ChromePalette.panel)
         .accessibilityIdentifier("Date inspector")
@@ -126,6 +89,61 @@ struct DateInspector: View {
                         .padding(8)
                 }
                 .accessibilityIdentifier("Review preview")
+        }
+    }
+
+    @ViewBuilder
+    private var dateFacts: some View {
+        if let asset = selectedAsset {
+            ForEach(ReviewCatalogFacts.lines(for: asset), id: \.self) { line in
+                inspectorLine(line)
+            }
+            ForEach(PathCapture.lines(for: asset.relPath), id: \.self) { line in
+                inspectorLine(line)
+            }
+            ForEach(header.lines, id: \.self) { line in
+                inspectorLine(line)
+            }
+            if header.opened && !header.hasDate && !selectedIsVideo {
+                inspectorLine("No DateTimeOriginal, DateTimeDigitized, or DateTime tag was in the file header.")
+            }
+        } else {
+            Text("Select a file to see its preview and the date stored for it.")
+                .font(.system(size: 13))
+                .foregroundStyle(ChromePalette.ink)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        TextField("YYYY-MM-DD or year", text: $captureText)
+            .textFieldStyle(.roundedBorder)
+        Button("Set date") {
+            let typed = captureText
+            Task { await browser.setCaptureDate(typed) }
+        }
+        .disabled(browser.dateTargets().isEmpty || browser.dateBusy || browser.organizeBusy || browser.removalBusy || browser.cleanBusy || browser.rescanBusy || browser.moveBusy || browser.mergeBusy)
+        if browser.librarySection == "Photos" {
+            Button("Organize") {
+                organizeFolder = browser.displayFolder
+                if !browser.nameFilter.isEmpty {
+                    browser.notice = "Clear the name filter before Organize."
+                } else {
+                    confirmsOrganize = true
+                }
+            }
+            .disabled(!browser.canOrganizeFirstPage() || browser.organizeBusy || browser.dateBusy || browser.removalBusy || browser.cleanBusy || browser.rescanBusy || browser.moveBusy || browser.mergeBusy)
+            .accessibilityIdentifier("Organize")
+            .help("Asks before it reads this folder. A photo with no date goes to Photos/_Review. A dated photo goes to Photos/YYYY/YYYY-MM-DD. A photo already in that year and day folder stays. A matching DateTimeOriginal, DateTimeDigitized, or DateTime can raise catalog confidence from 0.00 to 1.00. Yes does this page. Continue does this page and the pages after it. No leaves every file where it is.")
+            Button("Clean") {
+                cleanFolder = browser.displayFolder
+                confirmsEmptyClean = true
+            }
+            .disabled(browser.organizeBusy || browser.dateBusy || browser.removalBusy || browser.cleanBusy || browser.rescanBusy || browser.moveBusy || browser.mergeBusy)
+            .accessibilityIdentifier("Clean")
+            .help("Deletes Thumbs.db, desktop.ini, .DS_Store, and AppleDouble files, then deletes this folder and its subfolders when nothing else remains. A photo or any other file keeps its folder.")
+        }
+        if showsUserConfidence {
+            Text("Confidence 1.0")
+                .font(.system(size: 13))
+                .foregroundStyle(ChromePalette.ink)
         }
     }
 
@@ -197,36 +215,40 @@ struct MoveFolderPanel: View {
     @Bindable var browser: LibraryBrowser
     @State private var folderText = ""
     @State private var subfolder = false
+    @AppStorage(FolderPanelStore.move) private var collapsed = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Move selected files to specified Folder")
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(ChromePalette.ink)
-                .fixedSize(horizontal: false, vertical: true)
-            TextField("Folder", text: $folderText)
-                .textFieldStyle(.roundedBorder)
-                .accessibilityIdentifier("Move folder name")
-                .onSubmit { move() }
-            Toggle("Sub-folder of this folder", isOn: $subfolder)
-                .toggleStyle(.checkbox)
-                .font(.system(size: 13))
-                .foregroundStyle(ChromePalette.ink)
-                .fixedSize(horizontal: false, vertical: true)
-                .accessibilityIdentifier("Sub-folder of this folder")
-            Button("Move to Folder") {
-                move()
+            InspectorPanelHeader(
+                title: "Move selected files to specified Folder",
+                collapsed: collapsed,
+                wrapsTitle: true
+            ) { collapsed.toggle() }
+            if !collapsed {
+                TextField("Folder", text: $folderText)
+                    .textFieldStyle(.roundedBorder)
+                    .accessibilityIdentifier("Move folder name")
+                    .onSubmit { move() }
+                Toggle("Sub-folder of this folder", isOn: $subfolder)
+                    .toggleStyle(.checkbox)
+                    .font(.system(size: 13))
+                    .foregroundStyle(ChromePalette.ink)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("Sub-folder of this folder")
+                Button("Move to Folder") {
+                    move()
+                }
+                .disabled(folderText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    || browser.moveTargets().isEmpty
+                    || browser.moveBusy
+                    || browser.dateBusy
+                    || browser.organizeBusy
+                    || browser.removalBusy
+                    || browser.cleanBusy
+                    || browser.rescanBusy
+                    || browser.mergeBusy)
+                .accessibilityIdentifier("Move to Folder")
             }
-            .disabled(folderText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                || browser.moveTargets().isEmpty
-                || browser.moveBusy
-                || browser.dateBusy
-                || browser.organizeBusy
-                || browser.removalBusy
-                || browser.cleanBusy
-                || browser.rescanBusy
-                || browser.mergeBusy)
-            .accessibilityIdentifier("Move to Folder")
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .topLeading)
@@ -246,33 +268,37 @@ struct DiskMoveFolderPanel: View {
     @Bindable var model: EditorModel
     @State private var folderText = ""
     @State private var subfolder = false
+    @AppStorage(FolderPanelStore.move) private var collapsed = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Move selected files to specified Folder")
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(ChromePalette.ink)
-                .fixedSize(horizontal: false, vertical: true)
-            TextField("Folder", text: $folderText)
-                .textFieldStyle(.roundedBorder)
-                .accessibilityIdentifier("Move folder name")
-                .onSubmit { move() }
-            Toggle("Sub-folder of this folder", isOn: $subfolder)
-                .toggleStyle(.checkbox)
-                .font(.system(size: 13))
-                .foregroundStyle(ChromePalette.ink)
-                .fixedSize(horizontal: false, vertical: true)
-                .accessibilityIdentifier("Sub-folder of this folder")
-            Button("Move to Folder") {
-                move()
+            InspectorPanelHeader(
+                title: "Move selected files to specified Folder",
+                collapsed: collapsed,
+                wrapsTitle: true
+            ) { collapsed.toggle() }
+            if !collapsed {
+                TextField("Folder", text: $folderText)
+                    .textFieldStyle(.roundedBorder)
+                    .accessibilityIdentifier("Move folder name")
+                    .onSubmit { move() }
+                Toggle("Sub-folder of this folder", isOn: $subfolder)
+                    .toggleStyle(.checkbox)
+                    .font(.system(size: 13))
+                    .foregroundStyle(ChromePalette.ink)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("Sub-folder of this folder")
+                Button("Move to Folder") {
+                    move()
+                }
+                .disabled(folderText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    || model.diskMoveTargets().isEmpty
+                    || model.folderRotateBusy
+                    || model.exportBusy
+                    || model.mergePreviewBusy
+                    || model.showsDiskMergePreview)
+                .accessibilityIdentifier("Move to Folder")
             }
-            .disabled(folderText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                || model.diskMoveTargets().isEmpty
-                || model.folderRotateBusy
-                || model.exportBusy
-                || model.mergePreviewBusy
-                || model.showsDiskMergePreview)
-            .accessibilityIdentifier("Move to Folder")
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .topLeading)

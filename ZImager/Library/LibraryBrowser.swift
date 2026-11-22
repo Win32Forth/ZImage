@@ -809,6 +809,12 @@ final class LibraryBrowser {
     private(set) var moveBusy = false
     /// True while the merged TIFF is being written. The preview does not set this.
     private(set) var mergeBusy = false
+    /// True while Build previews is storing previews for the folder on screen.
+    private(set) var folderPreviewBuildBusy = false
+    /// The line under Build. Nil until the button has been used.
+    private(set) var folderPreviewBuildNote: String?
+    /// The folder list that owns the build. A newer list leaves this pass.
+    @ObservationIgnored private var previewBuildKey: String?
     /// Bumped after Move to Folder writes a directory, so the folder tree rereads that parent.
     private(set) var folderTreeRevision = 0
     /// Parents whose child lists are stale. Empty until a move lands files in a directory.
@@ -909,6 +915,9 @@ final class LibraryBrowser {
         fetchedThumbs = []
         checkpointed = []
         previewTried = []
+        previewBuildKey = nil
+        folderPreviewBuildBusy = false
+        folderPreviewBuildNote = nil
         selectedUID = nil
         selectedUIDs = []
         selectionOrder = []
@@ -1033,6 +1042,9 @@ final class LibraryBrowser {
         let key = "photo|\(folder ?? "")|\(name ?? "")"
         let fresh = key != folderListKey
         if fresh {
+            previewBuildKey = nil
+            folderPreviewBuildBusy = false
+            folderPreviewBuildNote = nil
             folderListKey = key
             folderPage = 0
             requestedPage = nil
@@ -2681,6 +2693,102 @@ final class LibraryBrowser {
     /// How many photographs are reduced at once. Each reduction runs off the main thread.
     private static let previewWorkers = 4
 
+    /// Stores a preview for each still in the open folder that does not already have one.
+    /// A photo with a stored thumbnail is left as it is. Videos are left out.
+    /// A name filter is refused. The sensor converter is not run.
+    func buildMissingFolderPreviews() async {
+        guard !folderPreviewBuildBusy else { return }
+        if !nameFilter.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            folderPreviewBuildNote = FolderPreviewBuild.filterNote
+            return
+        }
+        let key = folderListKey
+        previewBuildKey = key
+        folderPreviewBuildBusy = true
+        defer {
+            if previewBuildKey == key {
+                folderPreviewBuildBusy = false
+                previewBuildKey = nil
+            }
+        }
+        if folderPageCounting {
+            folderPreviewBuildNote = FolderPreviewBuild.reading
+        }
+        while folderPageCounting {
+            if folderListKey != key || previewBuildKey != key { 
+                folderPreviewBuildNote = nil
+                return
+            }
+            try? await Task.sleep(for: .milliseconds(200))
+        }
+        if folderListKey != key || previewBuildKey != key {
+            folderPreviewBuildNote = nil
+            return
+        }
+        let stills = stillPages.flatMap { $0 }.filter { isStill($0) }
+        let missing = stills.filter { lacksStoredPreview($0) }
+        if missing.isEmpty {
+            folderPreviewBuildNote = FolderPreviewBuild.finished(photos: stills.count, built: 0, missed: 0)
+            return
+        }
+        folderPreviewBuildNote = FolderPreviewBuild.progress(done: 0, total: missing.count)
+        var built = 0
+        var missed = 0
+        for (index, asset) in missing.enumerated() {
+            if folderListKey != key || previewBuildKey != key {
+                folderPreviewBuildNote = nil
+                return
+            }
+            if await storeBuiltPreview(asset) {
+                built += 1
+            } else {
+                missed += 1
+            }
+            if folderListKey != key || previewBuildKey != key {
+                folderPreviewBuildNote = nil
+                return
+            }
+            folderPreviewBuildNote = FolderPreviewBuild.progress(done: index + 1, total: missing.count)
+            await Task.yield()
+        }
+        if folderListKey != key || previewBuildKey != key {
+            folderPreviewBuildNote = nil
+            return
+        }
+        folderPreviewBuildNote = FolderPreviewBuild.finished(photos: stills.count, built: built, missed: missed)
+    }
+
+    private func lacksStoredPreview(_ asset: LibraryAsset) -> Bool {
+        guard isStill(asset) else { return false }
+        if asset.thumbRel != nil { return false }
+        if editedJPEG[asset.uid] != nil { return false }
+        if cells[asset.uid]?.imageData != nil { return false }
+        return true
+    }
+
+    /// ImageIO facts when the file can be reduced. An X3F uses its embedded preview.
+    private func storeBuiltPreview(_ asset: LibraryAsset) async -> Bool {
+        guard asset.thumbRel == nil, let url = fileURL(for: asset) else { return false }
+        let body: Data? = await Task.detached {
+            FolderPreviewFacts.body(for: url)
+        }.value
+        guard let body else { return false }
+        do {
+            guard try await client.putFacts(uid: asset.uid, body: body) == 200 else { return false }
+        } catch {
+            return false
+        }
+        var updated = asset
+        let prefix = String(asset.uid.prefix(2))
+        updated.thumbRel = ".zimage/cache/thumbs/\(prefix)/\(asset.uid).jpg"
+        if updated.phase == "discovered" || updated.phase == nil {
+            updated.phase = "thumbed"
+        }
+        replace(updated)
+        await storePreview(for: updated)
+        return true
+    }
+
     /// Reduces the first visible still that has no preview yet. The page order is the folder on screen.
     /// The helper previews that same folder ahead of the rest of the library.
     func previewVisibleOne() async -> Bool {
@@ -2909,6 +3017,16 @@ final class LibraryBrowser {
         mergeBusy = true
         notice = "Merging the two photos."
         return true
+    }
+
+    /// A flattened TIFF is already beside its photograph. The catalog walk adds that file.
+    func catalogAddedFile(_ name: String, in folder: String) {
+        let line = "Duplicated as \(name)."
+        guard !folder.isEmpty else {
+            notice = line
+            return
+        }
+        Task { await rescanMovedFolders([folder], notice: line) }
     }
 
     /// Clears the write and rescans the folder that received the TIFF.
@@ -3191,7 +3309,8 @@ final class LibraryBrowser {
         }
     }
 
-    /// Gives one catalog file a new name in its current folder, then rescans that folder.
+    /// Gives one catalog file a new name in its current folder. The asset id stays.
+    /// A folder rescan is not used, because that inserts a second row for the new name.
     func rename(_ asset: LibraryAsset, to typed: String) {
         guard !mergeBusy, !moveBusy, !dateBusy, !organizeBusy, !removalBusy, !cleanBusy, !rescanBusy else {
             notice = "An export is already running."
@@ -3213,16 +3332,121 @@ final class LibraryBrowser {
                 notice = message
             }
         case .success(let dest):
-            var updated = asset
-            updated.relPath = FileRename.relocatedPath(relative, fileName: dest.lastPathComponent)
-            updated.ext = dest.pathExtension
-            replace(updated)
-            let parent = (relative as NSString).deletingLastPathComponent
-            let folder = parent.isEmpty ? displayFolder : parent
-            let line = "Renamed to \(dest.lastPathComponent)."
-            notice = line
-            Task { await rescanMovedFolders([folder], notice: line) }
+            let newRel = FileRename.relocatedPath(relative, fileName: dest.lastPathComponent)
+            let originalName = url.lastPathComponent
+            moveBusy = true
+            notice = "Renaming \(dest.lastPathComponent)…"
+            Task {
+                await self.finishRenamedFile(
+                    originalName: originalName,
+                    dest: dest,
+                    oldRel: relative,
+                    newRel: newRel
+                )
+            }
         }
+    }
+
+    /// Records a file the Disk grid already renamed. The caller moves the file back when this fails.
+    func recordRenamedFile(from old: URL, to dest: URL) async -> LibraryFolderRenameFollow {
+        guard let oldRel = DisplayFolder.prefix(selected: old, libraryRoot: libraryRoot),
+              let newRel = DisplayFolder.prefix(selected: dest, libraryRoot: libraryRoot),
+              oldRel != newRel else {
+            return .outside
+        }
+        let held = moveBusy
+        if !held { moveBusy = true }
+        defer { if !held { moveBusy = false } }
+        switch await followRenamedFile(from: oldRel, to: newRel) {
+        case .updated:
+            await adoptRenamedFile(from: oldRel, to: newRel)
+            return .updated
+        case .unsettled:
+            await adoptRenamedFile(from: oldRel, to: newRel)
+            return .unsettled
+        case .restore:
+            return .failed
+        }
+    }
+
+    private func finishRenamedFile(
+        originalName: String,
+        dest: URL,
+        oldRel: String,
+        newRel: String
+    ) async {
+        defer { moveBusy = false }
+        let name = dest.lastPathComponent
+        switch await followRenamedFile(from: oldRel, to: newRel) {
+        case .updated:
+            await adoptRenamedFile(from: oldRel, to: newRel)
+            notice = "Renamed to \(name)."
+        case .unsettled:
+            await adoptRenamedFile(from: oldRel, to: newRel)
+            notice = "Renamed to \(name). The catalog may still be catching up."
+        case .restore:
+            if case .success = FileRename.perform(source: dest, typed: originalName) {
+                notice = "The file stayed as it is. The catalog could not follow the new name."
+            } else {
+                notice = "Renamed to \(name). The catalog could not follow the new name."
+            }
+        }
+    }
+
+    /// Asks the helper to follow a file that is already at its new name.
+    /// A timed-out reply is asked once more. The file stays put when that reply
+    /// also fails to arrive, and when the second reply says the name is taken.
+    private func followRenamedFile(from oldRel: String, to newRel: String) async -> RenamedFolderReply {
+        switch await client.renameFile(from: oldRel, to: newRel) {
+        case .updated:
+            return .updated
+        case .timedOut:
+            switch await client.renameFile(from: oldRel, to: newRel) {
+            case .updated, .refused:
+                return .updated
+            case .timedOut, .offline:
+                return .unsettled
+            case .unsupported:
+                return .restore
+            }
+        case .offline, .refused, .unsupported:
+            return .restore
+        }
+    }
+
+    /// The open folder reads the new file name. The same asset id stays on the row.
+    private func adoptRenamedFile(from oldRel: String, to newRel: String) async {
+        let ext = (newRel as NSString).pathExtension
+        func shift(_ asset: inout LibraryAsset) {
+            guard asset.relPath == oldRel else { return }
+            asset.relPath = newRel
+            asset.ext = ext
+        }
+        rows.removeAll { $0.relPath == newRel }
+        for index in rows.indices { shift(&rows[index]) }
+        reviewRows.removeAll { $0.relPath == newRel }
+        for index in reviewRows.indices { shift(&reviewRows[index]) }
+        for page in stillPages.indices {
+            stillPages[page].removeAll { $0.relPath == newRel }
+            for index in stillPages[page].indices { shift(&stillPages[page][index]) }
+        }
+        folderVideos.removeAll { $0.relPath == newRel }
+        for index in folderVideos.indices { shift(&folderVideos[index]) }
+        for group in duplicateGroups.indices {
+            if duplicateGroups[group].keeper?.relPath == newRel {
+                duplicateGroups[group].keeper = nil
+            }
+            if var keeper = duplicateGroups[group].keeper {
+                shift(&keeper)
+                duplicateGroups[group].keeper = keeper
+            }
+            duplicateGroups[group].members.removeAll { $0.relPath == newRel }
+            for index in duplicateGroups[group].members.indices {
+                shift(&duplicateGroups[group].members[index])
+            }
+        }
+        resetFolderPages()
+        await reload(media: "photo")
     }
 
     /// Applications that can open this file. ZImager is first for a still. QuickTime Player is first for a video.

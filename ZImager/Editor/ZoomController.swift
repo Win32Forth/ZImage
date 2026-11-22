@@ -20,25 +20,10 @@ nonisolated enum CanvasTool: String, Equatable, Sendable {
         self == .dustSpot || self == .scratchMark
     }
 
-    /// Zoom tool: a click zooms in, and Option-click zooms out.
-    /// Hand: Command-click zooms in. Command-Option-click zooms out.
-    /// Option is the key to the right of the right-hand Command key.
-    func clickZoom(command: Bool, option: Bool) -> ClickZoom? {
-        switch self {
-        case .zoom:
-            return option ? .zoomOut : .zoomIn
-        case .hand:
-            guard command else { return nil }
-            return option ? .zoomOut : .zoomIn
-        case .horizon, .eyedropper, .removeObject, .select, .dustSpot, .scratchMark, .redEye:
-            return nil
-        }
+    /// Drag moves the picture. Spot, Scratch, Select, and the click tools keep the drag.
+    var pansByDrag: Bool {
+        self == .zoom || self == .hand
     }
-}
-
-nonisolated enum ClickZoom: Equatable, Sendable {
-    case zoomIn
-    case zoomOut
 }
 
 nonisolated struct ZoomController: Equatable {
@@ -51,6 +36,18 @@ nonisolated struct ZoomController: Equatable {
     static let absoluteFloor = 0.05
     static let sqrtTwo = 2.0.squareRoot()
     static let tileUpsampleThreshold = 1.25
+    /// Precise trackpad points that equal one mouse notch.
+    static let precisePointsPerStep = 60.0
+
+    /// Scroll up (`deltaY` > 0) zooms in. A mouse notch is one √2 step.
+    /// A precise trackpad scroll is that same step spread over `precisePointsPerStep` points.
+    static func scrollFactor(deltaY: Double, precise: Bool) -> Double {
+        guard deltaY != 0 else { return 1 }
+        if precise {
+            return pow(sqrtTwo, deltaY / precisePointsPerStep)
+        }
+        return deltaY > 0 ? sqrtTwo : 1 / sqrtTwo
+    }
 
     var sliderMaximum: Double { Self.maximumMagnification }
 

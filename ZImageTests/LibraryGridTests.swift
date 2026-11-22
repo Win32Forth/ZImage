@@ -241,6 +241,60 @@ final class LibraryGridTests: XCTestCase {
         XCTAssertNotNil(browser.cells["aa-first"]?.imageData)
     }
 
+    func testBuildPreviewsStoresOnlyPhotosThatHaveNone() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("zimage-build-server-\(UUID().uuidString)", isDirectory: true)
+        let photos = root.appendingPathComponent("Photos/2026", isDirectory: true)
+        try FileManager.default.createDirectory(at: photos, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try Self.writeTinyJPEG(to: photos.appendingPathComponent("kept.jpg"))
+        try Self.writeTinyJPEG(to: photos.appendingPathComponent("missing.jpg"))
+        try Self.writeTinyJPEG(to: photos.appendingPathComponent("failed.jpg"))
+        let page = Data("""
+        {"rows":[
+          {"uid":"aa-kept","relPath":"Photos/2026/kept.jpg","ext":"jpg","mediaClass":"image","phase":"thumbed","thumbRel":".zimage/cache/thumbs/aa/aa-kept.jpg","isKeeper":false,"pinned":false},
+          {"uid":"bb-missing","relPath":"Photos/2026/missing.jpg","ext":"jpg","mediaClass":"image","phase":"discovered","isKeeper":false,"pinned":false},
+          {"uid":"cc-failed","relPath":"Photos/2026/failed.jpg","ext":"jpg","mediaClass":"image","phase":"discovered","decodeSupport":"failed","isKeeper":false,"pinned":false}
+        ],"nextCursor":""}
+        """.utf8)
+        let empty = Data(#"{"rows":[],"nextCursor":""}"#.utf8)
+        let box = BuildPreviewReplies(page: page, empty: empty)
+        let browser = LibraryBrowser(
+            client: HelperClient(credentials: HelperCredentials(host: "192.168.1.20", pin: Data([1]), token: "t")) { request in
+                box.reply(request)
+            },
+            libraryRoot: root,
+            openFile: { _, _ in }
+        )
+        browser.displayFolder = "Photos/2026"
+        await browser.reload(media: "photo")
+        XCTAssertEqual(browser.rows.map(\.uid).sorted(), ["aa-kept", "bb-missing", "cc-failed"])
+
+        browser.nameFilter = "lisa"
+        await browser.buildMissingFolderPreviews()
+        XCTAssertEqual(browser.folderPreviewBuildNote, FolderPreviewBuild.filterNote)
+        XCTAssertTrue(box.facts.isEmpty)
+
+        browser.nameFilter = ""
+        await browser.buildMissingFolderPreviews()
+        XCTAssertEqual(Set(box.facts), [
+            "/v1/assets/bb-missing/facts",
+            "/v1/assets/cc-failed/facts",
+        ])
+        XCTAssertEqual(browser.rows.first { $0.uid == "bb-missing" }?.thumbRel, ".zimage/cache/thumbs/bb/bb-missing.jpg")
+        XCTAssertEqual(browser.rows.first { $0.uid == "cc-failed" }?.thumbRel, ".zimage/cache/thumbs/cc/cc-failed.jpg")
+        XCTAssertEqual(browser.rows.first { $0.uid == "aa-kept" }?.thumbRel, ".zimage/cache/thumbs/aa/aa-kept.jpg")
+        XCTAssertNotNil(browser.cells["bb-missing"]?.imageData)
+        XCTAssertNotNil(browser.cells["cc-failed"]?.imageData)
+        XCTAssertEqual(browser.folderPreviewBuildNote, "Built 2 previews.")
+        XCTAssertFalse(browser.folderPreviewBuildBusy)
+
+        let sent = box.facts.count
+        await browser.buildMissingFolderPreviews()
+        XCTAssertEqual(box.facts.count, sent)
+        XCTAssertEqual(browser.folderPreviewBuildNote, "Every photo in this folder already has a preview.")
+    }
+
     private static func writeTinyJPEG(to url: URL) throws {
         let image = NSImage(size: NSSize(width: 8, height: 8))
         image.lockFocus()
@@ -1412,6 +1466,46 @@ private func folderRenameHarness() throws -> FolderRenameHarness {
     )
     browser.displayFolder = "Photos/Album"
     return FolderRenameHarness(root: root, photo: photo, browser: browser, fake: fake)
+}
+
+private final class BuildPreviewReplies: @unchecked Sendable {
+    private let lock = NSLock()
+    private let page: Data
+    private let empty: Data
+    private var assetCalls = 0
+    private var sent: [String] = []
+
+    init(page: Data, empty: Data) {
+        self.page = page
+        self.empty = empty
+    }
+
+    var facts: [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return sent
+    }
+
+    func reply(_ request: URLRequest) -> HelperResponse {
+        let path = request.url?.path ?? ""
+        if path == "/v1/assets" {
+            lock.lock()
+            assetCalls += 1
+            let first = assetCalls == 1
+            lock.unlock()
+            return HelperResponse(status: 200, body: first ? page : empty)
+        }
+        if path.hasSuffix("/facts") {
+            lock.lock()
+            sent.append(path)
+            lock.unlock()
+            return HelperResponse(status: 200, body: Data("{}".utf8))
+        }
+        if path.hasSuffix("/thumbnail") {
+            return HelperResponse(status: 200, body: Data([0xFF, 0xD8, 0xFF, 0xD9]))
+        }
+        return HelperResponse(status: 404, body: Data())
+    }
 }
 
 private func enqueueEmptyFolderPages(_ fake: GridFakeListener) {
