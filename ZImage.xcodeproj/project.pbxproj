@@ -433,7 +433,7 @@
 					"$(PROJECT_DIR)/Vendor/libjxl/lib",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
-				MARKETING_VERSION = 1.8.5;
+				MARKETING_VERSION = 1.8.6;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-lwebp",
@@ -481,7 +481,7 @@
 					"$(PROJECT_DIR)/Vendor/libjxl/lib",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
-				MARKETING_VERSION = 1.8.5;
+				MARKETING_VERSION = 1.8.6;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-lwebp",

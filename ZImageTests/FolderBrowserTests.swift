@@ -535,20 +535,50 @@ final class FolderBrowserTests: XCTestCase {
         XCTAssertEqual(model.visibleFolderEntries.map(\.name), ["a.jpg", "Red eye test.jpg", "red-eye-2.jpg"])
     }
 
-    func testFolderPreviewQueueDoesTheVisiblePageFirst() {
+    func testFolderPreviewQueueStaysOnThePageAndStopsAtTwoThousand() {
         let page1 = URL(fileURLWithPath: "/tmp/p001.jpg")
         let page2 = URL(fileURLWithPath: "/tmp/p201.jpg")
-        let later = URL(fileURLWithPath: "/tmp/p400.jpg")
         let done: Set<String> = [FolderEntry.cacheKey(for: page1)]
+        XCTAssertEqual(FolderScanLimit.cap, 2000)
+        XCTAssertEqual(FolderScanLimit.count(onPage: 200), 200)
+        XCTAssertEqual(FolderScanLimit.count(onPage: 4000), 2000)
         XCTAssertEqual(
-            FolderPreviewQueue.nextURL(visible: [page2], folder: [page1, page2, later], done: done),
+            FolderPreviewQueue.nextURL(visible: [page2], done: done),
             page2
         )
-        XCTAssertEqual(
-            FolderPreviewQueue.nextURL(visible: [page1], folder: [page1, page2, later], done: done),
-            page2
-        )
-        XCTAssertNil(FolderPreviewQueue.nextURL(visible: [page1], folder: [page1], done: done))
+        XCTAssertNil(FolderPreviewQueue.nextURL(visible: [page1], done: done))
+        let urls = (0..<2001).map { URL(fileURLWithPath: "/tmp/scan-\($0).jpg") }
+        var seen = Set<String>()
+        var picked = 0
+        while let next = FolderPreviewQueue.nextURL(visible: urls, done: seen) {
+            seen.insert(FolderEntry.cacheKey(for: next))
+            picked += 1
+        }
+        XCTAssertEqual(picked, 2000)
+        XCTAssertFalse(seen.contains(FolderEntry.cacheKey(for: urls[2000])))
+    }
+
+    func testRescanPageStopsAtThePageOrTwoThousand() {
+        XCTAssertEqual(FolderPageRescan.paths(folder: "Photos", relPaths: []), [])
+        XCTAssertEqual(FolderPageRescan.paths(folder: "", relPaths: ["Photos/a.jpg"]), [])
+        let page = (0..<200).map { String(format: "Photos/1964/p%03d.jpg", $0) }
+        XCTAssertEqual(FolderPageRescan.paths(folder: "Photos", relPaths: page), page)
+        let withVideo = page + ["Photos/1964/clip.mp4"]
+        XCTAssertEqual(FolderPageRescan.paths(folder: "Photos", relPaths: withVideo), withVideo)
+        let short = (0..<40).map { "Photos/Day/\($0).jpg" }
+        XCTAssertEqual(FolderPageRescan.paths(folder: "Photos/Day", relPaths: short), short)
+        var long = (0..<2001).map { String(format: "Photos/Day/f%04d.jpg", $0) }
+        long.insert("Photos/Daylight/no.jpg", at: 10)
+        long.insert("Photos/../Secret.jpg", at: 11)
+        let chosen = FolderPageRescan.paths(folder: "Photos/Day", relPaths: long)
+        XCTAssertEqual(chosen.count, 1998)
+        XCTAssertEqual(chosen.first, "Photos/Day/f0000.jpg")
+        XCTAssertFalse(chosen.contains("Photos/Daylight/no.jpg"))
+        XCTAssertFalse(chosen.contains("Photos/../Secret.jpg"))
+        XCTAssertFalse(chosen.contains("Photos/Day/f1998.jpg"))
+        XCTAssertFalse(chosen.contains("Photos/Day/f2000.jpg"))
+        XCTAssertFalse(FolderPageRescan.contains(folder: "Photos/Day", path: "Photos/Daylight/stay.jpg"))
+        XCTAssertFalse(FolderPageRescan.contains(folder: "Photos", path: "Photos"))
     }
 
     func testFolderHeadingEndsWithTheImageCount() {

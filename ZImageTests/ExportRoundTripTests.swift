@@ -321,11 +321,106 @@ final class ExportRoundTripTests: XCTestCase {
         return try XCTUnwrap(context.makeImage())
     }
 
-    private func writeCatalog(uid: String, relative: String, edits: URL) throws {
+    func testLibraryWriteRecoversASecondFlattenWithoutRereadingTheOriginal() throws {
+        let root = try makeTempFolder("zflat-again")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let edits = root.appendingPathComponent(".zimage/edits", isDirectory: true)
+        let day = root.appendingPathComponent("Photos/day", isDirectory: true)
+        try FileManager.default.createDirectory(at: edits, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: day, withIntermediateDirectories: true)
+        let photo = day.appendingPathComponent("scan.jpg")
+        try Data([0xFF, 0xD8]).write(to: photo)
+        try writeCatalog(
+            uid: "flatuid",
+            relative: "Photos/day/scan.jpg",
+            edits: edits,
+            blake3: "from-sidecar",
+            byteSize: 99
+        )
+        try Data([0x49, 0x49, 0x2A, 0x00]).write(to: edits.appendingPathComponent("flatuid.zflat"))
+
+        let recovered = try XCTUnwrap(FlattenedMaster.libraryWrite(
+            file: photo,
+            uid: nil,
+            relativePath: nil,
+            blake3: nil,
+            byteSize: nil
+        ))
+        XCTAssertEqual(recovered.uid, "flatuid")
+        XCTAssertEqual(recovered.relativePath, "Photos/day/scan.jpg")
+        XCTAssertEqual(recovered.blake3, "from-sidecar")
+        XCTAssertEqual(recovered.byteSize, 99)
+        XCTAssertTrue(recovered.replacesExistingTIFF)
+
+        let kept = try XCTUnwrap(FlattenedMaster.libraryWrite(
+            file: photo,
+            uid: "flatuid",
+            relativePath: "Photos/day/scan.jpg",
+            blake3: "live-digest",
+            byteSize: nil
+        ))
+        XCTAssertEqual(kept.blake3, "live-digest")
+        XCTAssertEqual(kept.byteSize, 99)
+        XCTAssertTrue(kept.replacesExistingTIFF)
+
+        let scanned = try XCTUnwrap(FlattenedMaster.libraryWrite(
+            file: photo,
+            uid: "stale",
+            relativePath: "Other/scan.jpg",
+            blake3: nil,
+            byteSize: nil
+        ))
+        XCTAssertEqual(scanned.uid, "flatuid")
+        XCTAssertEqual(scanned.blake3, "from-sidecar")
+        XCTAssertTrue(scanned.replacesExistingTIFF)
+
+        XCTAssertNil(FlattenedMaster.libraryWrite(
+            file: photo,
+            uid: "other",
+            relativePath: "Photos/day/scan.jpg",
+            blake3: "live-digest",
+            byteSize: nil
+        ))
+    }
+
+    func testLibraryWriteAllowsAFirstFlattenWhenTheDigestIsKnown() throws {
+        let root = try makeTempFolder("zflat-first")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let day = root.appendingPathComponent("Photos/day", isDirectory: true)
+        try FileManager.default.createDirectory(at: day, withIntermediateDirectories: true)
+        let photo = day.appendingPathComponent("scan.jpg")
+        try Data([0xFF, 0xD8]).write(to: photo)
+        let target = try XCTUnwrap(FlattenedMaster.libraryWrite(
+            file: photo,
+            uid: "newuid",
+            relativePath: "Photos/day/scan.jpg",
+            blake3: "abc",
+            byteSize: 4
+        ))
+        XCTAssertEqual(target.uid, "newuid")
+        XCTAssertEqual(target.blake3, "abc")
+        XCTAssertFalse(target.replacesExistingTIFF)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: target.editsFolder.path))
+        XCTAssertNil(FlattenedMaster.libraryWrite(
+            file: photo,
+            uid: nil,
+            relativePath: nil,
+            blake3: nil,
+            byteSize: nil
+        ))
+    }
+
+    private func writeCatalog(
+        uid: String,
+        relative: String,
+        edits: URL,
+        blake3: String = "abc",
+        byteSize: Int = 4
+    ) throws {
         let document = ZImgRaw.catalogRefDocument(
             log: HistoryLog(),
-            blake3: "abc",
-            byteSize: 4,
+            blake3: blake3,
+            byteSize: byteSize,
             uti: "public.jpeg",
             assetUID: uid,
             relativePathHint: relative,

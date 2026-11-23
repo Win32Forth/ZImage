@@ -87,11 +87,18 @@ nonisolated enum InpaintPipeline {
         operations: [InpaintOp],
         imageToken: Int = 0,
         displayTurns: Int? = nil,
+        flipHorizontal: Bool = false,
+        flipVertical: Bool = false,
         context: CIContext? = nil,
         isCancelled: @escaping @Sendable () -> Bool = { false },
         progress: Touchup.ProgressHandler? = nil
     ) -> CIImage {
-        let repairs = aligned(operations, displayTurns: displayTurns)
+        let repairs = aligned(
+            operations,
+            displayTurns: displayTurns,
+            flipHorizontal: flipHorizontal,
+            flipVertical: flipVertical
+        )
         var image = base
         var chain = imageToken
         var index = 0
@@ -166,9 +173,19 @@ nonisolated enum InpaintPipeline {
     }
 
     /// Dust at full strength. Several of these in a row can share one picture.
-    private static func aligned(_ operations: [InpaintOp], displayTurns: Int?) -> [InpaintOp] {
+    private static func aligned(
+        _ operations: [InpaintOp],
+        displayTurns: Int?,
+        flipHorizontal: Bool,
+        flipVertical: Bool
+    ) -> [InpaintOp] {
         guard let displayTurns else { return operations }
-        return operations.map { Touchup.oriented($0, displayTurns: displayTurns) }
+        let display = GeometryState(
+            quarterTurns: displayTurns,
+            flipHorizontal: flipHorizontal,
+            flipVertical: flipVertical
+        )
+        return operations.map { Touchup.oriented($0, display: display) }
     }
 
     private static func repairsTogether(_ operation: InpaintOp) -> Bool {

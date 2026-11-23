@@ -681,7 +681,7 @@ final class LibraryGridTests: XCTestCase {
         XCTAssertFalse(browser.awaitsPreviews)
     }
 
-    func testRestOfTheFolderIsPreviewedWhileTheFirstPageStays() async throws {
+    func testALaterPageIsNotScannedUntilItIsShown() async throws {
         func row(_ uid: String) -> String {
             #"{"uid":"\#(uid)","relPath":"Photos/\#(uid).jpg","ext":"jpg","mediaClass":"image","isKeeper":false,"pinned":false}"#
         }
@@ -711,16 +711,18 @@ final class LibraryGridTests: XCTestCase {
         fake.enqueue(.success(HelperResponse(status: 200, body: Data("{}".utf8))))
         fake.enqueue(.success(HelperResponse(status: 200, body: Data([0xFF, 0xD8]))))
         let made = await browser.previewNextFolderStill()
-        XCTAssertTrue(made)
+        let offscreen = await browser.previewOffscreenBatch()
+        XCTAssertFalse(made)
+        XCTAssertEqual(offscreen, 0)
         XCTAssertEqual(browser.folderPage, 0)
         XCTAssertEqual(browser.rows.first?.uid, "p000")
         XCTAssertNil(browser.rows.first { $0.uid == "p000" }?.thumbRel)
         XCTAssertTrue(browser.awaitsPreviews)
         await browser.showNextFolderPage()
         XCTAssertEqual(browser.rows.map(\.uid), ["p200"])
-        XCTAssertNotNil(browser.rows.first?.thumbRel)
-        XCTAssertFalse(browser.awaitsPreviews)
-        XCTAssertEqual(browser.previewStatus, "Making previews for the rest of this folder.")
+        XCTAssertNil(browser.rows.first?.thumbRel)
+        XCTAssertTrue(browser.awaitsPreviews)
+        XCTAssertNotEqual(browser.previewStatus, "Making previews for the rest of this folder.")
     }
 
     func testServerFolderOfExactlyTwoHundredHidesThePager() async throws {
@@ -955,6 +957,68 @@ final class LibraryGridTests: XCTestCase {
     }
     XCTAssertFalse(browser.rescanBusy)
     XCTAssertTrue(fake.paths.contains("/v1/folders/rescan"))
+    }
+
+    func testRescanChecksTheOpenPageAndDoesNotWalkTheFolder() async throws {
+        func row(_ uid: String, _ path: String) -> String {
+            #"{"uid":"\#(uid)","relPath":"\#(path)","ext":"jpg","mediaClass":"image","isKeeper":false,"pinned":false}"#
+        }
+        func page(_ rows: String, cursor: String) -> Data {
+            Data(#"{"rows":[\#(rows)],"nextCursor":"\#(cursor)"}"#.utf8)
+        }
+        let first = (0..<200).map { row(String(format: "p%03d", $0), String(format: "Photos/1964/p%03d.jpg", $0)) }.joined(separator: ",")
+        let video = #"{"uid":"clip","relPath":"Photos/1964/clip.mp4","ext":"mp4","mediaClass":"video","isKeeper":false,"pinned":false}"#
+        let fake = GridFakeListener()
+        let browser = LibraryBrowser(
+            client: HelperClient(credentials: HelperCredentials(host: "192.168.1.20", pin: Data([1]), token: "t")) { request in
+                try await fake.send(request)
+            },
+            libraryRoot: URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true),
+            openFile: { _, _ in }
+        )
+        browser.displayFolder = "Photos"
+        fake.enqueue(.success(HelperResponse(status: 200, body: page(first, cursor: "c1"))))
+        fake.enqueue(.success(HelperResponse(status: 200, body: page(row("p200", "Photos/1964/p200.jpg"), cursor: ""))))
+        fake.enqueue(.success(HelperResponse(status: 200, body: page(video, cursor: ""))))
+        await browser.reload(media: "photo")
+        XCTAssertEqual(browser.folderPage, 0)
+        XCTAssertEqual(browser.rows.count, 201)
+        await browser.showNextFolderPage()
+        XCTAssertEqual(browser.rows.map(\.relPath), ["Photos/1964/p200.jpg"])
+
+        let before = fake.callCount
+        fake.enqueue(.success(HelperResponse(status: 404, body: Data())))
+        browser.rescanDisplayFolder()
+        for _ in 0..<40 where browser.rescanBusy {
+            try await Task.sleep(for: .milliseconds(25))
+        }
+        XCTAssertFalse(browser.rescanBusy)
+        XCTAssertEqual(fake.callCount, before + 1)
+        XCTAssertEqual(fake.paths.filter { $0.contains("rescan") }, ["/v1/folders/rescan-page"])
+        struct Posted: Decodable {
+            var prefix: String
+            var paths: [String]
+        }
+        let posted = try JSONDecoder().decode(Posted.self, from: fake.bodies.last ?? Data())
+        XCTAssertEqual(posted.prefix, "Photos")
+        XCTAssertEqual(posted.paths, ["Photos/1964/p200.jpg"])
+        XCTAssertEqual(browser.notice, FolderPageRescan.helperNotice)
+    }
+
+    func testRescanOfAnEmptyPageDoesNotCallTheHelper() {
+        let fake = GridFakeListener()
+        let browser = LibraryBrowser(
+            client: HelperClient(credentials: HelperCredentials(host: "192.168.1.20", pin: Data([1]), token: "t")) { request in
+                try await fake.send(request)
+            },
+            libraryRoot: URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true),
+            openFile: { _, _ in }
+        )
+        browser.displayFolder = "Photos"
+        browser.rescanDisplayFolder()
+        XCTAssertEqual(fake.callCount, 0)
+        XCTAssertFalse(browser.rescanBusy)
+        XCTAssertEqual(browser.notice, FolderPageRescan.emptyNotice)
     }
 
     func testEmptyFolderRefreshClearsTheGrid() async throws {

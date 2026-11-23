@@ -37,6 +37,162 @@ final class GeometryTests: XCTestCase {
         XCTAssertEqual(Int(half.extent.height.rounded()), 16)
     }
 
+    func testFlipMirrorsTheEdgesAndASecondFlipRestoresThem() {
+        let marked = markedEdges()
+        let context = TonePipeline.makeContext()
+        let original = TonePipeline.rgba8(of: marked, context: context)
+
+        var horizontal = GeometryState.identity
+        horizontal.flipHorizontal = true
+        let leftRight = GeometryPipeline.apply(base: marked, geometry: horizontal)
+        XCTAssertGreaterThan(pixel(leftRight, x: 7, y: 3, context: context).0, 200)
+        XCTAssertLessThan(pixel(leftRight, x: 0, y: 3, context: context).0, 20)
+        horizontal.flipHorizontal = false
+        XCTAssertEqual(TonePipeline.rgba8(of: GeometryPipeline.apply(base: marked, geometry: horizontal), context: context), original)
+
+        var vertical = GeometryState.identity
+        vertical.flipVertical = true
+        let topBottom = GeometryPipeline.apply(base: marked, geometry: vertical)
+        let movedTop = pixel(topBottom, x: 4, y: 0, context: context)
+        XCTAssertGreaterThan(movedTop.0, 200)
+        XCTAssertLessThan(movedTop.1, 20)
+        XCTAssertLessThan(pixel(topBottom, x: 4, y: 7, context: context).0, 20)
+        vertical.flipVertical = false
+        XCTAssertEqual(TonePipeline.rgba8(of: GeometryPipeline.apply(base: marked, geometry: vertical), context: context), original)
+    }
+
+    func testAQuarterTurnCarriesTheMirrorWithThePhotograph() {
+        let marked = markedEdges()
+        let context = TonePipeline.makeContext()
+        var flipped = GeometryState.identity
+        flipped.flipHorizontal = true
+        let mirrored = GeometryPipeline.apply(base: marked, geometry: flipped)
+        var spun = GeometryState.identity
+        spun.quarterTurns = 1
+        let turnedAfter = GeometryPipeline.apply(base: mirrored, geometry: spun)
+        let carried = GeometryPipeline.turned(flipped, by: 1)
+        XCTAssertEqual(carried.quarterTurns, 1)
+        XCTAssertFalse(carried.flipHorizontal)
+        XCTAssertTrue(carried.flipVertical)
+        XCTAssertEqual(
+            TonePipeline.rgba8(of: GeometryPipeline.apply(base: marked, geometry: carried), context: context),
+            TonePipeline.rgba8(of: turnedAfter, context: context)
+        )
+        XCTAssertNotEqual(
+            Touchup.imageToken(path: "photo", geometry: flipped, crop: nil),
+            Touchup.imageToken(path: "photo", geometry: .identity, crop: nil)
+        )
+    }
+
+    func testFlipMovesTheCropAndTheRepairWithThePhotograph() throws {
+        var log = HistoryLog()
+        log.commit(.setCrop(NormRect(x: 0, y: 0.1, width: 0.25, height: 0.4)))
+        log.commit(.addInpaint(InpaintOp(
+            id: UUID(),
+            maskPNG: Data([1]),
+            modelID: InpaintModel.dust,
+            featherPx: 2
+        )))
+        var flipped = GeometryState.identity
+        flipped.flipHorizontal = true
+        log.commit(.setGeometry(flipped, label: "Flip left/right"))
+        let crop = try XCTUnwrap(log.state.crop)
+        XCTAssertEqual(crop.x, 0.75, accuracy: 1e-9)
+        XCTAssertEqual(crop.y, 0.1, accuracy: 1e-9)
+        XCTAssertEqual(crop.width, 0.25, accuracy: 1e-9)
+        XCTAssertEqual(crop.height, 0.4, accuracy: 1e-9)
+        XCTAssertEqual(log.state.inpaints[0].maskQuarterTurns, 0)
+        XCTAssertEqual(log.state.inpaints[0].maskFlipHorizontal, false)
+        XCTAssertEqual(log.commands.last?.historyTitle, "Flip left/right")
+
+        flipped.flipVertical = true
+        log.commit(.setGeometry(flipped, label: "Flip top/bottom"))
+        let both = try XCTUnwrap(log.state.crop)
+        XCTAssertEqual(both.x, 0.75, accuracy: 1e-9)
+        XCTAssertEqual(both.y, 0.5, accuracy: 1e-9)
+        XCTAssertEqual(both.height, 0.4, accuracy: 1e-9)
+
+        log.undo()
+        XCTAssertEqual(log.state.crop?.y ?? 0, 0.1, accuracy: 1e-9)
+        log.undo()
+        XCTAssertEqual(log.state.crop?.x ?? 1, 0, accuracy: 1e-9)
+        XCTAssertNil(log.state.inpaints[0].maskQuarterTurns)
+
+        var pixels = [UInt8](repeating: 0, count: 4)
+        pixels[0] = 255
+        let png = InpaintPipeline.encodeGrayPNG(pixels, width: 2, height: 2)
+        let operation = InpaintOp(
+            id: UUID(),
+            maskPNG: png,
+            modelID: InpaintModel.dust,
+            featherPx: 2,
+            maskQuarterTurns: 0,
+            maskFlipHorizontal: false,
+            maskFlipVertical: false
+        )
+        var display = GeometryState.identity
+        display.flipHorizontal = true
+        let side = Touchup.oriented(operation, display: display)
+        let sidePixels = try XCTUnwrap(grayPixels(side.maskPNG))
+        XCTAssertEqual(sidePixels.pixels[1], 255)
+        XCTAssertEqual(sidePixels.pixels[0], 0)
+        display.flipHorizontal = false
+        display.flipVertical = true
+        let down = Touchup.oriented(operation, display: display)
+        let downPixels = try XCTUnwrap(grayPixels(down.maskPNG))
+        XCTAssertEqual(downPixels.pixels[2], 255)
+        XCTAssertEqual(downPixels.pixels[0], 0)
+    }
+
+    func testOlderGeometryWithoutFlipStaysUpright() throws {
+        let data = try JSONEncoder().encode(GeometryState.identity)
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        object.removeValue(forKey: "flipHorizontal")
+        object.removeValue(forKey: "flipVertical")
+        let stripped = try JSONSerialization.data(withJSONObject: object)
+        let decoded = try JSONDecoder().decode(GeometryState.self, from: stripped)
+        XCTAssertFalse(decoded.flipHorizontal)
+        XCTAssertFalse(decoded.flipVertical)
+        XCTAssertEqual(decoded, .identity)
+    }
+
+    @MainActor
+    func testFlipCommandsToggleAndATurnCarriesThem() throws {
+        let space = try XCTUnwrap(CGColorSpace(name: CGColorSpace.sRGB))
+        let context = try XCTUnwrap(CGContext(
+            data: nil,
+            width: 2,
+            height: 2,
+            bitsPerComponent: 8,
+            bytesPerRow: 0,
+            space: space,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ))
+        let image = try XCTUnwrap(context.makeImage())
+        let model = EditorModel()
+        model.proxy = ProxyImage(
+            image: image,
+            entryPoint: .imageIOThumbnail,
+            appliedScaleFactor: nil,
+            nativeLongEdge: nil
+        )
+        model.flipLeftRight()
+        XCTAssertEqual(model.log.commands.last?.historyTitle, "Flip left/right")
+        XCTAssertTrue(model.log.state.geometry.flipHorizontal)
+        model.flipLeftRight()
+        XCTAssertFalse(model.log.state.geometry.flipHorizontal)
+        model.flipTopBottom()
+        XCTAssertEqual(model.log.commands.last?.historyTitle, "Flip top/bottom")
+        XCTAssertTrue(model.log.state.geometry.flipVertical)
+        model.flipTopBottom()
+        XCTAssertFalse(model.log.state.geometry.flipVertical)
+        model.flipLeftRight()
+        model.rotateClockwise()
+        XCTAssertEqual(model.log.state.geometry.quarterTurns, 1)
+        XCTAssertFalse(model.log.state.geometry.flipHorizontal)
+        XCTAssertTrue(model.log.state.geometry.flipVertical)
+    }
+
     func testVerticalKeystoneStillNarrowsTheBottomAfterAQuarterTurn() {
         let image = CIImage(color: CIColor(red: 0.4, green: 0.4, blue: 0.4, alpha: 1))
             .cropped(to: CGRect(x: 0, y: 0, width: 48, height: 32))
@@ -338,6 +494,16 @@ final class GeometryTests: XCTestCase {
         XCTAssertEqual(model.log.state.geometry.lens, .identity)
         XCTAssertEqual(model.draftGeometry.lens, .identity)
         XCTAssertEqual(model.log.state.geometry.verticalKeystone, 0.5, accuracy: 1e-9)
+    }
+
+    private func markedEdges() -> CIImage {
+        let box = CGRect(x: 0, y: 0, width: 8, height: 8)
+        let black = CIImage(color: CIColor(red: 0, green: 0, blue: 0, alpha: 1)).cropped(to: box)
+        let left = CIImage(color: CIColor(red: 1, green: 1, blue: 1, alpha: 1))
+            .cropped(to: CGRect(x: 0, y: 0, width: 1, height: 8))
+        let top = CIImage(color: CIColor(red: 1, green: 0, blue: 0, alpha: 1))
+            .cropped(to: CGRect(x: 0, y: 7, width: 8, height: 1))
+        return left.composited(over: top.composited(over: black))
     }
 
     private func checkerboard(width: Int, height: Int) -> CIImage {

@@ -139,6 +139,8 @@ struct ZImagerApp: App {
                     .keyboardShortcut("r", modifiers: .command)
                 Button("Rotate Counterclockwise") { model.rotateCounterclockwise() }
                     .keyboardShortcut("r", modifiers: [.command, .option])
+                Button("Flip Left/Right") { model.flipLeftRight() }
+                Button("Flip Top/Bottom") { model.flipTopBottom() }
                 Button("Eyedropper") { model.toggleCanvasTool(.eyedropper) }
                     .keyboardShortcut("e", modifiers: [])
                 Button("Remove Dust") { model.removeDust() }

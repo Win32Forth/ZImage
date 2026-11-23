@@ -36,15 +36,75 @@ nonisolated enum FlattenedMaster {
         return findByScanningEdits(of: file)
     }
 
-    static func editsFolder(file: URL, relativePath: String) -> URL? {
+    /// Where Continue writes the library TIFF. A second flatten can run when the open photo never reread the original: the digest then comes from the `.zimg` header.
+    /// A digest that is already known stays. The original file is not opened.
+    struct LibraryWrite: Sendable, Equatable {
+        var uid: String
+        var relativePath: String
+        var editsFolder: URL
+        var blake3: String
+        var byteSize: Int
+        /// True when `<uid>.zflat` is already readable. Continue replaces that file.
+        var replacesExistingTIFF: Bool
+    }
+
+    static func libraryWrite(
+        file: URL,
+        uid: String?,
+        relativePath: String?,
+        blake3: String?,
+        byteSize: Int?
+    ) -> LibraryWrite? {
+        let file = file.standardizedFileURL.resolvingSymlinksInPath()
+        let givenUID = uid.flatMap { $0.isEmpty ? nil : $0 }
+        let givenRel = relativePath.flatMap { $0.isEmpty ? nil : $0 }
+        let located: (uid: String, relativePath: String, editsFolder: URL)?
+        if let givenUID, let givenRel, let folder = editsDirectory(file: file, relativePath: givenRel) {
+            located = (givenUID, givenRel, folder)
+        } else if let found = find(file: file, hint: nil) {
+            located = (found.uid, found.relativePath, found.editsFolder)
+        } else {
+            located = nil
+        }
+        guard let located else { return nil }
+        var digest = blake3.flatMap { $0.isEmpty ? nil : $0 }
+        var count = byteSize
+        if digest == nil || count == nil {
+            let header = located.editsFolder.appendingPathComponent(located.uid + ".zimg")
+            if let base = ZImgRaw.peekCatalogBase(at: header), !base.blake3.isEmpty, base.byteSize > 0 {
+                let digestAgrees = digest == nil || digest == base.blake3
+                let countAgrees = count == nil || count == base.byteSize
+                if digestAgrees && countAgrees {
+                    if digest == nil { digest = base.blake3 }
+                    if count == nil { count = base.byteSize }
+                }
+            }
+        }
+        guard let digest, let count else { return nil }
+        return LibraryWrite(
+            uid: located.uid,
+            relativePath: located.relativePath,
+            editsFolder: located.editsFolder,
+            blake3: digest,
+            byteSize: count,
+            replacesExistingTIFF: tiffURL(uid: located.uid, editsFolder: located.editsFolder) != nil
+        )
+    }
+
+    /// `.zimage/edits` for this library path. The directory does not have to exist yet.
+    static func editsDirectory(file: URL, relativePath: String) -> URL? {
         let relative = relativePath.hasPrefix("/") ? String(relativePath.dropFirst()) : relativePath
         guard !relative.isEmpty else { return nil }
         let sourcePath = file.standardizedFileURL.resolvingSymlinksInPath().path
         let suffix = "/" + relative
         guard sourcePath.hasSuffix(suffix) else { return nil }
         let root = String(sourcePath.dropLast(suffix.count))
-        let edits = URL(fileURLWithPath: root, isDirectory: true)
+        return URL(fileURLWithPath: root, isDirectory: true)
             .appendingPathComponent(".zimage/edits", isDirectory: true)
+    }
+
+    static func editsFolder(file: URL, relativePath: String) -> URL? {
+        guard let edits = editsDirectory(file: file, relativePath: relativePath) else { return nil }
         var isDirectory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: edits.path, isDirectory: &isDirectory),
               isDirectory.boolValue else { return nil }
@@ -259,11 +319,14 @@ nonisolated enum FlattenWriter {
             base: shaped,
             operations: state.inpaints,
             displayTurns: state.geometry.quarterTurns,
-            context: context
-        ) { fraction, done, total in
-            let shown = total > 0 ? min(1, max(0, fraction)) : nil
-            progress(heading, done, total, shown)
-        }
+            flipHorizontal: state.geometry.flipHorizontal,
+            flipVertical: state.geometry.flipVertical,
+            context: context,
+            progress: { fraction, done, total in
+                let shown = total > 0 ? min(1, max(0, fraction)) : nil
+                progress(heading, done, total, shown)
+            }
+        )
         let longEdge = max(filled.extent.width, filled.extent.height)
         let toned = TonePipeline.apply(base: filled, tone: state.tone, longEdge: max(longEdge, 1))
         let rendered = try StillExporter.rendered(image: toned, request: request, context: context) { done, total in

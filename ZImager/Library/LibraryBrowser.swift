@@ -1937,19 +1937,36 @@ final class LibraryBrowser {
         } else {
             notice = "Deleted \(result.deleted.formatted()) files from Photos/_Removed."
         }
-        rescanDisplayFolder()
+        rescanFolderInFull()
     }
 
-    /// Catalogs the displayed folder and its subfolders, and deletes rows whose files are gone.
+    /// Checks the photos on this page. It does not walk the folder or its subfolders.
     func rescanDisplayFolder() {
-        guard !rescanBusy, !removalBusy, !dateBusy, !organizeBusy, !cleanBusy, !moveBusy, !mergeBusy else { return }
+        let folder = displayFolder
+        let paths = FolderPageRescan.paths(folder: folder, relPaths: rows.compactMap(\.relPath))
+        guard !paths.isEmpty else {
+            guard !rescanBusy, !removalBusy, !dateBusy, !organizeBusy, !cleanBusy, !moveBusy, !mergeBusy else { return }
+            notice = FolderPageRescan.emptyNotice
+            return
+        }
+        guard let generation = beginRescan(folder: folder) else { return }
+        Task { await runFolderRescan(generation: generation, folder: folder, pagePaths: paths) }
+    }
+
+    /// Walks the open folder and its subfolders. Delete ALL uses this so parked rows past the page are dropped.
+    private func rescanFolderInFull() {
+        let folder = displayFolder
+        guard let generation = beginRescan(folder: folder) else { return }
+        Task { await runFolderRescan(generation: generation, folder: folder) }
+    }
+
+    private func beginRescan(folder: String) -> Int? {
+        guard !rescanBusy, !removalBusy, !dateBusy, !organizeBusy, !cleanBusy, !moveBusy, !mergeBusy else { return nil }
         rescanBusy = true
         rescanGeneration += 1
-        let generation = rescanGeneration
-        let folder = displayFolder
         notice = nil
         rescanMeter = TouchupMeter(title: "Rescanning \(folder)", done: 0, total: 0, fraction: nil)
-        Task { await runFolderRescan(generation: generation, folder: folder) }
+        return rescanGeneration
     }
 
     /// Asks the folder tree to list these directories under their parents.
@@ -1999,11 +2016,20 @@ final class LibraryBrowser {
         notice = line
     }
 
-    private func runFolderRescan(generation: Int, folder: String, announce: Bool = true, reloadGrid: Bool = true) async -> Bool {
-        switch await client.startFolderRescan(prefix: folder) {
+    private func runFolderRescan(generation: Int, folder: String, announce: Bool = true, reloadGrid: Bool = true, pagePaths: [String]? = nil) async -> Bool {
+        let started: FolderScanCall
+        let unsupported: String
+        if let pagePaths {
+            started = await client.startFolderPageRescan(prefix: folder, paths: pagePaths)
+            unsupported = FolderPageRescan.helperNotice
+        } else {
+            started = await client.startFolderRescan(prefix: folder)
+            unsupported = "This helper cannot rescan a folder yet."
+        }
+        switch started {
         case .unsupported:
             if announce {
-                finishRescan(generation: generation, notice: "This helper cannot rescan a folder yet.")
+                finishRescan(generation: generation, notice: unsupported)
             }
             return false
         case .busy:
@@ -2789,36 +2815,33 @@ final class LibraryBrowser {
         return true
     }
 
-    /// Reduces the first visible still that has no preview yet. The page order is the folder on screen.
+    /// Reduces the first visible still that has no preview yet. Only this page is scanned.
     /// The helper previews that same folder ahead of the rest of the library.
     func previewVisibleOne() async -> Bool {
-        guard let asset = rows.first(where: needsVisiblePreview) else { return false }
+        guard let asset = nextVisiblePreview() else { return false }
         await previewAsset(asset)
         return true
     }
 
-    /// Reduces up to four visible stills together. The page order is the folder on screen.
+    /// Reduces up to four visible stills together. The page on screen is the whole scan.
     func previewVisibleBatch() async -> Int {
-        await previewBatch(onScreen: true)
+        await previewBatch()
     }
 
-    /// Reduces the next still on a page that is not on screen. The page the user is looking at stays put.
+    /// Other pages are not scanned. A page is scanned when it is the one on screen.
     func previewNextFolderStill() async -> Bool {
-        guard let asset = nextOffscreenPreview() else { return false }
-        await previewAsset(asset)
-        return true
+        false
     }
 
-    /// Reduces up to four stills on pages that are not on screen.
+    /// Other pages are not scanned.
     func previewOffscreenBatch() async -> Int {
-        await previewBatch(onScreen: false)
+        0
     }
 
-    private func previewBatch(onScreen: Bool) async -> Int {
+    private func previewBatch() async -> Int {
         var picked: [LibraryAsset] = []
         while picked.count < Self.previewWorkers {
-            let asset = onScreen ? rows.first(where: needsVisiblePreview) : nextOffscreenPreview()
-            guard let asset else { break }
+            guard let asset = nextVisiblePreview() else { break }
             previewTried.insert(asset.uid)
             picked.append(asset)
         }
@@ -2831,21 +2854,13 @@ final class LibraryBrowser {
         return picked.count
     }
 
-    /// Pages after the one on screen come first. Earlier pages follow.
-    private func nextOffscreenPreview() -> LibraryAsset? {
-        guard !stillPages.isEmpty else { return nil }
-        let current = min(max(folderPage, 0), stillPages.count - 1)
-        var order: [[LibraryAsset]] = []
-        if current + 1 < stillPages.count {
-            order.append(contentsOf: stillPages[(current + 1)...])
-        }
-        if current > 0 {
-            order.append(contentsOf: stillPages[..<current])
-        }
-        for page in order {
-            if let asset = page.first(where: needsVisiblePreview) {
-                return asset
-            }
+    /// The first still on this page that still needs a preview, stopping at 2,000 photos.
+    private func nextVisiblePreview() -> LibraryAsset? {
+        var seen = 0
+        for asset in rows where isStill(asset) {
+            if seen >= FolderScanLimit.cap { return nil }
+            seen += 1
+            if needsVisiblePreview(asset) { return asset }
         }
         return nil
     }
@@ -3552,9 +3567,6 @@ final class LibraryBrowser {
     var previewStatus: String? {
         if awaitsPreviews {
             return "Reduced previews are still being written. These squares fill in as each one is stored."
-        }
-        if stillPages.contains(where: { $0.contains(where: needsVisiblePreview) }) {
-            return "Making previews for the rest of this folder."
         }
         if rows.contains(where: { isStill($0) && $0.thumbRel == nil && $0.decodeSupport != nil }) {
             return "Some photos are over 32 million pixels or could not be reduced. Those squares stay empty."

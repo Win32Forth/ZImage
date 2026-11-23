@@ -60,13 +60,47 @@ enum FolderPage {
     }
 }
 
-/// The page on screen is reduced before the rest of the folder.
-enum FolderPreviewQueue {
-    static func nextURL(visible: [URL], folder: [URL], done: Set<String>) -> URL? {
-        func pending(_ urls: [URL]) -> URL? {
-            urls.first { !done.contains(FolderEntry.cacheKey(for: $0)) }
+/// A folder scan reads the page on screen. It stops at 2,000 photos when that page is larger.
+enum FolderScanLimit {
+    static let cap = 2000
+
+    static func count(onPage: Int) -> Int {
+        min(max(onPage, 0), cap)
+    }
+}
+
+/// The Rescan button checks these photos and does not walk the rest of the folder.
+enum FolderPageRescan {
+    static let emptyNotice = "This page has no photos to rescan."
+    static let helperNotice = "This helper cannot rescan one page. The folder was not walked."
+
+    /// Photos on the open page, at most 2,000. A path outside the folder is left out.
+    /// Paths past the cap are not pulled in to replace one that was left out.
+    static func paths(folder: String, relPaths: [String]) -> [String] {
+        let limit = FolderScanLimit.count(onPage: relPaths.count)
+        guard limit > 0, !folder.isEmpty else { return [] }
+        var chosen: [String] = []
+        chosen.reserveCapacity(min(limit, relPaths.count))
+        for rel in relPaths.prefix(limit) {
+            guard contains(folder: folder, path: rel) else { continue }
+            chosen.append(rel)
         }
-        return pending(visible) ?? pending(folder)
+        return chosen
+    }
+
+    static func contains(folder: String, path: String) -> Bool {
+        if folder.isEmpty || path.isEmpty { return false }
+        if folder.contains("\\") || folder.contains("..") { return false }
+        if path.contains("\\") || path.contains("..") { return false }
+        return path.hasPrefix(folder + "/")
+    }
+}
+
+/// Previews are made for the page on screen. The rest of the folder waits until that page is shown.
+enum FolderPreviewQueue {
+    static func nextURL(visible: [URL], done: Set<String>) -> URL? {
+        let count = FolderScanLimit.count(onPage: visible.count)
+        return visible.prefix(count).first { !done.contains(FolderEntry.cacheKey(for: $0)) }
     }
 }
 

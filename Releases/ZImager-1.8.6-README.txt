@@ -1,0 +1,99 @@
+ZImager 1.8.6
+
+ZImager is the photo editor and the library in one app.
+Disk opens folders on this Mac. Server talks to a helper on a Synology.
+
+This disk image contains ZImager.app and this README. It does not
+include the helper.
+
+What 1.8.6 changes
+------------------
+View has Flip Left/Right and Flip Top/Bottom. Flip Left/Right is
+above Flip Top/Bottom. Both sit under Rotate Counterclockwise and
+above Eyedropper. Flip Left/Right mirrors the left and right edges
+of the picture on screen. Flip Top/Bottom mirrors the top and bottom.
+Choosing the same command again puts that edge back. A later rotate
+keeps the mirror with the photograph. A crop and a repair follow the
+photograph. An older edit file that has no flip stays upright.
+
+Leaving Image adjustment for Folder view returns to Zoom. A tool
+that stays clicked, including Color, Spot, Geometry, Horizon, the
+eyedropper, and Select, is released.
+
+Flatten is available whenever a still photograph is open, including
+a photograph with no edits. It stays off while a video is open, while
+the PDF page picker is open, and while Flatten or Export is already
+writing.
+
+Flatten again asks first. The question is "Flatten this photograph
+again?" Continue replaces the library TIFF with the spots and other
+edits made since the last flatten. The edit list returns to the
+start. The original photograph stays unchanged. Revert can only
+return to that original with no edits. The TIFF that was replaced is
+not kept as a separate step. Duplicate still writes a TIFF next to
+the photograph and leaves these edits in place. A photograph that has
+no library record offers Duplicate and Cancel.
+
+Open page in a PDF opens the page whose thumbnail you clicked. A
+double-click opens that same page.
+
+Rescan in Server Folder view checks the photos on the page on screen,
+up to 2,000, and stops there. A file on that page that is gone drops
+its catalog row. A file that is not on the page stays in the catalog.
+A new file that is not already listed is not added. Move, Organize,
+and Delete ALL still read the folders they changed. If this helper
+cannot rescan one page, the folder is not walked.
+
+Automatic previews for a folder stop at the page on screen. Build
+previews still covers the open folder.
+
+The helper on the NAS already has the one-page rescan. This disk
+image does not include the helper. Stop the DSM task before you
+replace the binary.
+
+1.8.5, 1.8.4, 1.8.3, 1.8.2, 1.8.1, and 1.8.0 are still in this app:
+drag to move, scroll zoom, Curve, Vignette, Flatten Duplicate,
+folding folder panels, Build previews, X3F open, file rename that
+keeps the catalog id, folder rename, Organize, Clean, rotation that
+keeps repairs in place, previews off the main thread, Merge two
+photos, Rename a file, Move to Folder on Disk and on Server, Delete
+ALL on Photos/_Removed, Red Eye, a folder name filter, pages past
+200 photos, fast Spot and Scratch repair, Flatten, and Rescan.
+1.7.2, 1.7.1, 1.7.0, and 1.6.0 are still here too: in-app video with
+graded export, Horizon, stacked spot repairs, ZImager as the only
+app, Folder View and Edit View, arrow keys between photos, folder
+Export and Print, Copy settings and Paste settings, Tone Auto and
+Reset, Spectrum, Remove from library into Photos/_Removed, and Set
+date into the date folder.
+
+This build is Apple Silicon. It runs on macOS 26. It does not require
+macOS 27.
+
+Do not use Reorganize, Review, or Duplicates
+---------------------------------------------
+Those three do not work yet. Using them can lose photos.
+The Events and Reorganize buttons are hidden.
+Leave Reorganize, Review, and Duplicates alone.
+Do not press Start, Pause, Continue, Find duplicates, or Delete all duplicates.
+
+Install
+-------
+1. Open this disk image.
+2. Drag ZImager.app into Applications.
+3. Follow Approval below once.
+
+Approval
+--------
+ZImager is built by Tom Zimmer on his Mac using Apple's development tools.
+It is not notarized for distribution. macOS asks you to approve it once
+before it will run.
+
+1. Double-click ZImager.app.
+2. macOS says Apple could not verify that ZImager is free of malware.
+   Close that dialog.
+3. Open System Settings → Privacy & Security.
+4. Scroll to Security until you see that ZImager was blocked.
+5. Click Open Anyway.
+6. Confirm Open Anyway again if asked, then enter your password.
+
+After that, double-click ZImager and it will run.

@@ -132,7 +132,7 @@ struct InspectorTone: View {
                         .buttonStyle(LibraryPushButtonStyle())
                         .disabled(!model.canFlattenPhoto)
                         .accessibilityIdentifier("Flatten")
-                        .help("Opens Flatten. Continue saves the edits into a TIFF beside the edits. Duplicate writes that TIFF next to this photo and leaves this photo as it is.")
+                        .help("Opens Flatten for the open photograph. Continue saves a full-size TIFF beside the library edits. Flatten again replaces that TIFF. Duplicate writes that TIFF next to this photo. No earlier adjustment is required.")
                 },
                 toggle: { collapsed.toggle() }
             )

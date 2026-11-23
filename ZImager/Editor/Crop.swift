@@ -72,6 +72,18 @@ nonisolated enum CropRect {
         return NormRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY)
     }
 
+    /// Mirrors the rectangle left and right with the photograph.
+    static func mirroredHorizontally(_ rect: NormRect) -> NormRect {
+        let upright = clamped(rect)
+        return NormRect(x: 1 - upright.x - upright.width, y: upright.y, width: upright.width, height: upright.height)
+    }
+
+    /// Mirrors the rectangle top and bottom with the photograph.
+    static func mirroredVertically(_ rect: NormRect) -> NormRect {
+        let upright = clamped(rect)
+        return NormRect(x: upright.x, y: 1 - upright.y - upright.height, width: upright.width, height: upright.height)
+    }
+
     /// A point on the cropped image, mapped into the geometry output.
     static func sourcePoint(_ point: NormPoint, within crop: NormRect?) -> NormPoint {
         guard let crop else { return point }

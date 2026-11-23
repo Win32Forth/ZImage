@@ -232,6 +232,10 @@ nonisolated struct LensSetting: Codable, Equatable, Sendable {
 
 nonisolated struct GeometryState: Codable, Equatable, Sendable {
     var quarterTurns: Int = 0
+    /// Mirrors the left and right edges after the quarter-turns.
+    var flipHorizontal: Bool = false
+    /// Mirrors the top and bottom edges after the quarter-turns.
+    var flipVertical: Bool = false
     var straightenDegrees: Double = 0
     var verticalKeystone: Double = 0
     var horizontalKeystone: Double = 0
@@ -255,9 +259,13 @@ nonisolated struct GeometryState: Codable, Equatable, Sendable {
         lens: LensSetting = .identity,
         sharpness: Double = 0,
         offsetX: Double = 0,
-        offsetY: Double = 0
+        offsetY: Double = 0,
+        flipHorizontal: Bool = false,
+        flipVertical: Bool = false
     ) {
         self.quarterTurns = quarterTurns
+        self.flipHorizontal = flipHorizontal
+        self.flipVertical = flipVertical
         self.straightenDegrees = straightenDegrees
         self.verticalKeystone = verticalKeystone
         self.horizontalKeystone = horizontalKeystone
@@ -270,6 +278,8 @@ nonisolated struct GeometryState: Codable, Equatable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case quarterTurns
+        case flipHorizontal
+        case flipVertical
         case straightenDegrees
         case verticalKeystone
         case horizontalKeystone
@@ -283,6 +293,8 @@ nonisolated struct GeometryState: Codable, Equatable, Sendable {
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         quarterTurns = try container.decode(Int.self, forKey: .quarterTurns)
+        flipHorizontal = try container.decodeIfPresent(Bool.self, forKey: .flipHorizontal) ?? false
+        flipVertical = try container.decodeIfPresent(Bool.self, forKey: .flipVertical) ?? false
         straightenDegrees = try container.decode(Double.self, forKey: .straightenDegrees)
         verticalKeystone = try container.decode(Double.self, forKey: .verticalKeystone)
         horizontalKeystone = try container.decode(Double.self, forKey: .horizontalKeystone)
@@ -296,6 +308,8 @@ nonisolated struct GeometryState: Codable, Equatable, Sendable {
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(quarterTurns, forKey: .quarterTurns)
+        try container.encode(flipHorizontal, forKey: .flipHorizontal)
+        try container.encode(flipVertical, forKey: .flipVertical)
         try container.encode(straightenDegrees, forKey: .straightenDegrees)
         try container.encode(verticalKeystone, forKey: .verticalKeystone)
         try container.encode(horizontalKeystone, forKey: .horizontalKeystone)
@@ -340,6 +354,10 @@ nonisolated struct InpaintOp: Codable, Equatable, Identifiable, Sendable {
     /// Quarter-turns of the picture this mask was drawn on.
     /// Nil means the mask already lines up with that picture. Older files omit it and mean the same.
     var maskQuarterTurns: Int?
+    /// Left/right mirror of the picture this mask was drawn on. Nil means there was none.
+    var maskFlipHorizontal: Bool?
+    /// Top/bottom mirror of the picture this mask was drawn on. Nil means there was none.
+    var maskFlipVertical: Bool?
 
     init(
         id: UUID,
@@ -348,7 +366,9 @@ nonisolated struct InpaintOp: Codable, Equatable, Identifiable, Sendable {
         featherPx: Int,
         strength: Double = 1,
         patch: RepairPatch? = nil,
-        maskQuarterTurns: Int? = nil
+        maskQuarterTurns: Int? = nil,
+        maskFlipHorizontal: Bool? = nil,
+        maskFlipVertical: Bool? = nil
     ) {
         self.id = id
         self.maskPNG = maskPNG
@@ -357,6 +377,8 @@ nonisolated struct InpaintOp: Codable, Equatable, Identifiable, Sendable {
         self.strength = min(1, max(0, strength))
         self.patch = patch
         self.maskQuarterTurns = maskQuarterTurns
+        self.maskFlipHorizontal = maskFlipHorizontal
+        self.maskFlipVertical = maskFlipVertical
     }
 
     static func empty(id: UUID = UUID()) -> InpaintOp {
@@ -371,6 +393,8 @@ nonisolated struct InpaintOp: Codable, Equatable, Identifiable, Sendable {
         case strength
         case patch
         case maskQuarterTurns
+        case maskFlipHorizontal
+        case maskFlipVertical
     }
 
     init(from decoder: Decoder) throws {
@@ -383,7 +407,9 @@ nonisolated struct InpaintOp: Codable, Equatable, Identifiable, Sendable {
             featherPx: try container.decode(Int.self, forKey: .featherPx),
             strength: decodedStrength,
             patch: try container.decodeIfPresent(RepairPatch.self, forKey: .patch),
-            maskQuarterTurns: try container.decodeIfPresent(Int.self, forKey: .maskQuarterTurns)
+            maskQuarterTurns: try container.decodeIfPresent(Int.self, forKey: .maskQuarterTurns),
+            maskFlipHorizontal: try container.decodeIfPresent(Bool.self, forKey: .maskFlipHorizontal),
+            maskFlipVertical: try container.decodeIfPresent(Bool.self, forKey: .maskFlipVertical)
         )
     }
 
@@ -396,6 +422,8 @@ nonisolated struct InpaintOp: Codable, Equatable, Identifiable, Sendable {
         try container.encode(strength, forKey: .strength)
         try container.encodeIfPresent(patch, forKey: .patch)
         try container.encodeIfPresent(maskQuarterTurns, forKey: .maskQuarterTurns)
+        try container.encodeIfPresent(maskFlipHorizontal, forKey: .maskFlipHorizontal)
+        try container.encodeIfPresent(maskFlipVertical, forKey: .maskFlipVertical)
     }
 }
 
@@ -408,18 +436,42 @@ nonisolated struct EditState: Codable, Equatable, Sendable {
 
     static let identity = EditState()
 
-    /// Keeps the crop and the repairs on the same part of the photograph when the quarter-turns change.
-    /// The mask pixels stay as they were drawn. `maskQuarterTurns` records that orientation on the first turn after the repair.
+    /// Keeps the crop and the repairs on the same part of the photograph when the picture turns or flips.
+    /// The mask pixels stay as they were drawn. The first later turn or flip records the orientation they were drawn on.
     mutating func applyQuarterTurn(from previous: GeometryState, to geometry: GeometryState) {
         let delta = GeometryPipeline.wrap(geometry.quarterTurns - previous.quarterTurns)
-        let captured = GeometryPipeline.wrap(previous.quarterTurns)
-        self.geometry = geometry
-        guard delta != 0 else { return }
-        if let crop {
-            self.crop = CropRect.rotated(crop, quarterTurns: delta)
+        var carriedHorizontal = previous.flipHorizontal
+        var carriedVertical = previous.flipVertical
+        if delta % 2 == 1 {
+            swap(&carriedHorizontal, &carriedVertical)
         }
-        for index in inpaints.indices where inpaints[index].maskQuarterTurns == nil {
-            inpaints[index].maskQuarterTurns = captured
+        let extraHorizontal = geometry.flipHorizontal != carriedHorizontal
+        let extraVertical = geometry.flipVertical != carriedVertical
+        self.geometry = geometry
+        guard delta != 0 || extraHorizontal || extraVertical else { return }
+        if var crop {
+            if delta != 0 {
+                crop = CropRect.rotated(crop, quarterTurns: delta)
+            }
+            if extraHorizontal {
+                crop = CropRect.mirroredHorizontally(crop)
+            }
+            if extraVertical {
+                crop = CropRect.mirroredVertically(crop)
+            }
+            self.crop = crop
+        }
+        let captured = GeometryPipeline.wrap(previous.quarterTurns)
+        for index in inpaints.indices {
+            if inpaints[index].maskQuarterTurns == nil {
+                inpaints[index].maskQuarterTurns = captured
+            }
+            if inpaints[index].maskFlipHorizontal == nil {
+                inpaints[index].maskFlipHorizontal = previous.flipHorizontal
+            }
+            if inpaints[index].maskFlipVertical == nil {
+                inpaints[index].maskFlipVertical = previous.flipVertical
+            }
         }
     }
 

@@ -34,7 +34,7 @@ struct LibraryGrid: View {
                             browser.rescanDisplayFolder()
                         }
                         .disabled(browser.rescanBusy || browser.removalBusy || browser.dateBusy || browser.organizeBusy || browser.cleanBusy || browser.moveBusy || browser.mergeBusy)
-                        .help("Adds new files in this folder and its subfolders, and removes catalog records whose files are gone.")
+                        .help("Checks the photos on this page, up to 2,000. It does not walk the rest of the folder.")
                     }
                     Text(folderHeading)
                         .font(.system(size: 13))
@@ -161,8 +161,6 @@ struct LibraryGrid: View {
             await browser.reload(media: media)
             while !Task.isCancelled {
                 if await browser.previewVisibleBatch() > 0 { continue }
-                // The page on screen is done. Keep going through the rest of this folder.
-                if await browser.previewOffscreenBatch() > 0 { continue }
                 let consumed = await browser.checkpointOne()
                 if !browser.awaitsPreviews && !consumed {
                     await browser.waitForAnotherFolderPage()

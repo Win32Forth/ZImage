@@ -77,7 +77,13 @@ final class EditorModel {
     private var mergePreviewRendering = false
     var folderListingReady = false
     var folderMessage: String?
-    var showsFolderGrid = false
+    var showsFolderGrid = false {
+        didSet {
+            if showsFolderGrid {
+                releaseAdjustmentTools()
+            }
+        }
+    }
     /// When on, the Folder view lists images and videos found in subfolders.
     var scanSubfolders = false
     /// Text in the Disk folder name field. Find copies this into `folderNameFilter`.
@@ -2136,8 +2142,12 @@ final class EditorModel {
     }
 
     func openSelectedPDFPage() {
-        guard let pdfDocument else { return }
-        let index = pdfPageIndex
+        openSelectedPDFPage(at: pdfPageIndex)
+    }
+
+    func openSelectedPDFPage(at index: Int) {
+        guard let pdfDocument, index >= 0, index < pdfDocument.pageCount else { return }
+        pdfPageIndex = index
         let name = "\(openedFileName ?? "PDF") page \(index + 1)"
         let sourceURL = fileScopeURL
         do {
@@ -2237,7 +2247,8 @@ final class EditorModel {
                     banner: nil,
                     support: .full,
                     editBase: nil,
-                    flat: flat
+                    flat: flat,
+                    catalog: catalog
                 )
             case .failure(let error):
                 self.failOpen(name: name, message: error.localizedDescription)
@@ -2252,11 +2263,16 @@ final class EditorModel {
         banner: String?,
         support: DecodeSupport,
         editBase: EditBase?,
-        flat: FlattenedMaster.Identity? = nil
+        flat: FlattenedMaster.Identity? = nil,
+        catalog: CatalogEditTarget? = nil
     ) {
         cancelTouchupQueue()
         touchupPictures.removeAll()
         Touchup.resetRasterCache()
+        if let catalog {
+            catalogAssetUID = catalog.uid
+            catalogRelPath = catalog.relativePath
+        }
         if let flat {
             catalogAssetUID = flat.uid
             catalogRelPath = flat.relativePath
@@ -2302,8 +2318,9 @@ final class EditorModel {
                     display: savedCanvas
                 )
             }
-        } else if let url, restoreEdits(for: url) {
+        } else if editBase == nil, let url, restoreEdits(for: url) {
             // This photo keeps its own edits. The one just left stays in `editsBySource`.
+            // A chosen PDF page does not. Those edits belong to whichever page was open last.
         } else {
             resetEditsForNewImage()
         }
@@ -2529,7 +2546,9 @@ final class EditorModel {
             base: shaped,
             operations: state.inpaints,
             imageToken: touchupImageToken(),
-            displayTurns: state.geometry.quarterTurns
+            displayTurns: state.geometry.quarterTurns,
+            flipHorizontal: state.geometry.flipHorizontal,
+            flipVertical: state.geometry.flipVertical
         )
         let longEdge = max(filled.extent.width, filled.extent.height)
         let toned = TonePipeline.apply(base: filled, tone: state.tone, longEdge: max(longEdge, 1))
@@ -2942,20 +2961,26 @@ final class EditorModel {
     }
 
     /// Builds a few previews at a time, off the main thread, and shows each as soon as it is ready.
-    /// The page on screen goes first. The rest of the folder follows.
+    /// Only the page on screen is scanned, and never more than 2,000 photos. Another page starts when it is shown.
     private func preparePreviews(for entries: [FolderEntry], generation: Int) {
-        let folder = entries.filter { !$0.isDirectory }.map(\.url)
+        guard !entries.isEmpty else { return }
         Task {
             var done = Set<String>()
             while generation == self.folderGeneration {
                 let visible = self.pagedFolderEntries.map(\.url)
                 var batch: [URL] = []
                 while batch.count < 4 {
-                    guard let imageURL = FolderPreviewQueue.nextURL(visible: visible, folder: folder, done: done) else { break }
+                    guard let imageURL = FolderPreviewQueue.nextURL(visible: visible, done: done) else { break }
                     done.insert(FolderEntry.cacheKey(for: imageURL))
                     batch.append(imageURL)
                 }
-                if batch.isEmpty { return }
+                if batch.isEmpty {
+                    let page = self.folderPage
+                    while generation == self.folderGeneration && self.folderPage == page {
+                        try? await Task.sleep(for: .milliseconds(200))
+                    }
+                    continue
+                }
                 let loaded: [(String, URL?, Data?)] = await withTaskGroup(of: (String, URL?, Data?).self) { group in
                     for imageURL in batch {
                         let key = FolderEntry.cacheKey(for: imageURL)
@@ -3192,35 +3217,61 @@ final class EditorModel {
         return cropSelection != nil
     }
 
-    /// A library still can be flattened. The edit file's folder on the share has to be visible.
+    /// A still photograph is open. Earlier adjustments are not required.
+    /// A video, the page picker, and a flatten already in progress leave it off.
     var canFlattenPhoto: Bool {
-        guard !flattenBusy, !exportBusy, !showsVideo, !showsPDFPicker, proxy != nil,
-              catalogAssetUID?.isEmpty == false, libraryEditsFolder() != nil else { return false }
-        return true
+        !flattenBusy && !exportBusy && !showsVideo && !showsPDFPicker && proxy != nil && sourceFileURL != nil
     }
 
     /// Asks, then writes the full-size `.zflat` beside the library `.zimg`.
+    /// A photograph that already has a TIFF warns, then Continue replaces that TIFF.
     func confirmFlatten() {
         guard canFlattenPhoto else { return }
+        let prepared = prepareLibraryFlatten()
+        if !prepared.ready {
+            let alert = NSAlert()
+            alert.alertStyle = .warning
+            alert.messageText = "This photograph has no library record yet."
+            alert.informativeText = "Flatten stores the full-size TIFF with this photograph's library edits. Duplicate writes that TIFF next to the photograph."
+            alert.addButton(withTitle: "Duplicate")
+            alert.addButton(withTitle: "Cancel")
+            NSCursor.arrow.set()
+            if alert.runModal() == .alertFirstButtonReturn {
+                startFlattenDuplicate()
+            }
+            return
+        }
         let alert = NSAlert()
-        alert.messageText = "Flatten this photograph?"
-        alert.informativeText = """
-        Flatten writes a full-size LZW TIFF beside this photo's edits on the library. The file name ends in .zflat. An 8-bit original is saved as 8-bit. An original with more than 8 bits per channel is saved as 16-bit.
+        if prepared.again {
+            alert.alertStyle = .warning
+            alert.messageText = "Flatten this photograph again?"
+            alert.informativeText = """
+            Flatten again replaces the full-size TIFF with the spots and other edits made since the last flatten. Those edits are saved into the TIFF, and the edit list returns to the start. The original photograph stays unchanged.
 
-        That TIFF becomes the starting point for later edits. Tone, spots, and the other edits are saved into the TIFF, and the edit list returns to the start. The original photo stays unchanged. The preview and the .zimg stay. Flatten again overwrites the TIFF.
+            Revert can only return to that original photograph with no edits. The TIFF being replaced, and the edits inside it, are not kept as a separate step.
 
-        Duplicate writes that same TIFF next to this photo. The name gains -2, then -3 when that name is taken. This photo and its edits stay as they are.
+            Duplicate writes a TIFF next to this photograph and leaves these edits in place.
+            """
+        } else {
+            alert.messageText = "Flatten this photograph?"
+            alert.informativeText = """
+            Flatten writes a full-size LZW TIFF beside this photo's edits on the library. The file name ends in .zflat. An 8-bit original is saved as 8-bit. An original with more than 8 bits per channel is saved as 16-bit.
 
-        A large photo is rendered at full size once, with a progress bar.
+            That TIFF becomes the starting point for later edits. Tone, spots, and the other edits are saved into the TIFF, and the edit list returns to the start. The original photo stays unchanged. The preview and the .zimg stay. Flatten again overwrites the TIFF.
 
-        Revert is available after a flatten. It removes that TIFF and every edit, and the photograph returns to the original file.
-        """
+            Duplicate writes that same TIFF next to this photo. The name gains -2, then -3 when that name is taken. This photo and its edits stay as they are.
+
+            A large photo is rendered at full size once, with a progress bar.
+
+            Revert is available after a flatten. It removes that TIFF and every edit, and the photograph returns to the original file.
+            """
+        }
         alert.addButton(withTitle: "Continue")
         alert.addButton(withTitle: "Duplicate")
         alert.addButton(withTitle: "Cancel")
         alert.addButton(withTitle: "Revert")
         if let revert = alert.buttons.first(where: { $0.title == "Revert" }) {
-            revert.isEnabled = hasFlattenedSidecar
+            revert.isEnabled = prepared.again
         }
         NSCursor.arrow.set()
         let revertResponse = NSApplication.ModalResponse(
@@ -3236,6 +3287,24 @@ final class EditorModel {
         default:
             break
         }
+    }
+
+    /// Fills a missing library uid or original digest from the flatten sidecars.
+    /// `again` is true when Continue will replace a TIFF that is already there.
+    private func prepareLibraryFlatten() -> (ready: Bool, again: Bool) {
+        guard let source = sourceFileURL,
+              let target = FlattenedMaster.libraryWrite(
+                file: source,
+                uid: catalogAssetUID,
+                relativePath: catalogRelPath,
+                blake3: sourceDigest,
+                byteSize: sourceByteCount
+              ) else { return (false, false) }
+        catalogAssetUID = target.uid
+        catalogRelPath = target.relativePath
+        sourceDigest = target.blake3
+        sourceByteCount = target.byteSize
+        return (true, target.replacesExistingTIFF)
     }
 
     /// Warns, then removes the flattened TIFF and every edit.
@@ -3374,12 +3443,16 @@ final class EditorModel {
     }
 
     private func startFlatten() {
-        guard canFlattenPhoto,
-              let source = sourceFileURL,
-              let uid = catalogAssetUID,
-              let folder = libraryEditsFolder(),
+        guard canFlattenPhoto, let source = sourceFileURL else { return }
+        let prepared = prepareLibraryFlatten()
+        guard prepared.ready,
+              let uid = catalogAssetUID, !uid.isEmpty,
+              let folder = makeLibraryEditsFolder(),
               let digest = sourceDigest,
-              let count = sourceByteCount else { return }
+              let count = sourceByteCount else {
+            presentAlert("This photograph has no library record yet. Choose Duplicate to write the TIFF next to the photograph.")
+            return
+        }
         commitOpenDrafts()
         cancelTouchupQueue()
         let state = log.state
@@ -3447,18 +3520,19 @@ final class EditorModel {
 
     /// Writes the flattened TIFF beside the open photo and leaves this photo's edits in place.
     private func startFlattenDuplicate() {
-        guard canFlattenPhoto,
-              let source = sourceFileURL,
-              let uid = catalogAssetUID,
-              let edits = libraryEditsFolder(),
-              let relative = catalogRelPath, !relative.isEmpty else { return }
+        guard canFlattenPhoto, let source = sourceFileURL else { return }
         commitOpenDrafts()
         cancelTouchupQueue()
         let state = log.state
         let directory = source.deletingLastPathComponent()
-        let zflat = edits.appendingPathComponent(uid + ".zflat")
-        let pixels = FileManager.default.isReadableFile(atPath: zflat.path) ? zflat : source
-        let parent = (relative as NSString).deletingLastPathComponent
+        let pixels: URL
+        if let uid = catalogAssetUID, let edits = libraryEditsFolder() {
+            let zflat = edits.appendingPathComponent(uid + ".zflat")
+            pixels = FileManager.default.isReadableFile(atPath: zflat.path) ? zflat : source
+        } else {
+            pixels = source
+        }
+        let parent = catalogRelPath.map { ($0 as NSString).deletingLastPathComponent } ?? ""
         let heading = "Duplicating the photograph"
         flattenGeneration += 1
         let generation = flattenGeneration
@@ -3558,6 +3632,22 @@ final class EditorModel {
     private func libraryEditsFolder() -> URL? {
         guard let source = sourceFileURL, let rel = catalogRelPath else { return nil }
         return FlattenedMaster.editsFolder(file: source, relativePath: rel)
+    }
+
+    /// The library edits folder for Continue. It is created when this photograph is in the library.
+    private func makeLibraryEditsFolder() -> URL? {
+        guard let source = sourceFileURL, let rel = catalogRelPath else { return nil }
+        guard let edits = FlattenedMaster.editsDirectory(file: source, relativePath: rel) else { return nil }
+        do {
+            try FileManager.default.createDirectory(at: edits, withIntermediateDirectories: true)
+        } catch {
+            return nil
+        }
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: edits.path, isDirectory: &isDirectory), isDirectory.boolValue else {
+            return nil
+        }
+        return edits
     }
 
     /// When a flatten file exists, later edits start from its working JPEG.
@@ -3782,6 +3872,11 @@ final class EditorModel {
         }
     }
 
+    /// Folder view leaves Zoom armed. Spot, Red Eye, Horizon, the eyedropper, and Select do not stay on.
+    func releaseAdjustmentTools() {
+        selectCanvasTool(.zoom)
+    }
+
     /// The first click arms the tool. The next click returns to Zoom.
     func toggleCanvasTool(_ tool: CanvasTool) {
         if canvasTool == tool {
@@ -3804,14 +3899,30 @@ final class EditorModel {
     func rotateClockwise() {
         guard proxy != nil else { return }
         replaceGeometry("Rotate clockwise") { geometry in
-            geometry.quarterTurns = GeometryPipeline.wrap(geometry.quarterTurns + 1)
+            geometry = GeometryPipeline.turned(geometry, by: 1)
         }
     }
 
     func rotateCounterclockwise() {
         guard proxy != nil else { return }
         replaceGeometry("Rotate counterclockwise") { geometry in
-            geometry.quarterTurns = GeometryPipeline.wrap(geometry.quarterTurns - 1)
+            geometry = GeometryPipeline.turned(geometry, by: -1)
+        }
+    }
+
+    /// Mirrors the left and right edges of the photograph on screen. The same command puts them back.
+    func flipLeftRight() {
+        guard proxy != nil else { return }
+        replaceGeometry("Flip left/right") { geometry in
+            geometry.flipHorizontal.toggle()
+        }
+    }
+
+    /// Mirrors the top and bottom edges of the photograph on screen. The same command puts them back.
+    func flipTopBottom() {
+        guard proxy != nil else { return }
+        replaceGeometry("Flip top/bottom") { geometry in
+            geometry.flipVertical.toggle()
         }
     }
 
@@ -4175,6 +4286,8 @@ final class EditorModel {
         let work = job.work
         let empty = job.empty
         let turns = draftGeometry.quarterTurns
+        let flipHorizontal = draftGeometry.flipHorizontal
+        let flipVertical = draftGeometry.flipVertical
         Task { @MainActor in
             if spotBatch.count >= 2 {
                 let rendered = await Touchup.finishSpotsOffMain(
@@ -4186,7 +4299,9 @@ final class EditorModel {
                     priorToken: imageToken,
                     baseChain: baseChain,
                     frameToken: imageToken,
-                    displayTurns: turns
+                    displayTurns: turns,
+                    flipHorizontal: flipHorizontal,
+                    flipVertical: flipVertical
                 )
                 guard generation == self.touchupGeneration else { return }
                 if let repaired = rendered.repaired, !rendered.operations.isEmpty {
@@ -4214,7 +4329,9 @@ final class EditorModel {
                     priorToken: imageToken,
                     baseChain: baseChain,
                     frameToken: imageToken,
-                    displayTurns: turns
+                    displayTurns: turns,
+                    flipHorizontal: flipHorizontal,
+                    flipVertical: flipVertical
                 )
                 guard generation == self.touchupGeneration else { return }
                 if let built = rendered.built, let repaired = rendered.repaired {
@@ -4829,6 +4946,8 @@ final class EditorModel {
 
     private static func geometryChangesPixels(_ painted: GeometryState, _ current: GeometryState) -> Bool {
         if painted.quarterTurns != current.quarterTurns { return true }
+        if painted.flipHorizontal != current.flipHorizontal { return true }
+        if painted.flipVertical != current.flipVertical { return true }
         if abs(painted.straightenDegrees - current.straightenDegrees) > 1e-6 { return true }
         if painted.verticalKeystone != current.verticalKeystone { return true }
         if painted.horizontalKeystone != current.horizontalKeystone { return true }
@@ -4877,7 +4996,9 @@ final class EditorModel {
                     base: head.image,
                     operations: suffix,
                     imageToken: chain,
-                    displayTurns: draftGeometry.quarterTurns
+                    displayTurns: draftGeometry.quarterTurns,
+                    flipHorizontal: draftGeometry.flipHorizontal,
+                    flipVertical: draftGeometry.flipVertical
                 )
                 storeTouchupHead(token: token, operations: operations, image: image)
                 return image
@@ -4891,7 +5012,9 @@ final class EditorModel {
             base: shaped,
             operations: operations,
             imageToken: token,
-            displayTurns: draftGeometry.quarterTurns
+            displayTurns: draftGeometry.quarterTurns,
+            flipHorizontal: draftGeometry.flipHorizontal,
+            flipVertical: draftGeometry.flipVertical
         )
         storeTouchupHead(token: token, operations: operations, image: image)
         return image
@@ -5103,6 +5226,8 @@ final class EditorModel {
             operations: operations,
             token: token,
             displayTurns: draftGeometry.quarterTurns,
+            flipHorizontal: draftGeometry.flipHorizontal,
+            flipVertical: draftGeometry.flipVertical,
             progress: progress
         ) else {
             hideTouchupMeter(meter)
@@ -5450,13 +5575,15 @@ struct Chrome: View {
         }
         .onChange(of: sourceMode) { _, mode in
             model.cancelMergePreview()
-            if mode == "server", model.canvasTool == .removeObject {
-                model.selectCanvasTool(.zoom)
+            let folder = mode == "server" ? serverShowsFolder : model.showsFolderGrid
+            if folder {
+                model.releaseAdjustmentTools()
             }
         }
         .onChange(of: model.showsFolderGrid) { _, showing in
             if showing {
                 model.publishFolderPreviewFromImage()
+                model.releaseAdjustmentTools()
             } else {
                 model.cancelDiskMergePreview()
             }
@@ -5464,6 +5591,7 @@ struct Chrome: View {
         .onChange(of: serverShowsFolder) { _, showing in
             if showing {
                 model.publishFolderPreviewFromImage()
+                model.releaseAdjustmentTools()
             } else {
                 model.cancelServerMergePreview()
             }
@@ -5850,7 +5978,7 @@ struct Chrome: View {
                     PDFPagePicker(
                         document: document,
                         pageIndex: $model.pdfPageIndex,
-                        onOpen: { model.openSelectedPDFPage() },
+                        onOpen: { model.openSelectedPDFPage(at: $0) },
                         onCancel: { model.cancelPDFPicker() }
                     )
                 } else if showsImage {
@@ -5972,7 +6100,7 @@ struct Chrome: View {
                     PDFPagePicker(
                         document: document,
                         pageIndex: $model.pdfPageIndex,
-                        onOpen: { model.openSelectedPDFPage() },
+                        onOpen: { model.openSelectedPDFPage(at: $0) },
                         onCancel: { model.cancelPDFPicker() }
                     )
                 } else if !model.showsFolderGrid {

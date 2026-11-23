@@ -180,6 +180,29 @@ final class OpenResetTests: XCTestCase {
         XCTAssertEqual(again.draftGeometry.quarterTurns, 1)
     }
 
+    func testFolderViewReleasesArmedToolsAndFlattenNeedsOnlyAPhotograph() async throws {
+        let photo = temporaryFile("armed.jpg")
+        try writeJPEG(width: 20, height: 12, to: photo)
+        defer { try? FileManager.default.removeItem(at: photo) }
+
+        let idle = EditorModel()
+        XCTAssertFalse(idle.canFlattenPhoto)
+
+        let model = EditorModel()
+        model.openSecurityScopedFile(at: photo)
+        try await waitUntil(model.proxy != nil, model: model)
+        XCTAssertTrue(model.log.commands.isEmpty)
+        XCTAssertTrue(model.canFlattenPhoto)
+
+        for tool in [CanvasTool.horizon, .eyedropper, .dustSpot, .redEye, .select] {
+            model.selectCanvasTool(tool)
+            XCTAssertEqual(model.canvasTool, tool)
+            model.showsFolderGrid = true
+            XCTAssertEqual(model.canvasTool, .zoom)
+            model.showsFolderGrid = false
+        }
+    }
+
     func testSiblingZimgAppliesOnALaterOpen() async throws {
         let folder = FileManager.default.temporaryDirectory
             .appendingPathComponent("zimage-open-\(UUID().uuidString)", isDirectory: true)

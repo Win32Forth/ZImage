@@ -25,8 +25,10 @@ extension CornerPin {
     )
 }
 
-/// Stage 2 of the fixed render order: lens, corner pins, quarter-turns, keystone, straighten, offset, then sharpness.
-/// Vertical and Horizontal keystone run after the quarter-turns, so they stay the top, bottom, left, and right edges on screen.
+/// Stage 2 of the fixed render order: lens, corner pins, quarter-turns, flips, keystone, straighten, offset, then sharpness.
+/// Flips run after the quarter-turns, so left/right and top/bottom are the edges on screen.
+/// A quarter-turn swaps those two flips, and the mirror turns with the photograph.
+/// Vertical and Horizontal keystone run after that, so they stay the edges on screen.
 /// Identity geometry returns the base image unchanged.
 nonisolated enum GeometryPipeline {
     /// Keystone strength. `1` moves the top-left corner to `(-1/6, -1/6)`.
@@ -53,6 +55,7 @@ nonisolated enum GeometryPipeline {
                 image = perspective(image, pins: geometry.corners)
             }
             image = rotate(image, quarterTurns: geometry.quarterTurns)
+            image = mirror(image, horizontal: geometry.flipHorizontal, vertical: geometry.flipVertical)
             if geometry.corners == nil {
                 image = perspective(image, pins: keystonePins(geometry))
             }
@@ -93,6 +96,8 @@ nonisolated enum GeometryPipeline {
 
     private static func hasTransform(_ geometry: GeometryState) -> Bool {
         geometry.quarterTurns != 0
+            || geometry.flipHorizontal
+            || geometry.flipVertical
             || abs(geometry.straightenDegrees) > 1e-6
             || geometry.verticalKeystone != 0
             || geometry.horizontalKeystone != 0
@@ -152,9 +157,20 @@ nonisolated enum GeometryPipeline {
         current: GeometryState
     ) -> GeometryState {
         let delta = horizonDelta(from: start, to: end, pixelWidth: pixelWidth, pixelHeight: pixelHeight)
-        var next = current
-        next.quarterTurns = wrap(current.quarterTurns + delta.quarterTurns)
+        var next = turned(current, by: delta.quarterTurns)
         next.straightenDegrees = min(45, max(-45, current.straightenDegrees + delta.straightenDegrees))
+        return next
+    }
+
+    /// Adds quarter-turns and carries a mirror around with the photograph.
+    /// One odd turn swaps left/right with top/bottom. Two turns leave the flips as they are.
+    static func turned(_ geometry: GeometryState, by delta: Int) -> GeometryState {
+        var next = geometry
+        let steps = wrap(delta)
+        if steps % 2 == 1 {
+            swap(&next.flipHorizontal, &next.flipVertical)
+        }
+        next.quarterTurns = wrap(geometry.quarterTurns + delta)
         return next
     }
 
@@ -235,6 +251,18 @@ nonisolated enum GeometryPipeline {
         let center = CGPoint(x: extent.midX, y: extent.midY)
         let transform = CGAffineTransform(translationX: center.x, y: center.y)
             .rotated(by: angle)
+            .translatedBy(x: -center.x, y: -center.y)
+        return finite(image.transformed(by: transform))
+    }
+
+    /// Left/right and top/bottom of the picture on screen. The frame stays the same size.
+    private static func mirror(_ image: CIImage, horizontal: Bool, vertical: Bool) -> CIImage {
+        guard horizontal || vertical else { return image }
+        let extent = image.extent
+        guard extent.width >= 1, extent.height >= 1 else { return image }
+        let center = CGPoint(x: extent.midX, y: extent.midY)
+        let transform = CGAffineTransform(translationX: center.x, y: center.y)
+            .scaledBy(x: horizontal ? -1 : 1, y: vertical ? -1 : 1)
             .translatedBy(x: -center.x, y: -center.y)
         return finite(image.transformed(by: transform))
     }

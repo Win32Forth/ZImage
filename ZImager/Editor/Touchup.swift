@@ -381,6 +381,8 @@ nonisolated enum Touchup {
         operations: [InpaintOp],
         token: Int,
         displayTurns: Int? = nil,
+        flipHorizontal: Bool = false,
+        flipVertical: Bool = false,
         progress: ProgressHandler? = nil
     ) async -> CIImage? {
         let ticket = workTicket()
@@ -395,6 +397,8 @@ nonisolated enum Touchup {
                     operations: operations,
                     imageToken: token,
                     displayTurns: displayTurns,
+                    flipHorizontal: flipHorizontal,
+                    flipVertical: flipVertical,
                     context: replayContext,
                     isCancelled: { !Self.workTicketIsCurrent(ticket) },
                     progress: progress
@@ -420,7 +424,9 @@ nonisolated enum Touchup {
         priorToken: Int = 0,
         baseChain: Int = 0,
         frameToken: Int = 0,
-        displayTurns: Int? = nil
+        displayTurns: Int? = nil,
+        flipHorizontal: Bool = false,
+        flipVertical: Bool = false
     ) async -> TouchupJobResult {
         let ticket = workTicket()
         return await withCheckedContinuation { continuation in
@@ -441,6 +447,8 @@ nonisolated enum Touchup {
                     baseChain: baseChain,
                     frameToken: frameToken,
                     displayTurns: displayTurns,
+                    flipHorizontal: flipHorizontal,
+                    flipVertical: flipVertical,
                     ticket: ticket
                 ))
             }
@@ -457,6 +465,8 @@ nonisolated enum Touchup {
         baseChain: Int,
         frameToken: Int,
         displayTurns: Int?,
+        flipHorizontal: Bool,
+        flipVertical: Bool,
         ticket: Int
     ) -> TouchupJobResult {
         guard let raster = raster(
@@ -465,6 +475,8 @@ nonisolated enum Touchup {
             priorToken: priorToken,
             baseChain: baseChain,
             displayTurns: displayTurns,
+            flipHorizontal: flipHorizontal,
+            flipVertical: flipVertical,
             ticket: ticket
         ) else {
             return TouchupJobResult(
@@ -519,7 +531,9 @@ nonisolated enum Touchup {
         priorToken: Int = 0,
         baseChain: Int = 0,
         frameToken: Int = 0,
-        displayTurns: Int? = nil
+        displayTurns: Int? = nil,
+        flipHorizontal: Bool = false,
+        flipVertical: Bool = false
     ) async -> TouchupSpotBatch {
         let ticket = workTicket()
         return await withCheckedContinuation { continuation in
@@ -540,6 +554,8 @@ nonisolated enum Touchup {
                     baseChain: baseChain,
                     frameToken: frameToken,
                     displayTurns: displayTurns,
+                    flipHorizontal: flipHorizontal,
+                    flipVertical: flipVertical,
                     ticket: ticket
                 ))
             }
@@ -556,6 +572,8 @@ nonisolated enum Touchup {
         baseChain: Int,
         frameToken: Int,
         displayTurns: Int?,
+        flipHorizontal: Bool,
+        flipVertical: Bool,
         ticket: Int
     ) -> TouchupSpotBatch {
         guard let raster = raster(
@@ -564,6 +582,8 @@ nonisolated enum Touchup {
             priorToken: priorToken,
             baseChain: baseChain,
             displayTurns: displayTurns,
+            flipHorizontal: flipHorizontal,
+            flipVertical: flipVertical,
             ticket: ticket
         ) else {
             return TouchupSpotBatch(
@@ -625,6 +645,8 @@ nonisolated enum Touchup {
         priorToken: Int,
         baseChain: Int,
         displayTurns: Int?,
+        flipHorizontal: Bool,
+        flipVertical: Bool,
         ticket: Int
     ) -> (samples: [Float], width: Int, height: Int, extent: CGRect)? {
         if let cached = cachedRaster(key: baseChain) {
@@ -637,6 +659,8 @@ nonisolated enum Touchup {
                 operations: priorOperations,
                 imageToken: priorToken,
                 displayTurns: displayTurns,
+                flipHorizontal: flipHorizontal,
+                flipVertical: flipVertical,
                 context: jobContext
             )
         guard let read = read(source, context: jobContext) else { return nil }
@@ -726,6 +750,8 @@ nonisolated enum Touchup {
         }
         mixBytes(Array(path.utf8))
         mixInt(geometry.quarterTurns)
+        mix(geometry.flipHorizontal ? 1 : 0)
+        mix(geometry.flipVertical ? 1 : 0)
         mixDouble(geometry.straightenDegrees)
         mixDouble(geometry.verticalKeystone)
         mixDouble(geometry.horizontalKeystone)
@@ -1176,17 +1202,54 @@ nonisolated enum Touchup {
         )
     }
 
-    /// Turns a repair mask so it covers the same pixels after a later left or right rotation.
+    /// Turns or mirrors a repair mask so it covers the same pixels after a later rotation or flip.
     /// A mask with no recorded orientation is already on the picture it was drawn on.
     static func oriented(_ operation: InpaintOp, displayTurns: Int) -> InpaintOp {
+        oriented(operation, display: GeometryState(quarterTurns: displayTurns))
+    }
+
+    static func oriented(_ operation: InpaintOp, display: GeometryState) -> InpaintOp {
         guard let captured = operation.maskQuarterTurns else { return operation }
-        let delta = GeometryPipeline.wrap(displayTurns - captured)
-        guard delta != 0, !operation.maskPNG.isEmpty else { return operation }
-        guard let png = TouchupEngine.rotatedMaskPNG(operation.maskPNG, quarterTurns: delta) else { return operation }
+        let fromTurns = GeometryPipeline.wrap(captured)
+        let toTurns = GeometryPipeline.wrap(display.quarterTurns)
+        let fromHorizontal = operation.maskFlipHorizontal ?? false
+        let fromVertical = operation.maskFlipVertical ?? false
+        guard fromTurns != toTurns
+            || fromHorizontal != display.flipHorizontal
+            || fromVertical != display.flipVertical else { return operation }
+        guard !operation.maskPNG.isEmpty else { return operation }
+        var png = operation.maskPNG
+        if fromVertical {
+            guard let flipped = TouchupEngine.flippedMaskPNG(png, horizontal: false) else { return operation }
+            png = flipped
+        }
+        if fromHorizontal {
+            guard let flipped = TouchupEngine.flippedMaskPNG(png, horizontal: true) else { return operation }
+            png = flipped
+        }
+        let undoTurns = GeometryPipeline.wrap(-fromTurns)
+        if undoTurns != 0 {
+            guard let turned = TouchupEngine.rotatedMaskPNG(png, quarterTurns: undoTurns) else { return operation }
+            png = turned
+        }
+        if toTurns != 0 {
+            guard let turned = TouchupEngine.rotatedMaskPNG(png, quarterTurns: toTurns) else { return operation }
+            png = turned
+        }
+        if display.flipHorizontal {
+            guard let flipped = TouchupEngine.flippedMaskPNG(png, horizontal: true) else { return operation }
+            png = flipped
+        }
+        if display.flipVertical {
+            guard let flipped = TouchupEngine.flippedMaskPNG(png, horizontal: false) else { return operation }
+            png = flipped
+        }
         var oriented = operation
         oriented.maskPNG = png
         oriented.patch = nil
-        oriented.maskQuarterTurns = GeometryPipeline.wrap(displayTurns)
+        oriented.maskQuarterTurns = toTurns
+        oriented.maskFlipHorizontal = display.flipHorizontal
+        oriented.maskFlipVertical = display.flipVertical
         return oriented
     }
 
@@ -2637,6 +2700,43 @@ private nonisolated enum TouchupEngine {
         }
         guard error == kvImageNoError else { return nil }
         let encoded = InpaintPipeline.encodeGrayPNG(destination, width: newWidth, height: newHeight)
+        return encoded.isEmpty ? nil : encoded
+    }
+
+    /// Left/right or top/bottom of a top-row-first gray mask.
+    static func flippedMaskPNG(_ png: Data, horizontal: Bool) -> Data? {
+        guard let decoded = topDownMask(png), decoded.width > 0, decoded.height > 0 else { return nil }
+        let width = decoded.width
+        let height = decoded.height
+        var source = decoded.pixels
+        var destination = [UInt8](repeating: 0, count: width * height)
+        guard source.count >= width * height else { return nil }
+        let error: vImage_Error = source.withUnsafeMutableBytes { sourceBuffer in
+            destination.withUnsafeMutableBytes { destinationBuffer in
+                guard let sourceAddress = sourceBuffer.baseAddress,
+                      let destinationAddress = destinationBuffer.baseAddress else {
+                    return kvImageNullPointerArgument
+                }
+                var sourceImage = vImage_Buffer(
+                    data: sourceAddress,
+                    height: vImagePixelCount(height),
+                    width: vImagePixelCount(width),
+                    rowBytes: width
+                )
+                var destinationImage = vImage_Buffer(
+                    data: destinationAddress,
+                    height: vImagePixelCount(height),
+                    width: vImagePixelCount(width),
+                    rowBytes: width
+                )
+                if horizontal {
+                    return vImageHorizontalReflect_Planar8(&sourceImage, &destinationImage, vImage_Flags(kvImageNoFlags))
+                }
+                return vImageVerticalReflect_Planar8(&sourceImage, &destinationImage, vImage_Flags(kvImageNoFlags))
+            }
+        }
+        guard error == kvImageNoError else { return nil }
+        let encoded = InpaintPipeline.encodeGrayPNG(destination, width: width, height: height)
         return encoded.isEmpty ? nil : encoded
     }
 

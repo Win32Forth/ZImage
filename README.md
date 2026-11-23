@@ -1,6 +1,6 @@
 # ZImage
 
-ZImager 1.8.5 is the app. It is one window. Disk is the editor. Server is the library. The separate ZImage editor and ZImage Library are no longer in this project.
+ZImager 1.8.6 is the app. It is one window. Disk is the editor. Server is the library. The separate ZImage editor and ZImage Library are no longer in this project.
 
 `DESIGN.md` is the plan. `STATUS.md` is the iteration log, newest first.
 
@@ -9,6 +9,24 @@ ZImager 1.8.5 is the app. It is one window. Disk is the editor. Server is the li
 Reorganize, Review, and Duplicates do not work yet. Using them can lose photos. The Events and Reorganize buttons are hidden until those tools are ready. Leave Reorganize, Review, and Duplicates alone. Do not press Start, Pause, Continue, Find duplicates, or Delete all duplicates.
 
 Disk, and Server browsing of a folder, are the parts to use. Rotate, paste, export, print, and the image adjustments save the photo and rebuild its preview.
+
+## What 1.8.6 changes
+
+View has Flip Left/Right and Flip Top/Bottom. Flip Left/Right is above Flip Top/Bottom. Both sit under Rotate Counterclockwise and above Eyedropper. Flip Left/Right mirrors the left and right edges of the picture on screen. Flip Top/Bottom mirrors the top and bottom. Choosing the same command again puts that edge back. A later rotate keeps the mirror with the photograph. A crop and a repair follow the photograph. An older edit file that has no flip stays upright.
+
+Leaving Image adjustment for Folder view returns to Zoom. A tool that stays clicked, including Color, Spot, Geometry, Horizon, the eyedropper, and Select, is released.
+
+Flatten is available whenever a still photograph is open, including a photograph with no edits. It stays off while a video is open, while the PDF page picker is open, and while Flatten or Export is already writing.
+
+Flatten again asks first. The question is "Flatten this photograph again?" Continue replaces the library TIFF with the spots and other edits made since the last flatten. The edit list returns to the start. The original photograph stays unchanged. Revert can only return to that original with no edits. The TIFF that was replaced is not kept as a separate step. Duplicate still writes a TIFF next to the photograph and leaves these edits in place. A photograph that has no library record offers Duplicate and Cancel.
+
+Open page in a PDF opens the page whose thumbnail you clicked. A double-click opens that same page.
+
+Rescan in Server Folder view checks the photos on the page on screen, up to 2,000, and stops there. A file on that page that is gone drops its catalog row. A file that is not on the page stays in the catalog. A new file that is not already listed is not added. Move, Organize, and Delete ALL still read the folders they changed. If this helper cannot rescan one page, the folder is not walked.
+
+Automatic previews for a folder stop at the page on screen. Build previews still covers the open folder.
+
+The helper source adds a rescan of one page. The binary on the NAS already has that route. This disk image does not include the helper. Stop the DSM task before you replace the binary. 1.8.5 behavior below is still in this app.
 
 ## What 1.8.5 changes
 
@@ -140,7 +158,7 @@ Clean folder is in the Server three-bar menu. It removes catalog records in the 
 
 ## Install ZImager
 
-The disk image is `Releases/ZImager-1.8.5-macOS.dmg`. It contains `ZImager.app` and `README.txt`.
+The disk image is `Releases/ZImager-1.8.6-macOS.dmg`. It contains `ZImager.app` and `README.txt`.
 
 1. Open the disk image.
 2. Drag **ZImager.app** into Applications.
@@ -154,7 +172,7 @@ After that, double-click ZImager and it will run. ZImager is built on this Mac w
 
 Skip this if you only use Disk.
 
-Server mode needs `zimage-helper` running on the NAS. The disk image does not include it. The Mac never opens `catalog.db`. The 1.8.0 helper source adds Rescan. The 1.8.4 helper source adds folder rename and the confidence update Organize uses. The 1.8.5 helper source adds `POST /v1/files/rename` and an X3F embedded preview. The binary on the share is that build, 18,022,007 bytes, BuildID sha1 `761983975506eb91b8213f1d7ab5e8e68696926e`. It does not develop the Foveon sensor. Stop the DSM task before you replace the binary.
+Server mode needs `zimage-helper` running on the NAS. The disk image does not include it. The Mac never opens `catalog.db`. The 1.8.0 helper source adds Rescan. The 1.8.4 helper source adds folder rename and the confidence update Organize uses. The 1.8.5 helper source adds `POST /v1/files/rename` and an X3F embedded preview. The 1.8.6 helper source adds `POST /v1/folders/rescan-page`. The binary on the share is that build, 18,028,359 bytes, BuildID sha1 `54f5e8116ce45e5fbf4fc022a2f6e7f2fa4942f7`. It does not develop the Foveon sensor. Stop the DSM task before you replace the binary.
 
 1. On a Mac, from `Helper/` in this repo:
 

@@ -101,8 +101,7 @@ nonisolated enum FolderTurnWorker {
     /// are drawn when that photo is open, because those masks belong to the full-size image.
     static func rotate(file: URL, clockwise: Bool, session: HistoryLog?) -> Result<Outcome, Failure> {
         updating(file: file, session: session) { log in
-            var geometry = log.state.geometry
-            geometry.quarterTurns = GeometryPipeline.wrap(geometry.quarterTurns + (clockwise ? 1 : -1))
+            let geometry = GeometryPipeline.turned(log.state.geometry, by: clockwise ? 1 : -1)
             log.commit(.setGeometry(geometry, label: clockwise ? "Rotate clockwise" : "Rotate counterclockwise"))
         }
     }

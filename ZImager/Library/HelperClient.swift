@@ -1125,17 +1125,30 @@ final class HelperClient {
         } catch {
             return .offline
         }
-        return await folderRescan(method: "POST", body: body)
+        return await folderRescan(path: "/v1/folders/rescan", method: "POST", body: body)
+    }
+
+    /// Checks the listed photos and nothing else. A helper without this route answers unsupported.
+    /// That answer must not fall back to `/v1/folders/rescan`, which walks the whole prefix.
+    func startFolderPageRescan(prefix: String, paths: [String]) async -> FolderScanCall {
+        guard !paths.isEmpty else { return .offline }
+        let body: Data
+        do {
+            body = try JSONSerialization.data(withJSONObject: ["prefix": prefix, "paths": paths])
+        } catch {
+            return .offline
+        }
+        return await folderRescan(path: "/v1/folders/rescan-page", method: "POST", body: body)
     }
 
     func folderRescanStatus() async -> FolderScanCall {
-        await folderRescan(method: "GET", body: nil)
+        await folderRescan(path: "/v1/folders/rescan", method: "GET", body: nil)
     }
 
-    private func folderRescan(method: String, body: Data?) async -> FolderScanCall {
+    private func folderRescan(path: String, method: String, body: Data?) async -> FolderScanCall {
         do {
             let response = try await perform(
-                path: "/v1/folders/rescan",
+                path: path,
                 method: method,
                 body: body,
                 authorize: true,

@@ -120,6 +120,114 @@ func ScanFolder(root, prefix string, catalog *db.Catalog, opts FolderOptions) (F
 	return summary, nil
 }
 
+// PageCap is the most photos one page rescan will examine.
+const PageCap = 2000
+
+// CleanPage keeps paths that are files under prefix, at most PageCap.
+// A path outside the prefix, or a path with "..", rejects the whole list.
+// Paths past the cap are checked and then left out. Nothing is read from disk.
+func CleanPage(prefix string, paths []string) (string, []string, error) {
+	prefix, ok := folderPrefix(prefix)
+	if !ok || len(paths) == 0 {
+		return "", nil, ErrNotFolder
+	}
+	cleaned := make([]string, 0, min(len(paths), PageCap))
+	for _, raw := range paths {
+		rel, ok := pagePath(prefix, raw)
+		if !ok {
+			return "", nil, ErrNotFolder
+		}
+		if len(cleaned) < PageCap {
+			cleaned = append(cleaned, rel)
+		}
+	}
+	return prefix, cleaned, nil
+}
+
+// ScanPage catalogs the listed files and drops a catalog row when that listed file is gone.
+// It does not walk the folder, and it does not delete rows that were not listed.
+func ScanPage(root, prefix string, paths []string, catalog *db.Catalog, opts FolderOptions) (FolderSummary, error) {
+	var summary FolderSummary
+	prefix, paths, err := CleanPage(prefix, paths)
+	if err != nil {
+		return summary, err
+	}
+	report := func(done int) {
+		if opts.Progress != nil {
+			opts.Progress("scanning", done, len(paths), summary.Added, summary.Removed)
+		}
+	}
+	pause := func() {
+		if opts.Yield != nil {
+			opts.Yield()
+		}
+	}
+	for _, rel := range paths {
+		full := filepath.Join(root, filepath.FromSlash(rel))
+		info, statErr := os.Stat(full)
+		switch {
+		case statErr == nil && !info.IsDir():
+			added, err := addIfMissing(catalog, full, rel, info)
+			if err != nil {
+				return summary, err
+			}
+			if added {
+				summary.Added++
+			}
+		case os.IsNotExist(statErr):
+			gone, err := removeRel(catalog, rel)
+			if err != nil {
+				return summary, err
+			}
+			if gone {
+				summary.Removed++
+			}
+		default:
+			// A directory, or a stat failure other than a missing file, leaves the row in place.
+		}
+		summary.Looked++
+		report(summary.Looked)
+		if summary.Looked%50 == 0 {
+			pause()
+		}
+	}
+	return summary, nil
+}
+
+func pagePath(prefix, raw string) (string, bool) {
+	rel, ok := folderPrefix(raw)
+	if !ok || rel == prefix || !strings.HasPrefix(rel, prefix+"/") {
+		return "", false
+	}
+	return rel, true
+}
+
+func removeRel(catalog *db.Catalog, rel string) (bool, error) {
+	var id int64
+	err := catalog.Read.QueryRow(`
+		SELECT id FROM assets
+		WHERE rel_path = ? AND placement != 'purged'`, rel).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	tx, err := beginWrite(catalog.Write)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	gone, err := deleteCatalogRow(tx, id)
+	if err != nil {
+		return false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	return gone, nil
+}
+
 func folderPrefix(prefix string) (string, bool) {
 	prefix = strings.TrimSpace(prefix)
 	prefix = strings.Trim(prefix, "/")

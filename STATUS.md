@@ -14,6 +14,18 @@ Each entry uses this shape:
 - Scope: design section or PR name
 - Notes: facts, decisions, and the next step
 
+## 2026-11-22 — ZImager 1.8.6
+
+- Status: done
+- Scope: ZImager 1.8.6. Flip, tool release, Flatten again, PDF Open page, page-limited previews, and page-limited Rescan. The helper source adds `POST /v1/folders/rescan-page`. The NAS binary on the share is that build.
+- Notes: Marketing version 1.8.6 is on the ZImager target. The test target stays 1.0. `CURRENT_PROJECT_VERSION` stays 1. `.zimg` `appVersion` stays `1.0.0`. The schema version stays 1. View has Flip Left/Right above Flip Top/Bottom, under Rotate Counterclockwise and above Eyedropper. Each mirrors that pair of edges on screen and is one history step. The same command restores that edge. `flipHorizontal` and `flipVertical` are applied after the quarter-turns. An odd turn swaps the two flags. A crop and a repair follow the photograph. Older geometry decodes as upright. Leaving Image adjustment for Folder view returns to Zoom and releases a stay-clicked tool. Flatten is enabled when a still photograph is open, including an empty edit list. It stays off for a video, the PDF page picker, and while Flatten or Export is writing. A second Flatten asks first. Continue overwrites the library TIFF and clears the edit list. The original file stays. Revert returns only to that original with no edits. Duplicate writes a TIFF beside the photograph and leaves the edits. A photograph with no library record offers Duplicate and Cancel. PDF Open page opens the clicked thumbnail. Server Rescan posts the stills on the page, at most 2,000, and does not walk the rest of the folder. A listed file that is gone drops that row. Unlisted files stay. Move, Organize, and Delete ALL still rescan the prefixes they changed. A 404 leaves the folder unwalked. Automatic previews stop at the page on screen. Build previews still covers the open folder. The NAS binary is 18,028,359 bytes, mode 0700, BuildID sha1 `54f5e8116ce45e5fbf4fc022a2f6e7f2fa4942f7`. The Release archive is arm64, signed with the development certificate, and is not notarized. The disk image is `Releases/ZImager-1.8.6-macOS.dmg`, sha256 `da1b5ca7a41d380552e149dc838f00d11f51d36813798e825966bac25cf82605`. It contains ZImager.app and README.txt. It does not include the helper. Reorganize, Review, and Duplicates still do not work and can lose photos. Leave them alone.
+
+## 2026-11-21 — PDF Open page uses the clicked page
+
+- Status: done
+- Scope: PDF page picker. Ships in 1.8.6. The helper is unchanged.
+- Notes: `1936 Indian.pdf` is an 11-page linearized file. A click on a thumbnail, then Open page, always showed page 5. Each thumbnail is now its own button and keeps that page's number. Open page and a double-click pass that number through. The bitmap is drawn with Core Graphics from the file at that page number. Core Graphics page numbers start at 1. PDFKit still supplies the picker thumbnails. A later page does not keep the picture from the page opened before it.
+
 ## 2026-11-21 — ZImager 1.8.5
 
 - Status: done

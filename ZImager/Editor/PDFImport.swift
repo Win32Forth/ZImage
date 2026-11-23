@@ -30,37 +30,42 @@ enum PDFImport {
     }
 
     /// Draws one page into a bitmap. A multi-page file stays multi-page.
+    /// Core Graphics page numbers start at 1. PDFKit's page draw can repeat one page of a linearized file, so the bitmap comes from the file and this page number.
     static func render(document: PDFDocument, pageIndex: Int, maxLongEdge: Int = maxEditBaseLongEdge) throws -> PDFRenderedPage {
-        guard pageIndex >= 0, pageIndex < document.pageCount, let page = document.page(at: pageIndex) else {
+        guard pageIndex >= 0, pageIndex < document.pageCount else {
             throw PDFImportError.cannotRead("page \(pageIndex + 1)")
         }
-        let media = page.bounds(for: .mediaBox)
-        guard media.width >= 1, media.height >= 1 else {
+        if let url = document.documentURL,
+           let cgDocument = CGPDFDocument(url as CFURL),
+           pageIndex < cgDocument.numberOfPages,
+           let cgPage = cgDocument.page(at: pageIndex + 1) {
+            return try render(cgPage: cgPage, pageIndex: pageIndex, maxLongEdge: maxLongEdge)
+        }
+        guard let page = document.page(at: pageIndex) else {
             throw PDFImportError.cannotRead("page \(pageIndex + 1)")
         }
-        let long = max(media.width, media.height)
+        return try render(pdfPage: page, pageIndex: pageIndex, maxLongEdge: maxLongEdge)
+    }
+
+    private static func render(cgPage: CGPDFPage, pageIndex: Int, maxLongEdge: Int) throws -> PDFRenderedPage {
+        let media = cgPage.getBoxRect(.mediaBox)
+        let quarter = ((Int(cgPage.rotationAngle) % 360) + 360) % 360
+        let swapped = quarter == 90 || quarter == 270
+        let pageWidth = swapped ? media.height : media.width
+        let pageHeight = swapped ? media.width : media.height
+        guard pageWidth >= 1, pageHeight >= 1 else {
+            throw PDFImportError.cannotRead("page \(pageIndex + 1)")
+        }
+        let long = max(pageWidth, pageHeight)
         let scale = min(1, CGFloat(maxLongEdge) / long)
-        let pixelWidth = max(1, Int((media.width * scale).rounded(.down)))
-        let pixelHeight = max(1, Int((media.height * scale).rounded(.down)))
-        guard max(pixelWidth, pixelHeight) <= maxLongEdge else {
+        let pixelWidth = max(1, Int((pageWidth * scale).rounded(.down)))
+        let pixelHeight = max(1, Int((pageHeight * scale).rounded(.down)))
+        guard let context = bitmap(width: pixelWidth, height: pixelHeight, maxLongEdge: maxLongEdge) else {
             throw PDFImportError.cannotRead("page \(pageIndex + 1)")
         }
-        guard let space = CGColorSpace(name: CGColorSpace.sRGB),
-              let context = CGContext(
-                data: nil,
-                width: pixelWidth,
-                height: pixelHeight,
-                bitsPerComponent: 8,
-                bytesPerRow: 0,
-                space: space,
-                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-              ) else {
-            throw PDFImportError.cannotRead("page \(pageIndex + 1)")
-        }
-        context.setFillColor(CGColor(gray: 1, alpha: 1))
-        context.fill(CGRect(x: 0, y: 0, width: pixelWidth, height: pixelHeight))
-        context.scaleBy(x: scale, y: scale)
-        page.draw(with: .mediaBox, to: context)
+        let destination = CGRect(x: 0, y: 0, width: pixelWidth, height: pixelHeight)
+        context.concatenate(cgPage.getDrawingTransform(.mediaBox, rect: destination, rotate: 0, preserveAspectRatio: true))
+        context.drawPDFPage(cgPage)
         guard let image = context.makeImage() else {
             throw PDFImportError.cannotRead("page \(pageIndex + 1)")
         }
@@ -68,6 +73,48 @@ enum PDFImport {
             image: image,
             editBase: EditBase(pixelWidth: image.width, pixelHeight: image.height, pageIndex: pageIndex)
         )
+    }
+
+    private static func render(pdfPage: PDFPage, pageIndex: Int, maxLongEdge: Int) throws -> PDFRenderedPage {
+        let media = pdfPage.bounds(for: .mediaBox)
+        guard media.width >= 1, media.height >= 1 else {
+            throw PDFImportError.cannotRead("page \(pageIndex + 1)")
+        }
+        let long = max(media.width, media.height)
+        let scale = min(1, CGFloat(maxLongEdge) / long)
+        let pixelWidth = max(1, Int((media.width * scale).rounded(.down)))
+        let pixelHeight = max(1, Int((media.height * scale).rounded(.down)))
+        guard let context = bitmap(width: pixelWidth, height: pixelHeight, maxLongEdge: maxLongEdge) else {
+            throw PDFImportError.cannotRead("page \(pageIndex + 1)")
+        }
+        context.scaleBy(x: scale, y: scale)
+        pdfPage.draw(with: .mediaBox, to: context)
+        guard let image = context.makeImage() else {
+            throw PDFImportError.cannotRead("page \(pageIndex + 1)")
+        }
+        return PDFRenderedPage(
+            image: image,
+            editBase: EditBase(pixelWidth: image.width, pixelHeight: image.height, pageIndex: pageIndex)
+        )
+    }
+
+    private static func bitmap(width: Int, height: Int, maxLongEdge: Int) -> CGContext? {
+        guard width >= 1, height >= 1, max(width, height) <= maxLongEdge else { return nil }
+        guard let space = CGColorSpace(name: CGColorSpace.sRGB),
+              let context = CGContext(
+                data: nil,
+                width: width,
+                height: height,
+                bitsPerComponent: 8,
+                bytesPerRow: 0,
+                space: space,
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+              ) else {
+            return nil
+        }
+        context.setFillColor(CGColor(gray: 1, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        return context
     }
 
     /// Interactive proxy. This does not call `CGImageSourceCreateImageAtIndex`.
