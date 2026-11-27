@@ -183,6 +183,153 @@ func TestReorgStartRefusesARunningTrim(t *testing.T) {
 	}
 }
 
+func TestReorgDiscardDropsAPlanWithoutCopying(t *testing.T) {
+	root := t.TempDir()
+	catalog := openAPICatalog(t, root)
+	payload := []byte("discard-keeps-these-bytes")
+	writeMoveAsset(t, root, catalog, "madrid", "Photos/inbox/madrid.jpg", payload, "2020-05-01T12:00:00Z", 0.95)
+	writeMoveAsset(t, root, catalog, "kept", "Photos/1999/kept.jpg", []byte("kept-history"), "1999-01-02T00:00:00Z", 0.95)
+	client, base := reorgServer(t, root, catalog, nil)
+
+	planned := authorizedSend(t, client, http.MethodPost, base+"/v1/reorg/plan", []byte(`{"prefix":"Photos/inbox"}`))
+	planBody := readAll(t, planned)
+	if planned.StatusCode != http.StatusOK {
+		t.Fatalf("plan %d %s", planned.StatusCode, planBody)
+	}
+	var keptID int64
+	if err := catalog.Read.QueryRow(`SELECT id FROM assets WHERE uid = 'kept'`).Scan(&keptID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := catalog.Write.Exec(`
+		INSERT INTO journal (asset_id, job_kind, state, src_rel, dest_rel, byte_size, updated_at)
+		VALUES (?, 'reorg', 'done', 'Photos/1999/kept.jpg', 'Photos/1999/kept.jpg', 12, '2026-01-01T00:00:00Z')`, keptID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := catalog.Write.Exec(`
+		INSERT INTO journal (asset_id, job_kind, state, src_rel, dest_rel, byte_size, updated_at)
+		VALUES (?, 'trim', 'planned', 'Photos/1999/kept.jpg', 'Photos/_Duplicates/kept.jpg', 12, '2026-01-01T00:00:00Z')`, keptID); err != nil {
+		t.Fatal(err)
+	}
+
+	discarded := authorizedSend(t, client, http.MethodPost, base+"/v1/reorg/discard", nil)
+	discardBody := readAll(t, discarded)
+	if discarded.StatusCode != http.StatusOK {
+		t.Fatalf("discard %d %s", discarded.StatusCode, discardBody)
+	}
+	var status reorgStatus
+	if err := json.Unmarshal([]byte(discardBody), &status); err != nil {
+		t.Fatal(err)
+	}
+	if !status.ReorgSafeToReboot || status.RunState != "idle" || status.Phase != "idle" || status.PauseRequested || status.Move != 0 {
+		t.Fatalf("status %+v", status)
+	}
+	dest := filepath.Join(root, "Photos", "2020", "2020-05-01", "inbox", "madrid.jpg")
+	if _, err := os.Stat(dest); !os.IsNotExist(err) {
+		t.Fatal("discard wrote a destination")
+	}
+	got, err := os.ReadFile(filepath.Join(root, "Photos", "inbox", "madrid.jpg"))
+	if err != nil || !bytes.Equal(got, payload) {
+		t.Fatal("source changed")
+	}
+	var phase, rel string
+	if err := catalog.Read.QueryRow(`SELECT phase, rel_path FROM assets WHERE uid = 'madrid'`).Scan(&phase, &rel); err != nil {
+		t.Fatal(err)
+	}
+	if phase != "discovered" || rel != "Photos/inbox/madrid.jpg" {
+		t.Fatalf("asset %s %s", phase, rel)
+	}
+	var plannedRows, doneRows, trimRows int
+	if err := catalog.Read.QueryRow(`SELECT COUNT(*) FROM journal WHERE job_kind = 'reorg' AND state = 'planned'`).Scan(&plannedRows); err != nil || plannedRows != 0 {
+		t.Fatalf("planned %d %v", plannedRows, err)
+	}
+	if err := catalog.Read.QueryRow(`SELECT COUNT(*) FROM journal WHERE job_kind = 'reorg' AND state = 'done'`).Scan(&doneRows); err != nil || doneRows != 1 {
+		t.Fatalf("done %d %v", doneRows, err)
+	}
+	if err := catalog.Read.QueryRow(`SELECT COUNT(*) FROM journal WHERE job_kind = 'trim' AND state = 'planned'`).Scan(&trimRows); err != nil || trimRows != 1 {
+		t.Fatalf("trim %d %v", trimRows, err)
+	}
+
+	again := authorizedSend(t, client, http.MethodPost, base+"/v1/reorg/discard", nil)
+	againBody := readAll(t, again)
+	if again.StatusCode != http.StatusOK || !strings.Contains(againBody, `"runState":"idle"`) {
+		t.Fatalf("second %d %s", again.StatusCode, againBody)
+	}
+	started := authorizedSend(t, client, http.MethodPost, base+"/v1/duplicates/scan", nil)
+	startedBody := readAll(t, started)
+	if started.StatusCode != http.StatusOK || strings.Contains(startedBody, `"error":"busy"`) {
+		t.Fatalf("scan %d %s", started.StatusCode, startedBody)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		resp := authorizedGet(t, client, base+"/v1/duplicates/scan")
+		body := readAll(t, resp)
+		var scan scanStatus
+		if err := json.Unmarshal([]byte(body), &scan); err != nil {
+			t.Fatal(err)
+		}
+		if scan.RunState == "completed" || scan.RunState == "failed" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("scan stayed busy %+v", scan)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+func TestReorgDiscardRefusesARunningCopy(t *testing.T) {
+	root := t.TempDir()
+	catalog := openAPICatalog(t, root)
+	payload := []byte("still-copying")
+	writeMoveAsset(t, root, catalog, "madrid", "Photos/inbox/madrid.jpg", payload, "2020-05-01T12:00:00Z", 0.95)
+	var id int64
+	if err := catalog.Read.QueryRow(`SELECT id FROM assets WHERE uid = 'madrid'`).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := catalog.Write.Exec(`
+		INSERT INTO journal (asset_id, job_kind, state, src_rel, dest_rel, byte_size, scratch_rel, updated_at)
+		VALUES (?, 'reorg', 'copying', 'Photos/inbox/madrid.jpg', 'Photos/2020/2020-05-01/inbox/madrid.jpg', ?, '.zimage/move-scratch/1', '2026-01-01T00:00:00Z')`, id, len(payload)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := catalog.Write.Exec(`UPDATE job_state SET run_state = 'running', phase = 'Photos/inbox' WHERE job_kind = 'reorg'`); err != nil {
+		t.Fatal(err)
+	}
+	client, base := reorgServer(t, root, catalog, nil)
+	refused := authorizedSend(t, client, http.MethodPost, base+"/v1/reorg/discard", nil)
+	body := readAll(t, refused)
+	if refused.StatusCode != http.StatusConflict || body != `{"error":"busy"}` {
+		t.Fatalf("discard %d %s", refused.StatusCode, body)
+	}
+	var run, state string
+	if err := catalog.Read.QueryRow(`SELECT run_state FROM job_state WHERE job_kind = 'reorg'`).Scan(&run); err != nil || run != "running" {
+		t.Fatalf("run %s %v", run, err)
+	}
+	if err := catalog.Read.QueryRow(`SELECT state FROM journal WHERE asset_id = ?`, id).Scan(&state); err != nil || state != "copying" {
+		t.Fatalf("journal %s %v", state, err)
+	}
+	got, err := os.ReadFile(filepath.Join(root, "Photos", "inbox", "madrid.jpg"))
+	if err != nil || !bytes.Equal(got, payload) {
+		t.Fatal("source changed")
+	}
+
+	if _, err := catalog.Write.Exec(`
+		UPDATE job_state SET run_state = 'plan_ready' WHERE job_kind = 'reorg'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := catalog.Write.Exec(`
+		UPDATE journal SET state = 'planned', scratch_rel = '.zimage/move-scratch/1' WHERE asset_id = ?`, id); err != nil {
+		t.Fatal(err)
+	}
+	scratched := authorizedSend(t, client, http.MethodPost, base+"/v1/reorg/discard", nil)
+	scratchedBody := readAll(t, scratched)
+	if scratched.StatusCode != http.StatusConflict || scratchedBody != `{"error":"busy"}` {
+		t.Fatalf("scratch %d %s", scratched.StatusCode, scratchedBody)
+	}
+	if err := catalog.Read.QueryRow(`SELECT run_state FROM job_state WHERE job_kind = 'reorg'`).Scan(&run); err != nil || run != "plan_ready" {
+		t.Fatalf("plan stayed %s %v", run, err)
+	}
+}
+
 func TestReorgMovesOneFile(t *testing.T) {
 	root := t.TempDir()
 	catalog := openAPICatalog(t, root)

@@ -110,7 +110,7 @@ struct ZImagerApp: App {
                     .keyboardShortcut("s", modifiers: [.command, .shift])
                 if SaveEdits.showsCommand(helperUp: model.helperUp) {
                     Button("Save edits") { model.saveEdits() }
-                        .disabled(!SaveEdits.isEnabled(helperUp: model.helperUp, assetUID: model.catalogAssetUID))
+                        .disabled(!SaveEdits.isEnabled(helperUp: model.helperUp, assetUID: model.catalogAssetUID, mirrorLocked: MirrorRoster.locked()))
                 }
                 Button("Export…") { model.showExportPanel() }
             }
@@ -217,6 +217,7 @@ struct ZImagerApp: App {
         guard model.hasCopiedSettings, !model.folderRotateBusy else { return false }
         if showingFolder {
             if sourceMode == "server" {
+                guard !MirrorRoster.locked() else { return false }
                 return !browser.settingsPasteTargets(clicked: nil).isEmpty
             }
             return model.canRotateFolderSelection

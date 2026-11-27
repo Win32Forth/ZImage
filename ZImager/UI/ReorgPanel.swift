@@ -373,9 +373,7 @@ enum ReorgFolder {
         let rootPrefix = rootPath.hasSuffix("/") ? rootPath : rootPath + "/"
         guard pickedPath.hasPrefix(rootPrefix) else { return nil }
         relative = String(pickedPath.dropFirst(rootPrefix.count))
-        let parts = relative.split(separator: "/").map(String.init).filter { !$0.isEmpty }
-        guard parts.first == "Photos" else { return nil }
-        let joined = parts.joined(separator: "/")
+        guard let joined = DisplayFolder.canonical(relative) else { return nil }
         if joined == "Photos/_Duplicates" || joined.hasPrefix("Photos/_Duplicates/") {
             return nil
         }

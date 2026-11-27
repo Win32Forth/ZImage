@@ -6,10 +6,14 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"zimage/helper/internal/dating"
 	"zimage/helper/internal/move"
 )
+
+// errReorgBusy refuses a discard while a copy is running or a journal row has left the plan.
+var errReorgBusy = errors.New("busy")
 
 // reorgStatus is the reorg lamp. The body does not name the other job.
 type reorgStatus struct {
@@ -88,6 +92,105 @@ func (s *Server) reorgPlan(w http.ResponseWriter, r *http.Request) {
 		"leave":         counts.Leave,
 		"prefix":        prefix,
 	})
+}
+
+// reorgDiscard drops a saved plan that has not started copying. The photo files stay in place.
+func (s *Server) reorgDiscard(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method"})
+		return
+	}
+	if s.Catalog == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "library_unavailable"})
+		return
+	}
+	discarded, err := s.discardReorgPlan()
+	if errors.Is(err, errReorgBusy) {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "busy"})
+		return
+	}
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "catalog"})
+		return
+	}
+	if discarded {
+		s.clearPlan()
+		s.Note("reorg_plan_discarded")
+	}
+	s.writeReorgStatus(w)
+}
+
+// discardReorgPlan sets the reorg job idle and deletes planned rows that have no scratch file.
+// idle and completed are left unchanged. A running copy, or a planned row that already has a scratch path, is refused.
+func (s *Server) discardReorgPlan() (bool, error) {
+	tx, err := s.Catalog.Write.Begin()
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	var run string
+	if err := tx.QueryRow(`SELECT run_state FROM job_state WHERE job_kind = 'reorg'`).Scan(&run); err != nil {
+		return false, err
+	}
+	if run != "plan_ready" {
+		if run == "idle" || run == "completed" {
+			return false, nil
+		}
+		return false, errReorgBusy
+	}
+	var started int
+	if err := tx.QueryRow(`
+		SELECT COUNT(*) FROM journal
+		WHERE job_kind = 'reorg'
+		AND (
+			state NOT IN ('planned', 'done', 'failed')
+			OR (state = 'planned' AND scratch_rel IS NOT NULL AND scratch_rel != '')
+		)`).Scan(&started); err != nil {
+		return false, err
+	}
+	if started > 0 {
+		return false, errReorgBusy
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	if _, err := tx.Exec(`
+		UPDATE assets
+		SET phase = CASE
+			WHEN thumb_rel IS NOT NULL AND thumb_rel != '' THEN 'thumbed'
+			ELSE 'discovered'
+		END,
+		updated_at = ?
+		WHERE phase = 'planned'
+		AND id IN (
+			SELECT asset_id FROM journal
+			WHERE job_kind = 'reorg' AND state = 'planned'
+			AND (scratch_rel IS NULL OR scratch_rel = '')
+		)`, now); err != nil {
+		return false, err
+	}
+	if _, err := tx.Exec(`
+		DELETE FROM journal
+		WHERE job_kind = 'reorg' AND state = 'planned'
+		AND (scratch_rel IS NULL OR scratch_rel = '')`); err != nil {
+		return false, err
+	}
+	res, err := tx.Exec(`
+		UPDATE job_state
+		SET run_state = 'idle', pause_requested = 0, safe_to_reboot = 1, phase = 'idle'
+		WHERE job_kind = 'reorg' AND run_state = 'plan_ready'`)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	if n != 1 {
+		return false, errReorgBusy
+	}
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func (s *Server) reorgStart(w http.ResponseWriter, r *http.Request) {

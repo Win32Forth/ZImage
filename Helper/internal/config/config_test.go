@@ -28,6 +28,26 @@ func TestExampleConfig(t *testing.T) {
 	if cfg.CacheOperatingBytes != 200_000_000_000 || cfg.CacheHardBytes != 1_000_000_000_000 {
 		t.Fatalf("cache %d %d", cfg.CacheOperatingBytes, cfg.CacheHardBytes)
 	}
+	if cfg.Role != "" {
+		t.Fatalf("role %q", cfg.Role)
+	}
+}
+
+func TestMirrorRole(t *testing.T) {
+	cfg, err := config.Parse("library_root_local: \"/volume1/lib\"\nrole: \"mirror\"\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Role != "mirror" {
+		t.Fatalf("role %q", cfg.Role)
+	}
+	plain, err := config.Parse("library_root_local: \"/volume1/lib\"\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plain.Role != "" {
+		t.Fatalf("role %q", plain.Role)
+	}
 }
 
 func TestPhotosWritable(t *testing.T) {

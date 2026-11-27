@@ -47,7 +47,7 @@ struct LibraryGrid: View {
                         libraryPushButton("Delete ALL", identifier: "Delete ALL") {
                             confirmsRemovedDelete = true
                         }
-                        .disabled(browser.removalBusy || browser.rescanBusy || browser.dateBusy || browser.organizeBusy || browser.cleanBusy || browser.moveBusy || browser.mergeBusy)
+                        .disabled(browser.isMirror || browser.removalBusy || browser.rescanBusy || browser.dateBusy || browser.organizeBusy || browser.cleanBusy || browser.moveBusy || browser.mergeBusy)
                         .help("Deletes every file in Photos/_Removed from the server.")
                     } else {
                         FolderNameFilterBar(
@@ -124,6 +124,9 @@ struct LibraryGrid: View {
             guard live else { return }
             browser.deleteKey()
         }
+        .onChange(of: browser.rows.map { $0.relPath ?? "" }.joined(separator: "\n")) { _, _ in
+            browser.refreshMirrorMarks()
+        }
         .onChange(of: browser.displayFolder) { _, folder in
             guard DisplayFolder.isRemovedShelf(folder) else { return }
             if !browser.nameQuery.isEmpty || !browser.nameFilter.isEmpty {
@@ -173,6 +176,14 @@ struct LibraryGrid: View {
                 }
             }
         }
+    }
+
+    /// A missing mirror file is red. The selection color is used for every other cell.
+    private func cellBorder(_ asset: LibraryAsset, selected: Bool) -> Color {
+        if let rel = asset.relPath, browser.mirrorMissing.contains(rel) {
+            return .red
+        }
+        return selected ? ChromePalette.accentSoft : .clear
     }
 
     /// The open folder, with its still count at the end once that count is known.
@@ -229,7 +240,7 @@ struct LibraryGrid: View {
             .frame(width: browser.previewPoints, height: browser.previewPoints)
             .overlay(
                 RoundedRectangle(cornerRadius: 4)
-                    .stroke(selected ? ChromePalette.accentSoft : Color.clear, lineWidth: 3)
+                    .stroke(cellBorder(asset, selected: selected), lineWidth: 3)
             )
             Text(browser.filename(for: asset))
                 .font(.system(size: 12))
@@ -291,7 +302,7 @@ struct LibraryGrid: View {
                     }
                 }
             }
-            if !model.showsServerMergePreview {
+            if !browser.isMirror && !model.showsServerMergePreview {
                 Button(LibraryItemMenu.rename) {
                     renameName = browser.filename(for: asset)
                     renameAsset = asset
@@ -312,10 +323,12 @@ struct LibraryGrid: View {
                 }
             }
             .disabled(!browser.isSettingsStill(asset))
-            Button("Paste settings") {
-                model.pasteLibraryStills(browser.settingsPasteTargets(clicked: asset)) { browser.fileURL(for: $0) }
+            if !browser.isMirror {
+                Button("Paste settings") {
+                    model.pasteLibraryStills(browser.settingsPasteTargets(clicked: asset)) { browser.fileURL(for: $0) }
+                }
+                .disabled(!model.hasCopiedSettings || model.folderRotateBusy || browser.settingsPasteTargets(clicked: asset).isEmpty)
             }
-            .disabled(!model.hasCopiedSettings || model.folderRotateBusy || browser.settingsPasteTargets(clicked: asset).isEmpty)
             Divider()
             Button("Remove from library") {
                 let targets = browser.libraryRemovalTargets(clicked: asset)

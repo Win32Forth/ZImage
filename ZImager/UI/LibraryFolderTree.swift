@@ -129,7 +129,7 @@ struct LibraryFolderTree: View {
     }
 
     private var folderRenameEnabled: Bool {
-        !browser.moveBusy && !browser.mergeBusy && !browser.dateBusy && !browser.organizeBusy
+        !browser.isMirror && !browser.moveBusy && !browser.mergeBusy && !browser.dateBusy && !browser.organizeBusy
             && !browser.removalBusy && !browser.cleanBusy && !browser.rescanBusy
     }
 

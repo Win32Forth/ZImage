@@ -1634,7 +1634,7 @@ final class EditorModel {
 
     /// Puts a `catalogRef` sidecar at `.zimage/edits/<uid>.zimg`. Save As stays `fileRef`.
     func saveEdits() {
-        guard SaveEdits.isEnabled(helperUp: helperUp, assetUID: catalogAssetUID),
+        guard SaveEdits.isEnabled(helperUp: helperUp, assetUID: catalogAssetUID, mirrorLocked: MirrorRoster.locked()),
               let uid = catalogAssetUID,
               let rel = catalogRelPath,
               let editorHelper,
@@ -5334,6 +5334,11 @@ struct Chrome: View {
     @State private var showsEvents = false
     @State private var showsReorg = false
     @State private var sectionChangesSelectFolder = false
+    @State private var helperSetup: HelperSetupSession?
+    @State private var showsMirrorSetup = false
+    @State private var servers: [HelperServerRecord] = []
+    @State private var activeServerID: String?
+    @State private var helperUpdateAvailable = false
 
     private var diskMode: Bool { sourceMode != "server" }
     private var showsImage: Bool { diskMode ? !model.showsFolderGrid : !serverShowsFolder }
@@ -5356,6 +5361,9 @@ struct Chrome: View {
                 : LibrarySidebarSpan.clamped(CGFloat(libraryTreeWidth), available: geo.size.width)
             VStack(spacing: 0) {
                 toolbar(column: column)
+                if !diskMode && helperUpdateAvailable {
+                    helperUpdateBanner
+                }
                 HStack(spacing: 0) {
                     folderColumn(width: column, available: geo.size.width)
                     center
@@ -5433,6 +5441,18 @@ struct Chrome: View {
                                     .fill(ChromePalette.hairline)
                                     .frame(height: 1)
                             }
+                            if browser.isMirror {
+                                if showsServerMovePanel {
+                                    MirrorPanel(browser: browser)
+                                    folderColumnRule
+                                    BuildPreviewsPanel(
+                                        note: browser.folderPreviewBuildNote,
+                                        busy: browser.folderPreviewBuildBusy,
+                                        enabled: true,
+                                        build: { Task { await browser.buildMissingFolderPreviews() } }
+                                    )
+                                }
+                            } else {
                             DateInspector(browser: browser)
                             if showsServerMovePanel {
                                 Rectangle()
@@ -5488,6 +5508,7 @@ struct Chrome: View {
                                     enabled: true,
                                     build: { Task { await browser.buildMissingFolderPreviews() } }
                                 )
+                            }
                             }
                             }
                             .frame(width: 280)
@@ -5599,7 +5620,38 @@ struct Chrome: View {
         .onChange(of: browser.displayFolder) { _, folder in
             model.cancelMergePreviewIfServerFolderChanged(folder)
         }
+        .sheet(item: $helperSetup) { session in
+            HelperSetupSheet(session: session, onPair: {
+                browser.adoptLibraryRoot(session.libraryRoot)
+                LibraryHost.pairWithHelper(browser: browser)
+                helperSetup = nil
+                refreshServers()
+            }, onClose: {
+                helperSetup = nil
+                refreshServers()
+            })
+        }
+        .sheet(isPresented: $showsMirrorSetup) {
+            MirrorSetupSheet(
+                servers: servers,
+                onStart: { mainID, mirrorID in
+                    let rows = HelperServerList.load(defaults: .standard)
+                    guard let linked = MirrorRoster.link(mainID: mainID, mirrorID: mirrorID, rows: rows) else { return }
+                    HelperServerList.store(linked, defaults: .standard)
+                    refreshServers()
+                    showsMirrorSetup = false
+                    Task { await browser.startMirroring() }
+                },
+                onUnlink: {
+                    browser.unlinkMirrors()
+                    refreshServers()
+                    showsMirrorSetup = false
+                },
+                onClose: { showsMirrorSetup = false }
+            )
+        }
         .task(id: sourceMode) {
+            refreshServers()
             guard sourceMode == "server" else {
                 browser.clearHelperPass()
                 await browser.clearFocus()
@@ -5785,6 +5837,16 @@ struct Chrome: View {
             }
             .padding(.leading, 20)
             .layoutPriority(1)
+            if !diskMode, let row = servers.first(where: { $0.id == activeServerID }) {
+                Text(MirrorRoster.menuTitle(row, active: false))
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(ChromePalette.ink)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .fixedSize()
+                    .padding(.leading, 16)
+                    .accessibilityIdentifier("Active server")
+            }
             if !diskMode, let line = DuplicateCopy.passLine(browser.helperPass) {
                 Text(line)
                     .font(.system(size: 13))
@@ -5808,7 +5870,7 @@ struct Chrome: View {
                         .accessibilityIdentifier("Copy settings")
                         .help("Copies the Tone and Geometry settings.")
                     Button("Paste settings") { model.pasteSettings() }
-                        .disabled(!model.hasCopiedSettings || model.proxy == nil)
+                        .disabled(!model.hasCopiedSettings || model.proxy == nil || (!diskMode && browser.isMirror))
                         .accessibilityIdentifier("Paste settings")
                         .help("Applies the copied Tone and Geometry settings.")
                 }
@@ -5840,10 +5902,42 @@ struct Chrome: View {
 
     private var serverMenu: some View {
         Menu {
+            ForEach(servers) { server in
+                Button {
+                    activeServerID = server.id
+                    Task {
+                        await LibraryHost.activate(server, browser: browser)
+                        refreshServers()
+                    }
+                } label: {
+                    Text(MirrorRoster.menuTitle(server, active: server.id == activeServerID))
+                }
+            }
+            if !servers.isEmpty {
+                Divider()
+            }
+            Button("Add Server") { beginAddServer() }
+                .accessibilityIdentifier("Add Server")
+            Button("Mirror Setup") { showsMirrorSetup = true }
+                .disabled(servers.count < 2)
+                .accessibilityIdentifier("Mirror Setup")
+            Button("Update Helper") { beginHelperSetup(.update) }
+                .disabled(activeServerID == nil)
+                .accessibilityIdentifier("Update Helper")
+            Button("Stop Helper") { beginHelperSetup(.stop) }
+                .disabled(activeServerID == nil)
+                .accessibilityIdentifier("Stop Helper")
+            Button("Uninstall Helper") { beginHelperSetup(.uninstall) }
+                .disabled(activeServerID == nil)
+                .accessibilityIdentifier("Uninstall Helper")
+            Divider()
             Button("Choose Library Base Folder") { LibraryHost.pickLibraryFolder(browser: browser) }
                 .accessibilityIdentifier("Choose Library Base Folder")
             Button("Pair with Helper") { LibraryHost.pairWithHelper(browser: browser) }
                 .accessibilityIdentifier("Pair with Helper")
+            Button("Forget Server") { forgetServer() }
+                .disabled(activeServerID == nil)
+                .accessibilityIdentifier("Forget Server")
         } label: {
             Image(systemName: "line.3.horizontal")
                 .font(.system(size: 13, weight: .medium))
@@ -5864,7 +5958,91 @@ struct Chrome: View {
         .menuStyle(.borderlessButton)
         .buttonStyle(.plain)
         .fixedSize()
+        .id(activeServerID ?? "")
         .accessibilityIdentifier("Library menu")
+    }
+
+    private var helperUpdateBanner: some View {
+        HStack(spacing: 12) {
+            Text("This copy of ZImager includes a newer helper. Stop that server’s boot task, then update it.")
+                .font(.system(size: 13))
+                .foregroundStyle(ChromePalette.ink)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 12)
+            Button("Update Helper") { beginHelperSetup(.update) }
+                .accessibilityIdentifier("Update available helper")
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+        .background(ChromePalette.panel)
+        .accessibilityIdentifier("Helper update available")
+    }
+
+    private func refreshServers() {
+        HelperServerList.migrate(defaults: .standard)
+        servers = HelperServerList.load(defaults: .standard)
+        activeServerID = HelperServerList.activeID(defaults: .standard) ?? servers.first?.id
+        helperUpdateAvailable = false
+        if let row = servers.first(where: { $0.id == activeServerID }) ?? servers.first,
+           let root = LibraryFolderBookmark.url(from: row.bookmark) {
+            helperUpdateAvailable = HelperPackage.offerUpdate(at: root)
+        }
+    }
+
+    private func beginAddServer() {
+        guard let picked = LibraryHost.chooseFolder(browser: browser) else { return }
+        let root = HelperInstallPaths.libraryBase(forChosen: picked)
+        let volume = LibraryFolderBookmark.volumePath(of: root)
+        let nas = HelperInstallPaths.suggestedNASPath(libraryPath: root.path, volumePath: volume)
+        let session = HelperSetupSession(mode: .install, libraryRoot: root, nasPath: nas)
+        session.afterCopy = { path in
+            browser.adoptLibraryRoot(root)
+            try? LibraryHost.remember(root: root, nasPath: path, host: "")
+            refreshServers()
+        }
+        helperSetup = session
+    }
+
+    private func beginHelperSetup(_ mode: HelperSetupSession.Mode) {
+        refreshServers()
+        guard let row = HelperServerList.active(defaults: .standard) else {
+            beginAddServer()
+            return
+        }
+        if mode == .stop, let nas = HelperInstallPaths.cleanNASPath(row.nasPath) {
+            let root = LibraryFolderBookmark.url(from: row.bookmark) ?? URL(fileURLWithPath: "/tmp")
+            helperSetup = HelperSetupSession(mode: .stop, libraryRoot: root, nasPath: nas)
+            return
+        }
+        guard let root = LibraryFolderBookmark.url(from: row.bookmark) ?? LibraryFolderBookmark.resolve(defaults: .standard) else {
+            browser.notice = "ZImager could not open this server's folder. Mount the share, then try again."
+            return
+        }
+        browser.adoptLibraryRoot(root)
+        let volume = LibraryFolderBookmark.volumePath(of: root)
+        let suggested = HelperInstallPaths.suggestedNASPath(libraryPath: root.path, volumePath: volume)
+        let nas = HelperInstallPaths.cleanNASPath(row.nasPath) ?? suggested
+        let session = HelperSetupSession(mode: mode, libraryRoot: root, nasPath: nas)
+        let host = row.host
+        session.afterCopy = { path in
+            try? LibraryHost.remember(root: root, nasPath: path, host: host)
+            refreshServers()
+        }
+        helperSetup = session
+    }
+
+    private func forgetServer() {
+        let name = servers.first { $0.id == activeServerID }?.name ?? "this server"
+        let alert = NSAlert()
+        alert.messageText = "Forget \(name)?"
+        alert.informativeText = "ZImager stops using this server. The helper, photos, and catalog stay on the share."
+        alert.addButton(withTitle: "Forget Server")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        Task {
+            await LibraryHost.forgetActive(browser: browser)
+            refreshServers()
+        }
     }
 
     private var inspector: some View {
@@ -5933,10 +6111,10 @@ struct Chrome: View {
                 .frame(maxWidth: 280)
                 .accessibilityIdentifier("Library tabs")
                 rotateButtons(
-                    enabled: serverShowsFolder
+                    enabled: !browser.isMirror && (serverShowsFolder
                         ? !browser.rotatableStills(in: serverRotatePool).isEmpty && !model.folderRotateBusy
-                        : model.proxy != nil && !model.showsPDFPicker && !model.folderRotateBusy,
-                    showPaste: serverShowsFolder
+                        : model.proxy != nil && !model.showsPDFPicker && !model.folderRotateBusy),
+                    showPaste: serverShowsFolder && !browser.isMirror
                 ) { clockwise in
                     if serverShowsFolder {
                         rotateServerSelection(clockwise: clockwise)

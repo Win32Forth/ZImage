@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"zimage/helper/internal/buildinfo"
 	"zimage/helper/internal/db"
 )
 
@@ -167,7 +168,7 @@ func TestUnauthenticatedAssetsAndClaim(t *testing.T) {
 	if err := json.Unmarshal([]byte(raw), &health); err != nil {
 		t.Fatal(err)
 	}
-	if health.Status != "ok" || !health.LibraryRootOK || health.SchemaVersion != 1 || !health.ManualOpsClear || !health.ReorgSafeToReboot || !health.TrimSafeToReboot {
+	if health.Status != "ok" || !health.LibraryRootOK || health.SchemaVersion != 1 || !health.ManualOpsClear || !health.ReorgSafeToReboot || !health.TrimSafeToReboot || health.HelperVersion != buildinfo.Version {
 		t.Fatalf("health %+v", health)
 	}
 

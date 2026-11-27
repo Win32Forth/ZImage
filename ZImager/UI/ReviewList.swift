@@ -30,10 +30,12 @@ struct ReviewList: View {
                         }
                     }
                     .disabled(!browser.isSettingsStill(asset))
-                    Button("Paste settings") {
-                        model.pasteLibraryStills(browser.settingsPasteTargets(clicked: asset)) { browser.fileURL(for: $0) }
+                    if !browser.isMirror {
+                        Button("Paste settings") {
+                            model.pasteLibraryStills(browser.settingsPasteTargets(clicked: asset)) { browser.fileURL(for: $0) }
+                        }
+                        .disabled(!model.hasCopiedSettings || model.folderRotateBusy || browser.settingsPasteTargets(clicked: asset).isEmpty)
                     }
-                    .disabled(!model.hasCopiedSettings || model.folderRotateBusy || browser.settingsPasteTargets(clicked: asset).isEmpty)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)

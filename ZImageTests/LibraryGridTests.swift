@@ -128,6 +128,10 @@ final class LibraryGridTests: XCTestCase {
         defaults.set("10.0.0.8", forKey: LibraryAppClient.hostDefaultsKey)
         SandboxPreferenceImport.adopt(into: defaults, containerPlist: plist)
         XCTAssertEqual(defaults.string(forKey: LibraryAppClient.hostDefaultsKey), "10.0.0.8")
+        defaults.removeObject(forKey: LibraryAppClient.hostDefaultsKey)
+        defaults.set(Data("servers".utf8), forKey: HelperServerList.serversKey)
+        SandboxPreferenceImport.adopt(into: defaults, containerPlist: plist)
+        XCTAssertNil(defaults.string(forKey: LibraryAppClient.hostDefaultsKey))
     }
 
     func testShareBookmarkRoundTripAndSidebarOmitsDuplicates() throws {
@@ -777,6 +781,14 @@ final class LibraryGridTests: XCTestCase {
             ["Photos/2026/day"]
         )
         XCTAssertEqual(LibraryFolderScan.childFolders(libraryRoot: root, parent: "Photos/2026/day"), [])
+        let lowerRoot = FileManager.default.temporaryDirectory.appendingPathComponent("zimage-tree-lower-\(UUID().uuidString)", isDirectory: true)
+        let lowerPhotos = lowerRoot.appendingPathComponent("photos", isDirectory: true)
+        try FileManager.default.createDirectory(at: lowerPhotos.appendingPathComponent("1998"), withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: lowerRoot) }
+        XCTAssertEqual(
+            LibraryFolderScan.childFolders(libraryRoot: lowerRoot, parent: "Photos").map(\.rel),
+            ["Photos/1998"]
+        )
     }
 
     func testDisplayFolderStaysInsidePhotos() throws {
@@ -796,6 +808,11 @@ final class LibraryGridTests: XCTestCase {
         )
         XCTAssertNil(DisplayFolder.prefix(selected: root, libraryRoot: root))
         XCTAssertNil(DisplayFolder.prefix(selected: root.appendingPathComponent("Audio"), libraryRoot: root))
+        let lower = URL(fileURLWithPath: "/Volumes/BackupData124/photos/1998")
+        XCTAssertEqual(
+            DisplayFolder.prefix(selected: lower, libraryRoot: URL(fileURLWithPath: "/Volumes/BackupData124")),
+            "Photos/1998"
+        )
         XCTAssertEqual(DisplayFolder.needle("Photos"), "Photos/")
         XCTAssertEqual(DisplayFolder.needle("Photos/2026"), "Photos/2026/")
         XCTAssertNil(DisplayFolder.needle("Audio"))

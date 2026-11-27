@@ -16,6 +16,8 @@ type Config struct {
 	ScopeRelative       string
 	CacheOperatingBytes int64
 	CacheHardBytes      int64
+	// Role is "mirror" when this server is the archive. Empty means a normal library.
+	Role string
 	// AllowLoopback is for tests. Production leaves it false so a guest
 	// on a public address is rejected, and so is 127.0.0.1.
 	AllowLoopback bool
@@ -73,6 +75,8 @@ func Parse(text string) (Config, error) {
 			cfg.CacheHardBytes = n
 		case "allow_loopback":
 			cfg.AllowLoopback = val == "true"
+		case "role":
+			cfg.Role = val
 		default:
 			return Config{}, fmt.Errorf("unknown config key %s", key)
 		}

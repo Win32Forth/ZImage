@@ -20,6 +20,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"zimage/helper/internal/buildinfo"
 	"zimage/helper/internal/db"
 	"zimage/helper/internal/move"
 	"zimage/helper/internal/pathsafe"
@@ -30,13 +31,15 @@ type Server struct {
 	Root          string
 	LibraryRootOK bool
 	AllowLoopback bool
-	Token         string
-	Catalog       *db.Catalog
-	MaxEditBytes  int64
-	Leaf          *x509.Certificate
-	LogPath       string
-	LogMax        int64
-	Now           func() time.Time
+	// Mirror refuses edits. Discard, rescan, and reads stay available.
+	Mirror       bool
+	Token        string
+	Catalog      *db.Catalog
+	MaxEditBytes int64
+	Leaf         *x509.Certificate
+	LogPath      string
+	LogMax       int64
+	Now          func() time.Time
 
 	tlsCert  tls.Certificate
 	limiter  limiter
@@ -240,6 +243,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/v1/events", s.guard(true, s.events))
 	mux.HandleFunc("/v1/edits/{uid}", s.guard(true, s.edits))
 	mux.HandleFunc("/v1/reorg/plan", s.guard(true, s.reorgPlan))
+	mux.HandleFunc("/v1/reorg/discard", s.guard(true, s.reorgDiscard))
 	mux.HandleFunc("/v1/reorg/start", s.guard(true, s.reorgStart))
 	mux.HandleFunc("/v1/reorg/pause", s.guard(true, s.reorgPause))
 	mux.HandleFunc("/v1/reorg/resume", s.guard(true, s.reorgResume))
@@ -273,8 +277,29 @@ func (s *Server) guard(requireBearer bool, next func(http.ResponseWriter, *http.
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
 			return
 		}
+		if s.Mirror && mirrorDenies(r.Method, r.URL.Path) {
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": "mirror"})
+			return
+		}
 		next(w, r)
 	}
+}
+
+// mirrorDenies reports a write the archive does not accept.
+// Discard, folder rescan, focus, and pairing stay available.
+func mirrorDenies(method, path string) bool {
+	switch method {
+	case http.MethodGet, http.MethodHead:
+		return false
+	}
+	switch path {
+	case "/v1/folders/rescan", "/v1/folders/rescan-page", "/v1/focus", "/v1/pair/claim":
+		return false
+	}
+	if strings.HasSuffix(path, "/to-removed") {
+		return false
+	}
+	return true
 }
 
 func (s *Server) health(w http.ResponseWriter, r *http.Request) {
@@ -288,6 +313,7 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 		LibraryRootOK:  false,
 		ManualOpsClear: false,
 		RSSBytes:       s.rss.Load(),
+		HelperVersion:  buildinfo.Version,
 	}
 	if s.LibraryRootOK && s.Catalog != nil {
 		body.Status = "ok"
@@ -598,6 +624,7 @@ type healthBody struct {
 	TrimRunState      string `json:"trimRunState"`
 	RSSBytes          int64  `json:"rssBytes"`
 	CacheBytes        int64  `json:"cacheBytes"`
+	HelperVersion     string `json:"helperVersion"`
 }
 
 func remoteIP(r *http.Request) net.IP {

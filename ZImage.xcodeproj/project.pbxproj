@@ -103,6 +103,7 @@
 				D10000000000000000000006 /* Resources */,
 				D20000000000000000000001 /* Embed libjxl */,
 				D20000000000000000000002 /* Embed x3f */,
+				D20000000000000000000003 /* Embed helper */,
 			);
 			buildRules = (
 			);
@@ -184,6 +185,16 @@
 			shellPath = /bin/bash;
 			shellScript = (
 				"bash \"${SRCROOT}/Vendor/embed-x3f.sh\"",
+				"",
+			);
+		};
+		D20000000000000000000003 /* Embed helper */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			name = "Embed helper";
+			shellPath = /bin/bash;
+			shellScript = (
+				"bash \"${SRCROOT}/Vendor/embed-helper.sh\"",
 				"",
 			);
 		};
@@ -433,7 +444,7 @@
 					"$(PROJECT_DIR)/Vendor/libjxl/lib",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
-				MARKETING_VERSION = 1.8.6;
+				MARKETING_VERSION = 1.9.0;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-lwebp",
@@ -481,7 +492,7 @@
 					"$(PROJECT_DIR)/Vendor/libjxl/lib",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
-				MARKETING_VERSION = 1.8.6;
+				MARKETING_VERSION = 1.9.0;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-lwebp",

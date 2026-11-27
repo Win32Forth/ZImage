@@ -14,6 +14,12 @@ Each entry uses this shape:
 - Scope: design section or PR name
 - Notes: facts, decisions, and the next step
 
+## 2026-11-27 — ZImager 1.9.0
+
+- Status: done
+- Scope: ZImager 1.9.0. More than one server, a main and a mirror, and renames passed from the main to the mirror. The helper source is 1.9.0.
+- Notes: Marketing version 1.9.0 is on the ZImager target. The test target stays 1.0. `CURRENT_PROJECT_VERSION` stays 1. `.zimg` `appVersion` stays `1.0.0`. The schema version stays 1. The Server menu keeps the server list in UserDefaults `ZImageLibrary.servers`. Add Server copies the helper that `Vendor/embed-helper.sh` embeds. Update Helper and Uninstall Helper run only after TCP 8742 refuses a connection. Uninstall removes `.zimage/bin/zimage-helper`, the two CPU binaries, and VERSION. It leaves the catalog, photos, config, and token. Forget Server removes that Mac's list entry and keychain item. Mirror Setup stores one main and one mirror. The Mac copies one Photos file at a time when the mirror file is missing or a different size, including `.zimg`, `.ztiff`, `.zflat`, and `.zjpg`. A mirror-only file stays and is drawn with a red border. Recover copies it beside the main file. Discard moves it to `Photos/_Removed`. Unlink clears the pair. The mirror screen hides date changes, move, merge, rename, save, and paste. Build previews stays. A rename that stays on the main is appended to `.zimage/mirror-ops.json` on the mirror. That list is first in, first out. A file rename moves the photograph and the edit files beside it. A folder rename moves the folder, and later names in the list follow that folder. A rename whose file is not on the mirror yet stays at the front. Health includes `helperVersion`. `role: "mirror"` refuses edits after the helper restarts. Discard, folder rescan, focus, and pairing stay available. The role line is written only when that share's VERSION file is 1.9.0. `POST /v1/reorg/discard` drops a `plan_ready` plan that has not started copying and sets the job idle. A running copy is refused. This tree does not add a disk image. The published disk image remains the notarized 1.8.6 image. Disk images stay out of git.
+
 ## 2026-11-22 — ZImager 1.8.6
 
 - Status: done

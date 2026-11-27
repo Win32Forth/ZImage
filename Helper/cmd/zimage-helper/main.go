@@ -92,6 +92,7 @@ func run(cfg config.Config) error {
 		}
 	}
 	srv := httpapi.NewServer(cfg.LibraryRoot, ok, cfg.AllowLoopback, token, catalog, pair, leaf)
+	srv.Mirror = cfg.Role == "mirror"
 	if ok {
 		srv.LogPath = filepath.Join(cfg.LibraryRoot, ".zimage", "logs", "helper.log")
 		runner := &move.Runner{Root: cfg.LibraryRoot, Catalog: catalog, Note: srv.Note, Shed: srv.Shedding}

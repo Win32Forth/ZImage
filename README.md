@@ -1,6 +1,6 @@
 # ZImage
 
-ZImager 1.8.6 is the app. It is one window. Disk is the editor. Server is the library. The separate ZImage editor and ZImage Library are no longer in this project.
+ZImager 1.9.0 is the app. It is one window. Disk is the editor. Server is the library. The separate ZImage editor and ZImage Library are no longer in this project.
 
 `DESIGN.md` is the plan. `STATUS.md` is the iteration log, newest first.
 
@@ -9,6 +9,18 @@ ZImager 1.8.6 is the app. It is one window. Disk is the editor. Server is the li
 Reorganize, Review, and Duplicates do not work yet. Using them can lose photos. The Events and Reorganize buttons are hidden until those tools are ready. Leave Reorganize, Review, and Duplicates alone. Do not press Start, Pause, Continue, Find duplicates, or Delete all duplicates.
 
 Disk, and Server browsing of a folder, are the parts to use. Rotate, paste, export, print, and the image adjustments save the photo and rebuild its preview.
+
+## What 1.9.0 changes
+
+The Server menu can keep more than one server. Add Server copies the helper onto a mounted share. Update Helper and Uninstall Helper run after TCP port 8742 on that server refuses a connection. Uninstall removes the helper programs and VERSION. It leaves the catalog, the photos, the config, and the token. Forget Server removes that server from this Mac and removes its keychain item. The photos stay on the server.
+
+Mirror Setup names one main server and one mirror. Mirroring copies each file that is missing on the mirror, or whose size differs, into the same folder and file name. It also copies the edit file and the flattened TIFF beside that photo: `.zimg`, `.ztiff`, `.zflat`, and `.zjpg`. It copies one file at a time. A file that exists only on the mirror stays there and shows a red border. Recover photo copies it onto the main server beside the file of the same name. Discard photo moves it to `Photos/_Removed` on the mirror. Unlink leaves both libraries in place so the mirror can become the main server.
+
+On the mirror, date changes, move, merge, rename, save, and paste stay off. Build previews stays. Export and print stay.
+
+A rename on the main server is written onto the mirror. The mirror keeps that work in `.zimage/mirror-ops.json` and finishes one item at a time, in the order the renames happened. A folder rename moves the folder. A file rename moves the file and the edit files beside it. The next item waits until the mirror reaches it.
+
+The helper source is 1.9.0. Health reports `helperVersion`. A server whose config says `role: "mirror"` refuses edits after that helper is restarted. Discard, folder rescan, and pairing stay available. ZImager writes that role only when the share's VERSION file is 1.9.0. `POST /v1/reorg/discard` drops a Reorganize plan that has not started copying, and leaves the photo files where they are. This tree does not add a disk image. 1.8.6 behavior below is still in this app.
 
 ## What 1.8.6 changes
 
@@ -158,21 +170,25 @@ Clean folder is in the Server three-bar menu. It removes catalog records in the 
 
 ## Install ZImager
 
-The disk image is `Releases/ZImager-1.8.6-macOS.dmg`. It contains `ZImager.app` and `README.txt`.
+The published disk image is `Releases/ZImager-1.8.6-macOS.dmg`. It contains `ZImager.app` and `README.txt`. This tree is ZImager 1.9.0 and does not add a new disk image.
 
 1. Open the disk image.
 2. Drag **ZImager.app** into Applications.
-3. Double-click **ZImager**. macOS says it could not verify that the app is free of malware. Close that dialog.
-4. Open **System Settings → Privacy & Security**. Scroll to Security until ZImager is listed as blocked. Click **Open Anyway**.
-5. Confirm **Open Anyway** again if asked, then enter your password.
+3. The first time you open ZImager, macOS asks you to confirm that you downloaded it from the internet. Click Open.
 
-After that, double-click ZImager and it will run. ZImager is built on this Mac with Apple's tools. It is not notarized for distribution. That approval is required once.
+This copy is signed with a Developer ID and notarized by Apple. A Mac set to allow apps from the App Store only will still refuse it.
 
 ## Helper on a Synology
 
 Skip this if you only use Disk.
 
-Server mode needs `zimage-helper` running on the NAS. The disk image does not include it. The Mac never opens `catalog.db`. The 1.8.0 helper source adds Rescan. The 1.8.4 helper source adds folder rename and the confidence update Organize uses. The 1.8.5 helper source adds `POST /v1/files/rename` and an X3F embedded preview. The 1.8.6 helper source adds `POST /v1/folders/rescan-page`. The binary on the share is that build, 18,028,359 bytes, BuildID sha1 `54f5e8116ce45e5fbf4fc022a2f6e7f2fa4942f7`. It does not develop the Foveon sensor. Stop the DSM task before you replace the binary.
+Server mode needs `zimage-helper` running on the NAS. The disk image does not include it. The Mac never opens `catalog.db`. The 1.8.0 helper source adds Rescan. The 1.8.4 helper source adds folder rename and the confidence update Organize uses. The 1.8.5 helper source adds `POST /v1/files/rename` and an X3F embedded preview. The 1.8.6 helper source adds `POST /v1/folders/rescan-page`. The 1.9.0 helper source adds `helperVersion` on health, `role: "mirror"`, and `POST /v1/reorg/discard`. It does not develop the Foveon sensor.
+
+Each ZImager build runs `Vendor/embed-helper.sh` and puts Linux arm64 and amd64 binaries in the app. Add Server and Update Helper copy those onto the share, with a launcher named `zimage-helper`. The launcher picks the CPU, sets `GOMEMLIMIT=160MiB`, turns copy-on-write off for the catalog directory, and writes `config.yaml` only when that file is missing. The DSM task runs `sh` on that launcher. Checking Enabled does not start the task.
+
+To stop the helper, click Enabled on `zimage-helper-stop`, uncheck Enabled on `zimage-helper`, select `zimage-helper-stop`, and click Run. To start it, uncheck Enabled on `zimage-helper-stop`, click Enabled on `zimage-helper`, select `zimage-helper`, and click Run. Update Helper and Uninstall Helper wait until port 8742 refuses a connection. The running program is `zimage-helper-aarch64`, or `zimage-helper-x86_64` on an Intel NAS.
+
+Stop the DSM task before you replace the binary by hand. The steps below build that binary from this tree.
 
 1. On a Mac, from `Helper/` in this repo:
 

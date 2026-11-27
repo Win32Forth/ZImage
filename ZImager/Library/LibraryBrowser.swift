@@ -44,7 +44,8 @@ enum SandboxPreferenceImport {
             return
         }
         let host = defaults.string(forKey: LibraryAppClient.hostDefaultsKey) ?? ""
-        if !HelperClient.isIPv4(host),
+        let hasServers = defaults.data(forKey: HelperServerList.serversKey) != nil
+        if !hasServers, !HelperClient.isIPv4(host),
            let saved = stored[LibraryAppClient.hostDefaultsKey] as? String,
            HelperClient.isIPv4(saved) {
             defaults.set(saved, forKey: LibraryAppClient.hostDefaultsKey)
@@ -62,6 +63,14 @@ enum LibraryFolderBookmark {
     static func store(_ url: URL, defaults: UserDefaults) throws {
         let data = try bookmarkData(for: url)
         defaults.set(data, forKey: defaultsKey)
+    }
+
+    static func data(for url: URL) throws -> Data {
+        try bookmarkData(for: url)
+    }
+
+    static func url(from data: Data) -> URL? {
+        resolveBookmark(data)
     }
 
     static func resolve(defaults: UserDefaults) -> URL? {
@@ -466,8 +475,14 @@ enum DisplayFolder {
         let rootPrefix = rootPath.hasSuffix("/") ? rootPath : rootPath + "/"
         guard pickedPath.hasPrefix(rootPrefix) else { return nil }
         let relative = String(pickedPath.dropFirst(rootPrefix.count))
-        let parts = relative.split(separator: "/").map(String.init).filter { !$0.isEmpty }
-        guard parts.first == "Photos" else { return nil }
+        return canonical(relative)
+    }
+
+    /// The share may store the folder as `photos`. Paths inside ZImager stay `Photos`.
+    static func canonical(_ relative: String) -> String? {
+        var parts = relative.split(separator: "/").map(String.init).filter { !$0.isEmpty }
+        guard let first = parts.first, first.caseInsensitiveCompare(root) == .orderedSame else { return nil }
+        parts[0] = root
         return parts.joined(separator: "/")
     }
 
@@ -811,6 +826,14 @@ final class LibraryBrowser {
     private(set) var mergeBusy = false
     /// True while Build previews is storing previews for the folder on screen.
     private(set) var folderPreviewBuildBusy = false
+    /// Mirror files on this page whose bytes are not on the main server.
+    var mirrorMissing: Set<String> = []
+    /// True while the main library is being copied onto the mirror, or a photo is being recovered.
+    var mirrorBusy = false
+    /// Bumped to stop a mirror copy that is already running.
+    var mirrorGeneration = 0
+    /// Bumped so a late mark pass does not paint over a newer page.
+    var mirrorMarkGeneration = 0
     /// The line under Build. Nil until the button has been used.
     private(set) var folderPreviewBuildNote: String?
     /// The folder list that owns the build. A newer list leaves this pass.
@@ -933,6 +956,8 @@ final class LibraryBrowser {
         organizeMeter = nil
         mergeBusy = false
         rescanMeter = nil
+        mirrorMissing = []
+        mirrorMarkGeneration += 1
         reorg = nil
         reorgNotice = nil
         reorgPending = nil
@@ -1397,6 +1422,7 @@ final class LibraryBrowser {
     /// Moves the selection into the named folder, then rescans so the catalog follows the files.
     /// `subfolder` creates that folder inside the folder on screen. Otherwise it is created under Photos.
     func moveSelected(to typed: String, subfolder: Bool = false) async {
+        guard !isMirror else { return }
         guard !moveBusy, !mergeBusy, !dateBusy, !organizeBusy, !removalBusy, !cleanBusy, !rescanBusy else { return }
         guard let name = FolderMove.folderName(typed) else {
             notice = "Type a folder name."
@@ -1453,6 +1479,7 @@ final class LibraryBrowser {
 
     /// Writes the typed date on every selected file and moves each one into its date folder.
     func setCaptureDate(_ text: String) async {
+        guard !isMirror else { return }
         guard !dateBusy, !organizeBusy, !removalBusy, !cleanBusy, !rescanBusy, !moveBusy, !mergeBusy else { return }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let wire = LibraryItemMenu.captureRequest(trimmed) else {
@@ -1496,7 +1523,7 @@ final class LibraryBrowser {
 
     /// The first page of stills in the open folder. Later pages wait for the next Organize.
     func canOrganizeFirstPage() -> Bool {
-        librarySection == "Photos" && FolderOrganize.allows(displayFolder) && !organizePage().isEmpty
+        !isMirror && librarySection == "Photos" && FolderOrganize.allows(displayFolder) && !organizePage().isEmpty
     }
 
     /// Yes reads the first page. Continue reads that page and the pages after it.
@@ -1504,6 +1531,7 @@ final class LibraryBrowser {
     /// A photo already in that year and day folder stays. A matching file date can raise catalog confidence from 0.00 to 1.00.
     /// A moved duplicate leaves its preview in Photos/_Duplicates.
     func organizeDisplayFolder(repeating: Bool) async {
+        guard !isMirror else { return }
         guard !organizeBusy, !dateBusy, !removalBusy, !cleanBusy, !rescanBusy, !moveBusy, !mergeBusy else { return }
         guard librarySection == "Photos", FolderOrganize.allows(displayFolder) else {
             notice = "Organize runs on a folder of photos."
@@ -1846,6 +1874,7 @@ final class LibraryBrowser {
 
     /// Deletes `folder` and the folders inside it when they contain no files. Photos stays.
     func cleanEmptyDisplayFolder(_ folder: String) async {
+        guard !isMirror else { return }
         guard !cleanBusy, !removalBusy, !dateBusy, !organizeBusy, !rescanBusy, !moveBusy, !mergeBusy else { return }
         guard librarySection == "Photos", EmptyFolderClean.allows(folder) else {
             notice = "Clean runs on a folder inside Photos."
@@ -1882,6 +1911,7 @@ final class LibraryBrowser {
 
     /// Drops leftover catalog rows in the open folder. A row goes only when its file is gone and another file here has the same name and size.
     func cleanDisplayFolder() async {
+        guard !isMirror else { return }
         guard !cleanBusy, !removalBusy, !dateBusy, !organizeBusy, !moveBusy, !mergeBusy else { return }
         cleanBusy = true
         defer { cleanBusy = false }
@@ -1910,6 +1940,7 @@ final class LibraryBrowser {
 
     /// Deletes every file in Photos/_Removed, then asks the helper to drop those catalog rows.
     func deleteAllRemoved() async {
+        guard !isMirror else { return }
         guard DisplayFolder.isRemovedShelf(displayFolder) else { return }
         guard !removalBusy, !rescanBusy, !dateBusy, !organizeBusy, !cleanBusy, !moveBusy, !mergeBusy else { return }
         removalBusy = true
@@ -2226,6 +2257,7 @@ final class LibraryBrowser {
 
     /// Dry-run for the typed prefix. Nothing is copied.
     func planReorg() async {
+        guard !isMirror else { return }
         let prefix = ReorgActivity.folder(reorgPrefix)
         if reorgPrefix != prefix {
             reorgPrefix = prefix
@@ -2265,6 +2297,7 @@ final class LibraryBrowser {
 
     /// One Start for the planned prefix. A changed folder is not sent.
     func startReorg() async {
+        guard !isMirror else { return }
         if case .planning = reorgPending {
             reorgNotice = reorg?.runState == "planning" ? ReorgCopy.startWhilePlanning : ReorgCopy.startWhilePlanOpen
             return
@@ -2392,6 +2425,7 @@ final class LibraryBrowser {
 
     /// Start plans eligible groups and copies. A busy reorg is left untouched.
     func startTrim() async {
+        guard !isMirror else { return }
         do {
             let reply = try await client.trimStart()
             applyTrim(reply, idle: "Trim did not start.")
@@ -2401,6 +2435,7 @@ final class LibraryBrowser {
     }
 
     func pauseTrim() async {
+        guard !isMirror else { return }
         do {
             let reply = try await client.trimPause()
             applyTrim(reply, idle: "Trim did not pause.")
@@ -2410,6 +2445,7 @@ final class LibraryBrowser {
     }
 
     func continueTrim() async {
+        guard !isMirror else { return }
         do {
             let reply = try await client.trimContinue()
             applyTrim(reply, idle: "Trim did not continue.")
@@ -2483,6 +2519,10 @@ final class LibraryBrowser {
     /// Compares the library again, then lists the groups that comparison recorded.
     /// A helper without the scan route still lists whatever its startup pass stored.
     func findDuplicates() async {
+        guard !isMirror else {
+            duplicateNotice = "The mirror does not change the library."
+            return
+        }
         await loadTrim()
         switch await client.startDuplicateScan() {
         case .unsupported:
@@ -2614,6 +2654,7 @@ final class LibraryBrowser {
 
     /// Journal-moves one active file into the store. The bytes are not unlinked in place.
     func moveToDuplicates(_ asset: LibraryAsset) async {
+        guard !isMirror else { return }
         do {
             let reply = try await client.moveToDuplicates(uid: asset.uid)
             if reply.error != nil {
@@ -2628,6 +2669,7 @@ final class LibraryBrowser {
     }
 
     func restoreDuplicate(_ asset: LibraryAsset) async {
+        guard !isMirror else { return }
         do {
             let reply = try await client.restoreAsset(uid: asset.uid)
             if reply.error != nil {
@@ -2642,6 +2684,7 @@ final class LibraryBrowser {
     }
 
     func setPin(_ asset: LibraryAsset, pinned: Bool) async {
+        guard !isMirror else { return }
         do {
             let reply = try await client.pinAsset(uid: asset.uid, pinned: pinned)
             if reply.error != nil {
@@ -2657,6 +2700,7 @@ final class LibraryBrowser {
 
     /// Unlinks one store file after the dialog named `filename`.
     func purgeDuplicate(_ asset: LibraryAsset, filename: String) async {
+        guard !isMirror else { return }
         do {
             let reply = try await client.purgeAsset(uid: asset.uid, confirmFilename: filename)
             if reply.error != nil {
@@ -2672,6 +2716,7 @@ final class LibraryBrowser {
 
     /// Deletes every file in the store only when `confirm` is exactly DELETE.
     func purgeAllDuplicates(confirm: String) async {
+        guard !isMirror else { return }
         guard confirm == "DELETE" else {
             duplicateNotice = "Type DELETE to delete every duplicate."
             return
@@ -2694,6 +2739,7 @@ final class LibraryBrowser {
 
     /// Stores the typed name with `name_source` user. The photos stay where they are.
     func renameEvent(uid: String, name: String) async {
+        guard !isMirror else { return }
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         do {
@@ -3025,6 +3071,7 @@ final class LibraryBrowser {
 
     /// Holds the other folder actions while the TIFF is written.
     func claimMergeWrite() -> Bool {
+        guard !isMirror else { return false }
         guard !mergeBusy, !moveBusy, !dateBusy, !organizeBusy, !removalBusy, !cleanBusy, !rescanBusy else {
             notice = "An export is already running."
             return false
@@ -3098,6 +3145,7 @@ final class LibraryBrowser {
     /// The clicked still, or every selected still when that click is inside the selection.
     /// A nil click is the Edit menu and uses the whole selection.
     func settingsPasteTargets(clicked: LibraryAsset?) -> [LibraryAsset] {
+        guard !isMirror else { return [] }
         if let clicked {
             if selectedUIDs.contains(clicked.uid) {
                 return rotatableStills(in: sectionAssets())
@@ -3187,6 +3235,7 @@ final class LibraryBrowser {
     /// Videos and photos are the same catalog rows. The folder moves back when the helper
     /// refuses the new name. A lost reply leaves the new name in place.
     func renameFolder(_ relative: String, to typed: String) async {
+        guard !isMirror else { return }
         guard !moveBusy, !mergeBusy, !dateBusy, !organizeBusy, !removalBusy, !cleanBusy, !rescanBusy else {
             notice = "An export is already running."
             return
@@ -3261,20 +3310,33 @@ final class LibraryBrowser {
     /// A timed-out reply is asked once more. The directory stays put when that reply
     /// also fails to arrive, and when the second reply says the name is taken.
     private func followRenamedFolder(from oldRel: String, to newRel: String) async -> RenamedFolderReply {
+        let reply: RenamedFolderReply
         switch await client.renameFolder(from: oldRel, to: newRel) {
         case .updated:
-            return .updated
+            reply = .updated
         case .timedOut:
             switch await client.renameFolder(from: oldRel, to: newRel) {
             case .updated, .refused:
-                return .updated
+                reply = .updated
             case .timedOut, .offline:
-                return .unsettled
+                reply = .unsettled
             case .unsupported:
-                return .restore
+                reply = .restore
             }
         case .offline, .refused, .unsupported:
-            return .restore
+            reply = .restore
+        }
+        noteMainRename(kind: MirrorQueue.folder, reply: reply, from: oldRel, to: newRel)
+        return reply
+    }
+
+    /// A rename that stays on the main server is appended to the mirror's list.
+    private func noteMainRename(kind: String, reply: RenamedFolderReply, from: String, to: String) {
+        switch reply {
+        case .updated, .unsettled:
+            passMainRename(kind: kind, from: from, to: to)
+        case .restore:
+            break
         }
     }
 
@@ -3327,6 +3389,7 @@ final class LibraryBrowser {
     /// Gives one catalog file a new name in its current folder. The asset id stays.
     /// A folder rescan is not used, because that inserts a second row for the new name.
     func rename(_ asset: LibraryAsset, to typed: String) {
+        guard !isMirror else { return }
         guard !mergeBusy, !moveBusy, !dateBusy, !organizeBusy, !removalBusy, !cleanBusy, !rescanBusy else {
             notice = "An export is already running."
             return
@@ -3412,21 +3475,24 @@ final class LibraryBrowser {
     /// A timed-out reply is asked once more. The file stays put when that reply
     /// also fails to arrive, and when the second reply says the name is taken.
     private func followRenamedFile(from oldRel: String, to newRel: String) async -> RenamedFolderReply {
+        let reply: RenamedFolderReply
         switch await client.renameFile(from: oldRel, to: newRel) {
         case .updated:
-            return .updated
+            reply = .updated
         case .timedOut:
             switch await client.renameFile(from: oldRel, to: newRel) {
             case .updated, .refused:
-                return .updated
+                reply = .updated
             case .timedOut, .offline:
-                return .unsettled
+                reply = .unsettled
             case .unsupported:
-                return .restore
+                reply = .restore
             }
         case .offline, .refused, .unsupported:
-            return .restore
+            reply = .restore
         }
+        noteMainRename(kind: MirrorQueue.file, reply: reply, from: oldRel, to: newRel)
+        return reply
     }
 
     /// The open folder reads the new file name. The same asset id stays on the row.

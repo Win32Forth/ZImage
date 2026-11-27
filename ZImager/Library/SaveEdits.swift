@@ -11,8 +11,8 @@ nonisolated enum SaveEdits {
     }
 
     /// Save edits stays disabled until the helper is up and the open photo is a catalog asset.
-    static func isEnabled(helperUp: Bool, assetUID: String?) -> Bool {
-        helperUp && assetUID?.isEmpty == false
+    static func isEnabled(helperUp: Bool, assetUID: String?, mirrorLocked: Bool = false) -> Bool {
+        helperUp && !mirrorLocked && assetUID?.isEmpty == false
     }
 
     static func fileRefBytes(

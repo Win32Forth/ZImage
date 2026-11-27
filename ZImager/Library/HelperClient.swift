@@ -144,6 +144,8 @@ struct HelperHealth: Decodable, Equatable, Sendable {
     var manualOpsClear: Bool
     var reorgSafeToReboot: Bool
     var trimSafeToReboot: Bool
+    /// Absent on a helper built before this field existed.
+    var helperVersion: String?
 }
 
 struct ReorgStatus: Decodable, Equatable, Sendable {
@@ -506,10 +508,20 @@ enum KeychainTokenStore {
     }
 
     /// Copies the stored host into the shared group so the editor can find it.
+    static func delete(host: String) {
+        SecItemDelete(base(host, group: false) as CFDictionary)
+        SecItemDelete(base(host, group: true) as CFDictionary)
+    }
+
     static func rememberCurrent(host: String) {
         guard HelperClient.isIPv4(host) else { return }
         guard let pointer = try? JSONEncoder().encode(CurrentHost(host: host)) else { return }
         try? write(account: currentAccount, data: pointer, group: true)
+    }
+
+    /// Drops the editor's remembered helper when the selected server is not paired.
+    static func forgetCurrent() {
+        SecItemDelete(base(currentAccount, group: true) as CFDictionary)
     }
 
     static func currentHost() -> String? {
@@ -669,7 +681,7 @@ final class HelperClient {
         self.send = send
     }
 
-    static func isIPv4(_ host: String) -> Bool {
+    nonisolated static func isIPv4(_ host: String) -> Bool {
         let parts = host.split(separator: ".", omittingEmptySubsequences: false)
         guard parts.count == 4 else { return false }
         return parts.allSatisfy { part in
@@ -686,7 +698,7 @@ final class HelperClient {
         throw HelperError.notIPv4
     }
 
-    static func resolveIPv4(host: String) throws -> String {
+    nonisolated static func resolveIPv4(host: String) throws -> String {
         var hints = addrinfo(
             ai_flags: AI_ADDRCONFIG,
             ai_family: AF_INET,
