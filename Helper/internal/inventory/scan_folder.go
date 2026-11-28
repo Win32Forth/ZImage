@@ -23,7 +23,7 @@ type FolderSummary struct {
 	Removed int
 }
 
-// FolderOptions reports the walk. Yield runs between write batches.
+// FolderOptions reports the walk. Yield runs before each file, so a page listing can use the catalog first.
 // Progress phase is counting, scanning, or removing. total is 0 while the file count is still unknown.
 type FolderOptions struct {
 	Progress func(phase string, done, total, added, removed int)
@@ -66,9 +66,9 @@ func ScanFolder(root, prefix string, catalog *db.Catalog, opts FolderOptions) (F
 	if err == nil && info != nil && info.IsDir() {
 		err = walkFolder(root, prefix, full, func(string, string, os.FileInfo) error {
 			diskFiles++
+			pause()
 			if diskFiles%50 == 0 {
 				report("counting", diskFiles, 0)
-				pause()
 			}
 			return nil
 		})
@@ -83,20 +83,21 @@ func ScanFolder(root, prefix string, catalog *db.Catalog, opts FolderOptions) (F
 	if info != nil && info.IsDir() {
 		err = walkFolder(root, prefix, full, func(path, rel string, fileInfo os.FileInfo) error {
 			seen++
+			pause()
 			added, err := addIfMissing(catalog, path, rel, fileInfo)
 			if err != nil {
 				return err
 			}
 			if added {
 				summary.Added++
-				time.Sleep(20 * time.Millisecond)
 			}
 			summary.Looked = seen
 			if seen%20 == 0 || seen == diskFiles {
 				report("scanning", seen, total)
 			}
-			if seen%50 == 0 {
+			if added {
 				pause()
+				time.Sleep(20 * time.Millisecond)
 			}
 			return nil
 		})
@@ -362,13 +363,14 @@ func removeAbsent(root, prefix string, catalog *db.Catalog, progress func(examin
 		if err := tx.Commit(); err != nil {
 			return err
 		}
-		time.Sleep(20 * time.Millisecond)
 		pause()
+		time.Sleep(20 * time.Millisecond)
 		note()
 		return nil
 	}
 	for _, row := range listed {
 		examined++
+		pause()
 		absent, ok := missingFile(root, row.rel)
 		if ok && absent {
 			batch = append(batch, row.id)

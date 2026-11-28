@@ -1,3 +1,4 @@
+import CoreGraphics
 import CoreImage
 import Foundation
 import ImageIO
@@ -118,6 +119,15 @@ nonisolated enum FlattenedMaster {
         guard FileManager.default.isReadableFile(atPath: tiff.path),
               FileManager.default.isReadableFile(atPath: jpeg.path) else { return nil }
         return try? Data(contentsOf: jpeg)
+    }
+
+    /// The working JPEG as a picture. Opening a flattened photo uses this and skips the library file.
+    static func workingImage(for identity: Identity) -> CGImage? {
+        guard let data = workingJPEG(for: identity),
+              let source = CGImageSourceCreateWithData(data as CFData, nil),
+              let image = CGImageSourceCreateImageAtIndex(source, 0, nil),
+              image.width > 1, image.height > 1 else { return nil }
+        return image
     }
 
     /// The readable `<uid>.zflat` beside this photo's edits.

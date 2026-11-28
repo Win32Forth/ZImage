@@ -14,6 +14,66 @@ Each entry uses this shape:
 - Scope: design section or PR name
 - Notes: facts, decisions, and the next step
 
+## 2026-11-27 — ZImager 1.9.1 disk image
+
+- Status: done
+- Scope: `Releases/ZImager-1.9.1-macOS.dmg` and GitHub release v1.9.1.
+- Notes: The disk image is `Releases/ZImager-1.9.1-macOS.dmg`, sha256 `7dc9f83453eefeb837b17cd8d86de0570672954496376d4c707371d0d990cb99`, 26626667 bytes. It contains `ZImager.app` and `README.txt`. The image stays out of git. The text is `Releases/ZImager-1.9.1-README.txt`. Signed with Developer ID Application: Thomas Zimmer (X5YCJL3LJ8), hardened runtime, notarization submission `3e01db9e-d4e8-412e-b832-b685959b08e0` Accepted, and stapled. Gatekeeper reports Notarized Developer ID. The helper is not in the image. The app installs helper 1.9.1.
+
+## 2026-11-27 — Delete ALL clears Photos/_Removed on the server on screen
+
+- Status: done
+- Scope: Server Folder view, Photos/_Removed.
+- Notes: Delete ALL on Photos/_Removed deletes every file in that folder on the server on screen, including the mirror. The folder stays. The other server's Photos/_Removed stays. Photos/_RemovedExtra is left alone. The helper is unchanged.
+
+## 2026-11-27 — Flatten shows the flattened picture
+
+- Status: done
+- Scope: Flatten on the main server, and the copy to the mirror.
+- Notes: Flatten writes the flattened TIFF and an empty edit list. A save that started before Flatten does not write the old edit list afterward, and that old list is not copied to the mirror. Opening the photo shows the flattened picture with an empty edit list. The mirror copy of that TIFF and the empty list starts when Flatten finishes. Switching to the mirror waits until those files are there. Flatten Duplicate writes the new TIFF and the preview JPEG the folder grid uses, on the mirror as well as the main. The helper is unchanged.
+
+## 2026-11-27 — ZImager 1.9.1
+
+- Status: done
+- Scope: ZImager marketing version and the helper it installs.
+- Notes: Marketing version 1.9.1 is on the ZImager target. The test target stays 1.0. `CURRENT_PROJECT_VERSION` stays 1. `.zimg` `appVersion` stays `1.0.0`. The schema version stays 1. `HelperRelease.version` and `Helper/internal/buildinfo/version.go` are both 1.9.1. ZImager writes `role: "mirror"` only when the share's VERSION file is 1.9.1. The disk image is `Releases/ZImager-1.9.1-macOS.dmg`, sha256 `7dc9f83453eefeb837b17cd8d86de0570672954496376d4c707371d0d990cb99`, and it stays out of git.
+
+## 2026-11-27 — A save lists the mirror photo before the library scan continues
+
+- Status: done
+- Scope: Mirror save, page Rescan, and the helper folder scan.
+- Notes: A saved change on the main server copies to the mirror and lists that photograph in the mirror catalog then. Command-S does this when the mirror catalog has no row for that path yet. Duplicate and Merge wait for that same listing. A page Rescan is written before the helper answers. A full folder scan pauses at the next file so the page can use the catalog, then continues from the same place. The scan on DS124 that was already walking `Photos` is the previous helper. It keeps going until that helper is stopped and the new one is installed. The helper version stays 1.9.0.
+
+## 2026-11-27 — Page Rescan waits on the scan already running
+
+- Status: done
+- Scope: Server Folder view Rescan, and the mirror copy.
+- Notes: The Rescan button still sends only the page on screen. The mirror helper runs one folder scan at a time. On 2026-11-27 that scan was the whole `Photos` library, phase scanning, 150900 of 1011182, with 70173 files added. A page Rescan is refused until it finishes. The refusal names that folder and the count. Mirroring now asks the helper to list the files it just copied. It does not start a rescan of `Photos` to record one file. A recovered photo is listed the same way. A file rename lists the old path and the new path. A folder rename still rescans that folder.
+
+## 2026-11-27 — Recover keeps the photo's name
+
+- Status: done
+- Scope: Recover photo, and Recover and Edit photo.
+- Notes: Recover copies an orphan onto the main server under the same file name when that name is free in the folder. A name that is already there gains `-2`, then `-3`. Duplicate still writes a TIFF whose name gains `-2`. The duplicate TIFF for `1977-10-15` is already on the mirror share under the same name. A recovered file that keeps the mirror's name is the same photograph, so it is not copied back.
+
+## 2026-11-27 — Remove from Library also parks the mirror copy
+
+- Status: done
+- Scope: Remove from Library on the main server.
+- Notes: Removing a photo on the main server moves that file into `Photos/_Removed` and moves the matching mirror file into `Photos/_Removed` on the mirror. The match is the same Photos path. A recovered beside-name also moves the mirror original. Discard on the mirror still moves only the mirror file. The mirror copy walk still does not delete files.
+
+## 2026-11-27 — Recover and Edit an orphan from Image view
+
+- Status: done
+- Scope: Mirror Image view.
+- Notes: An orphan open in Mirror Image view shows Recover and Edit photo instead of Edit in Library. That copies the photo beside the same name on the main server and opens the copy in that folder. A photo the main server already has still uses Edit in Library. A recovered copy opens the beside name.
+
+## 2026-11-27 — Mirror place, folder borders, and the mirror date panel
+
+- Status: done
+- Scope: Folder view on the mirror. The mirror copy keeps its place. The photo listing stays off the main thread.
+- Notes: An orphan that is not selected stays red. A selected orphan is purple. Any other selected photo in the server folder grid is green. Recover photo, Discard photo, and Discard all Orphans are enabled when this page has an orphan. Recover and Discard use the selected orphans. Discard all Orphans moves every orphan on this page to `Photos/_Removed`. The Date panel and its preview are back on the mirror. Set date, Organize, and Clean stay off. Mirror Image view hides the editing panels. Spectrum stays, with its handles locked. History stays, and its rows do not change the photo. Select, Crop, Undo, and Redo stay off. A Mirror panel under Spectrum has Edit in Library, which opens that photo on the main server. The name beside Disk/Server and the menu checkmark move to that server. A saved change on the main server is copied to the mirror then. Crop, Rotate, Flip, and Paste settings copy that photo's edit files. Flatten copies the flattened TIFF. Duplicate and Merge copy the new photograph. Command-S and leaving Image view do the same. When that photo is not in the main library, the panel and the image bar say so. Mirroring writes `.zimage/mirror-progress.json` on the mirror as it confirms files. A later Start skips a folder that place already finished. The mount check, the saved place, the rename list, the file listing, and the copy run off the main thread. Unlink removes that place file. This pass does not add a disk image.
+
 ## 2026-11-27 — ZImager 1.9.0
 
 - Status: done

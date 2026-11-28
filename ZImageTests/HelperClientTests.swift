@@ -146,6 +146,36 @@ final class HelperClientTests: XCTestCase {
         XCTAssertEqual(banner.text, LibraryCopy.staleBanner)
     }
 
+    func testLoadedPageThenTimeoutDoesNotSayOffline() async {
+        let fake = FakeHelperListener()
+        let page = Data(#"{"rows":[{"uid":"asset-1"}],"nextCursor":""}"#.utf8)
+        fake.enqueue(.success(HelperResponse(status: 200, body: page)))
+        fake.enqueue(.failure(URLError(.timedOut)))
+        let session = LibrarySession(client: client(fake: fake))
+        await session.refresh()
+        await session.refresh()
+        XCTAssertEqual(session.rows.map(\.uid), ["asset-1"])
+        XCTAssertNil(session.banner)
+        XCTAssertFalse(session.isEmptyOffline)
+        XCTAssertTrue(session.writesEnabled)
+        XCTAssertFalse(HelperReach.isOffline(URLError(.timedOut)))
+        XCTAssertFalse(HelperReach.isOffline(URLError(.cancelled)))
+        XCTAssertTrue(HelperReach.isOffline(URLError(.cannotConnectToHost)))
+    }
+
+    func testLoadedPageThenServerErrorDoesNotSayOffline() async {
+        let fake = FakeHelperListener()
+        let page = Data(#"{"rows":[{"uid":"asset-1"}],"nextCursor":""}"#.utf8)
+        fake.enqueue(.success(HelperResponse(status: 200, body: page)))
+        fake.enqueue(.success(HelperResponse(status: 500, body: Data())))
+        let session = LibrarySession(client: client(fake: fake))
+        await session.refresh()
+        await session.refresh()
+        XCTAssertEqual(session.rows.map(\.uid), ["asset-1"])
+        XCTAssertNil(session.banner)
+        XCTAssertTrue(session.writesEnabled)
+    }
+
     func testNameAndIPv6AreNotDialed() async {
         let fake = FakeHelperListener()
         let named = HelperClient(

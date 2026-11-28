@@ -41,6 +41,27 @@ enum HelperError: Error, Equatable {
     }
 }
 
+/// The offline banner is only for a helper that cannot be reached.
+/// A timeout, a cancelled folder click, or an HTTP answer means the helper is not offline.
+enum HelperReach {
+    static func isOffline(_ error: Error) -> Bool {
+        if error is CancellationError { return false }
+        if let url = error as? URLError {
+            switch url.code {
+            case .cannotConnectToHost, .cannotFindHost, .dnsLookupFailed,
+                 .notConnectedToInternet, .networkConnectionLost, .dataNotAllowed:
+                return true
+            default:
+                return false
+            }
+        }
+        if let helper = error as? HelperError {
+            return helper == .offline
+        }
+        return false
+    }
+}
+
 struct HelperCredentials: Equatable, Sendable {
     var host: String
     var port: Int
@@ -274,6 +295,8 @@ struct FolderScanStatus: Decodable, Equatable, Sendable {
     var added: Int
     var removed: Int
     var error: String?
+    /// The page committed. A library scan can still be running.
+    var applied: Bool
 
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -285,10 +308,11 @@ struct FolderScanStatus: Decodable, Equatable, Sendable {
         added = try values.decodeIfPresent(Int.self, forKey: .added) ?? 0
         removed = try values.decodeIfPresent(Int.self, forKey: .removed) ?? 0
         error = try values.decodeIfPresent(String.self, forKey: .error)
+        applied = try values.decodeIfPresent(Bool.self, forKey: .applied) ?? false
     }
 
     private enum CodingKeys: String, CodingKey {
-        case prefix, runState, phase, done, total, added, removed, error
+        case prefix, runState, phase, done, total, added, removed, error, applied
     }
 }
 
@@ -1142,6 +1166,7 @@ final class HelperClient {
 
     /// Checks the listed photos and nothing else. A helper without this route answers unsupported.
     /// That answer must not fall back to `/v1/folders/rescan`, which walks the whole prefix.
+    /// The helper writes the page before it answers. A library scan pauses at the next file for that write.
     func startFolderPageRescan(prefix: String, paths: [String]) async -> FolderScanCall {
         guard !paths.isEmpty else { return .offline }
         let body: Data
@@ -1150,20 +1175,21 @@ final class HelperClient {
         } catch {
             return .offline
         }
-        return await folderRescan(path: "/v1/folders/rescan-page", method: "POST", body: body)
+        return await folderRescan(path: "/v1/folders/rescan-page", method: "POST", body: body, timeout: 120)
     }
 
     func folderRescanStatus() async -> FolderScanCall {
         await folderRescan(path: "/v1/folders/rescan", method: "GET", body: nil)
     }
 
-    private func folderRescan(path: String, method: String, body: Data?) async -> FolderScanCall {
+    private func folderRescan(path: String, method: String, body: Data?, timeout: TimeInterval = 10) async -> FolderScanCall {
         do {
             let response = try await perform(
                 path: path,
                 method: method,
                 body: body,
                 authorize: true,
+                timeout: timeout,
                 contentType: body == nil ? nil : "application/json"
             )
             if response.status == 200 {
@@ -1175,7 +1201,7 @@ final class HelperClient {
             if response.status == 404 {
                 return .unsupported
             }
-            if response.status == 409 {
+            if response.status == 409 || response.status == 503 {
                 return .busy
             }
             return .offline
@@ -1301,7 +1327,7 @@ final class HelperClient {
         let response = try await perform(path: path, method: "GET", body: nil, authorize: true)
         guard response.status == 200 else {
             if response.status == 401 { throw HelperError.unauthorized }
-            throw HelperError.offline
+            throw URLError(.badServerResponse)
         }
         return try JSONDecoder().decode(LibraryPage.self, from: response.body)
     }
@@ -1352,10 +1378,10 @@ final class HelperClient {
             return response
         } catch let error as HelperError {
             throw error
-        } catch let error as URLError where error.code == .timedOut {
-            throw error
-        } catch {
+        } catch let error as URLError where HelperReach.isOffline(error) {
             throw HelperError.offline
+        } catch {
+            throw error
         }
     }
 }
@@ -1425,24 +1451,13 @@ final class LibrarySession {
             banner = nil
             isEmptyOffline = false
             writesEnabled = true
-        } catch let error as HelperError {
+        } catch let error as HelperError where !HelperReach.isOffline(error) {
             writesEnabled = false
-            switch error {
-            case .notIPv4, .hostChanged, .pinChanged:
-                banner = error.message
-                isEmptyOffline = !hasPage
-                if !hasPage { rows = [] }
-            case .offline, .unauthorized, .keychain:
-                if hasPage {
-                    banner = LibraryCopy.staleBanner
-                    isEmptyOffline = false
-                } else {
-                    banner = nil
-                    isEmptyOffline = true
-                    rows = []
-                }
-            }
+            banner = error.message
+            isEmptyOffline = !hasPage && error != .unauthorized && error != .keychain
+            if !hasPage { rows = [] }
         } catch {
+            guard HelperReach.isOffline(error) else { return }
             writesEnabled = false
             if hasPage {
                 banner = LibraryCopy.staleBanner

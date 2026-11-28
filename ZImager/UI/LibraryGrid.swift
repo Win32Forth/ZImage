@@ -14,8 +14,9 @@ struct LibraryGrid: View {
     @State private var renameAsset: LibraryAsset?
     @State private var renameName = ""
 
-    private var columns: [GridItem] {
-        [GridItem(.adaptive(minimum: browser.previewPoints + 24), spacing: 16)]
+    private func columns(for width: CGFloat) -> [GridItem] {
+        let count = PreviewSize.columnCount(width: width, cell: browser.previewPoints)
+        return Array(repeating: GridItem(.fixed(browser.previewPoints), spacing: 16), count: count)
     }
 
     var body: some View {
@@ -47,8 +48,9 @@ struct LibraryGrid: View {
                         libraryPushButton("Delete ALL", identifier: "Delete ALL") {
                             confirmsRemovedDelete = true
                         }
-                        .disabled(browser.isMirror || browser.removalBusy || browser.rescanBusy || browser.dateBusy || browser.organizeBusy || browser.cleanBusy || browser.moveBusy || browser.mergeBusy)
+                        .disabled(browser.removalBusy || browser.rescanBusy || browser.dateBusy || browser.organizeBusy || browser.cleanBusy || browser.moveBusy || browser.mergeBusy)
                         .help("Deletes every file in Photos/_Removed from the server.")
+                        .layoutPriority(1)
                     } else {
                         FolderNameFilterBar(
                             query: $browser.nameQuery,
@@ -57,8 +59,10 @@ struct LibraryGrid: View {
                             find: { browser.applyNameFilter() },
                             clear: { browser.clearNameFilter() }
                         )
+                        .layoutPriority(1)
                     }
                 }
+                .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 16)
                 .padding(.top, 10)
                 if let meter = browser.organizeMeter {
@@ -105,20 +109,36 @@ struct LibraryGrid: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                     .padding(16)
             }
-            ScrollView {
-                LazyVGrid(columns: columns, spacing: 16) {
-                    ForEach(browser.rows, id: \.uid) { asset in
-                        cell(asset)
+            GeometryReader { proxy in
+                ScrollViewReader { scroller in
+                    ScrollView {
+                        LazyVGrid(columns: columns(for: proxy.size.width), alignment: .leading, spacing: 16) {
+                            ForEach(browser.rows, id: \.uid) { asset in
+                                cell(asset)
+                                    .id(asset.uid)
+                            }
+                        }
+                        .padding(16)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    // A new preview was leaving this bar half outside the center clip.
+                    .contentMargins(.trailing, ScrollBarFit.indicatorInset, for: .scrollIndicators)
+                    .modifier(KeptScroll(
+                        visible: onScreen,
+                        key: "\(media ?? "")|\(browser.displayFolder)|\(browser.folderPage)",
+                        holdOffset: browser.removalBusy || browser.dateBusy || browser.organizeBusy || browser.cleanBusy || browser.rescanBusy || browser.moveBusy || browser.mergeBusy
+                    ))
+                    .onChange(of: browser.switchScrollTick) { _, _ in
+                        guard let uid = browser.switchScrollUID else { return }
+                        Task { @MainActor in
+                            scroller.scrollTo(uid, anchor: .center)
+                        }
                     }
                 }
-                .padding(16)
             }
-            .modifier(KeptScroll(
-                visible: onScreen,
-                key: "\(media ?? "")|\(browser.displayFolder)|\(browser.folderPage)",
-                holdOffset: browser.removalBusy || browser.dateBusy || browser.organizeBusy || browser.cleanBusy || browser.rescanBusy || browser.moveBusy || browser.mergeBusy
-            ))
+            .frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity)
         }
+        .frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(ChromePalette.panel)
         .onDeleteCommand {
             guard live else { return }
@@ -178,12 +198,19 @@ struct LibraryGrid: View {
         }
     }
 
-    /// A missing mirror file is red. The selection color is used for every other cell.
+    /// An orphan that is not selected is red. A selected orphan is purple. Any other selected photo is green.
     private func cellBorder(_ asset: LibraryAsset, selected: Bool) -> Color {
-        if let rel = asset.relPath, browser.mirrorMissing.contains(rel) {
+        let orphan = asset.relPath.map { browser.mirrorMissing.contains($0) } ?? false
+        switch MirrorFrame.kind(orphan: orphan, selected: selected) {
+        case .red:
             return .red
+        case .purple:
+            return .purple
+        case .green:
+            return .green
+        case .none:
+            return .clear
         }
-        return selected ? ChromePalette.accentSoft : .clear
     }
 
     /// The open folder, with its still count at the end once that count is known.
@@ -219,10 +246,9 @@ struct LibraryGrid: View {
         let selected = browser.selectedUIDs.contains(asset.uid)
         return VStack(spacing: 6) {
             ZStack(alignment: .topLeading) {
-                if let data = browser.displayImageData(uid: asset.uid), let image = NSImage(data: data) {
-                    Image(nsImage: image)
-                        .resizable()
-                        .scaledToFit()
+                if let data = browser.displayImageData(uid: asset.uid) {
+                    JPEGImage(data: data)
+                        .equatable()
                 } else {
                     RoundedRectangle(cornerRadius: 4)
                         .fill(ChromePalette.hairline)
@@ -246,6 +272,8 @@ struct LibraryGrid: View {
                 .font(.system(size: 12))
                 .foregroundStyle(ChromePalette.ink)
                 .lineLimit(1)
+                .truncationMode(.middle)
+                .frame(width: browser.previewPoints)
             if browser.isVideo(asset) {
                 Text("Video")
                     .font(.system(size: 11))
@@ -336,7 +364,7 @@ struct LibraryGrid: View {
             }
             .disabled(browser.removalBusy || browser.dateBusy || browser.organizeBusy || browser.cleanBusy || browser.rescanBusy || browser.moveBusy || browser.mergeBusy || browser.libraryRemovalTargets(clicked: asset).isEmpty)
             Divider()
-            Text(browser.sizeLabel(for: asset))
+            Text(browser.listedSizeLabel(for: asset))
         }
         .accessibilityLabel(browser.filename(for: asset))
         .overlay {

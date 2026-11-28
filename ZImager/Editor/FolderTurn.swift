@@ -106,6 +106,19 @@ nonisolated enum FolderTurnWorker {
         }
     }
 
+    /// Mirrors the edges on screen and writes the `.zimg`. The photograph file stays as it is.
+    static func flip(file: URL, horizontal: Bool, session: HistoryLog?) -> Result<Outcome, Failure> {
+        updating(file: file, session: session) { log in
+            var geometry = log.state.geometry
+            if horizontal {
+                geometry.flipHorizontal.toggle()
+            } else {
+                geometry.flipVertical.toggle()
+            }
+            log.commit(.setGeometry(geometry, label: horizontal ? "Flip left/right" : "Flip top/bottom"))
+        }
+    }
+
     /// Tone and Geometry saved for a still that is not on the canvas. An unedited photo is identity.
     static func adjustments(file: URL) -> (tone: ToneState, geometry: GeometryState)? {
         let started = file.startAccessingSecurityScopedResource()

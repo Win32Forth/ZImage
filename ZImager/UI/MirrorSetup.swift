@@ -74,6 +74,48 @@ struct MirrorSetupSheet: View {
     }
 }
 
+/// Shown under Spectrum while a mirror photo is open.
+/// Edit in Library opens a photo the main server already has.
+/// An orphan offers Recover and Edit photo.
+struct MirrorImagePanel: View {
+    var notice: String
+    var orphan: Bool
+    var busy: Bool
+    var edit: () -> Void
+    @AppStorage("ZImage.inspectorMirrorImageCollapsed") private var collapsed = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            InspectorPanelHeader(title: "Mirror", collapsed: collapsed) { collapsed.toggle() }
+            if !collapsed {
+                Text(orphan
+                    ? "This photo is not on the main server. Recover and Edit copies it there under the same name, then opens it. A name that is already in that folder gains -2."
+                    : "Displaying image on backup mirror server. Click Edit in Library below to make changes to this image.")
+                    .font(.system(size: 13))
+                    .foregroundStyle(ChromePalette.ink)
+                    .fixedSize(horizontal: false, vertical: true)
+                Button(orphan ? "Recover and Edit photo" : "Edit in Library", action: edit)
+                    .disabled(orphan && busy)
+                    .accessibilityIdentifier(orphan ? "Recover and Edit photo" : "Edit in Library")
+                    .help(orphan
+                        ? "Copies this photo onto the main server under the same name, then opens it. A name that is already there gains -2."
+                        : "Opens this photo on the main server.")
+                if !notice.isEmpty {
+                    Text(notice)
+                        .font(.system(size: 13))
+                        .foregroundStyle(ChromePalette.ink)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityIdentifier("Mirror image notice")
+                }
+            }
+        }
+        .padding(EdgeInsets(top: InspectorMetrics.panelTopPadding, leading: 16, bottom: InspectorMetrics.panelBottomPadding, trailing: 16))
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .background(ChromePalette.panel)
+        .accessibilityIdentifier("Mirror image")
+    }
+}
+
 /// Recover and Discard for the folder on the mirror. Build previews stays beside this panel.
 struct MirrorPanel: View {
     @Bindable var browser: LibraryBrowser
@@ -83,23 +125,35 @@ struct MirrorPanel: View {
             Text("Mirror")
                 .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(ChromePalette.ink)
-            Text("A red border means this file is not on the main server. Recover copies it beside the matching name. Discard moves it to Photos/_Removed on this mirror.")
+            Text("A red border means this file is not on the main server. A selected orphan is purple. Any other selected photo is green. Recover copies the selected orphan under the same name. A name that is already in that folder gains -2. Discard moves the selected orphan to Photos/_Removed. Discard all Orphans moves every orphan on this page there.")
                 .font(.system(size: 13))
                 .foregroundStyle(ChromePalette.ink)
                 .fixedSize(horizontal: false, vertical: true)
             Button("Recover photo") {
                 Task { await browser.recoverMirrorSelection() }
             }
-            .disabled(browser.mirrorBusy || browser.removalBusy || browser.recoverTargets().isEmpty)
+            .disabled(browser.removalBusy || browser.pageOrphans().isEmpty)
             .accessibilityIdentifier("Recover photo")
-            .help("Copies the selected photos onto the main server beside the file of the same name.")
+            .help("Copies the selected orphaned photos onto the main server under the same name. A name that is already there gains -2.")
             Button("Discard photo") {
-                let targets = browser.recoverTargets()
-                Task { await browser.removeFromLibrary(targets) }
+                let targets = browser.selectedOrphans()
+                Task {
+                    if targets.isEmpty {
+                        browser.notice = "Select an orphaned photo to discard."
+                    } else {
+                        await browser.removeFromLibrary(targets)
+                    }
+                }
             }
-            .disabled(browser.mirrorBusy || browser.removalBusy || browser.recoverTargets().isEmpty)
+            .disabled(browser.removalBusy || browser.pageOrphans().isEmpty)
             .accessibilityIdentifier("Discard photo")
-            .help("Moves the selected photos to Photos/_Removed on this mirror.")
+            .help("Moves the selected orphaned photos to Photos/_Removed on this mirror.")
+            Button("Discard all Orphans") {
+                Task { await browser.discardPageOrphans() }
+            }
+            .disabled(browser.removalBusy || browser.pageOrphans().isEmpty)
+            .accessibilityIdentifier("Discard all Orphans")
+            .help("Moves every orphaned photo on this page to Photos/_Removed on this mirror.")
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .topLeading)

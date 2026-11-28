@@ -3,6 +3,7 @@ import SwiftUI
 struct HistoryList: View {
     let log: HistoryLog
     @Binding var collapsed: Bool
+    var allowsSelection = true
     let select: (Int) -> Void
 
     var body: some View {
@@ -53,6 +54,7 @@ struct HistoryList: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .disabled(!allowsSelection)
         .accessibilityLabel(command.historyTitle)
         .accessibilityAddTraits(isCurrent ? .isSelected : [])
     }

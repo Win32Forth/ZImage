@@ -5,6 +5,7 @@ import SwiftUI
 struct InspectorSpectrum: View {
     @Bindable var model: EditorModel
     @Binding var collapsed: Bool
+    var allowsEdits = true
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -12,7 +13,7 @@ struct InspectorSpectrum: View {
                 collapsed.toggle()
             }
             if !collapsed {
-                SpectrumWell(model: model)
+                SpectrumWell(model: model, allowsEdits: allowsEdits)
                     .frame(height: 104)
             }
         }
@@ -27,6 +28,7 @@ struct InspectorSpectrum: View {
 /// The tone graph. Low, middle, and high sit on its bottom edge.
 private struct SpectrumWell: View {
     @Bindable var model: EditorModel
+    var allowsEdits: Bool
     @State private var dragHandle: SpectrumHandle?
     @State private var dragOrigin: Double = 0
     @State private var suppressDrag = false
@@ -44,8 +46,13 @@ private struct SpectrumWell: View {
                 .allowsHitTesting(false)
                 Color.clear
                     .contentShape(Rectangle())
+                    .allowsHitTesting(allowsEdits)
                     .gesture(drag(width: width, axisY: axisY))
                     .onContinuousHover { phase in
+                        guard allowsEdits else {
+                            NSCursor.arrow.set()
+                            return
+                        }
                         switch phase {
                         case .active(let location):
                             let hit = SpectrumLevels.nearest(
@@ -71,7 +78,9 @@ private struct SpectrumWell: View {
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Spectrum")
         .accessibilityIdentifier("Spectrum graph")
-        .help("Drag the low, middle, or high handle. Double-click a handle to reset it.")
+        .help(allowsEdits
+            ? "Drag the low, middle, or high handle. Double-click a handle to reset it."
+            : "The spectrum on the mirror. The handles stay as they are.")
     }
 
     private func drag(width: CGFloat, axisY: CGFloat) -> some Gesture {

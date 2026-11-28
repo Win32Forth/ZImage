@@ -31,6 +31,9 @@
 		};
 		D10000000000000000000001 /* ZImager */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			explicitFileTypes = {
+				Library/LibraryBrowser.swift = sourcecode.swift;
+			};
 			path = ZImager;
 			sourceTree = "<group>";
 		};
@@ -444,7 +447,7 @@
 					"$(PROJECT_DIR)/Vendor/libjxl/lib",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
-				MARKETING_VERSION = 1.9.0;
+				MARKETING_VERSION = 1.9.1;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-lwebp",
@@ -492,7 +495,7 @@
 					"$(PROJECT_DIR)/Vendor/libjxl/lib",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 26.0;
-				MARKETING_VERSION = 1.9.0;
+				MARKETING_VERSION = 1.9.1;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"-lwebp",

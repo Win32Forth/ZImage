@@ -67,6 +67,16 @@ final class LibraryGridTests: XCTestCase {
         XCTAssertTrue(opened[0].0.isFileURL)
     }
 
+    func testPreviewColumnCountDropsAsTheWidthShrinks() {
+        let cell = PreviewSize.defaultPoints
+        XCTAssertEqual(PreviewSize.columnCount(width: 720, cell: cell), 4)
+        XCTAssertEqual(PreviewSize.columnCount(width: 719, cell: cell), 3)
+        XCTAssertEqual(PreviewSize.columnCount(width: 544, cell: cell), 3)
+        XCTAssertEqual(PreviewSize.columnCount(width: 543, cell: cell), 2)
+        XCTAssertEqual(PreviewSize.columnCount(width: 192, cell: cell), 1)
+        XCTAssertEqual(PreviewSize.columnCount(width: 40, cell: cell), 1)
+    }
+
     func testPDFGridItemOpensPagePickerAndMovieDoesNot() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("zimage-handoff-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: root.appendingPathComponent("Photos"), withIntermediateDirectories: true)
@@ -974,6 +984,50 @@ final class LibraryGridTests: XCTestCase {
     }
     XCTAssertFalse(browser.rescanBusy)
     XCTAssertTrue(fake.paths.contains("/v1/folders/rescan"))
+    }
+
+    func testDeleteAllRemovesTheShelfWhenTheServerIsTheMirror() async throws {
+        let defaults = UserDefaults.standard
+        let previous = defaults.string(forKey: MirrorRoster.dutyKey)
+        defaults.set(MirrorRoster.mirror, forKey: MirrorRoster.dutyKey)
+        defer {
+            if let previous {
+                defaults.set(previous, forKey: MirrorRoster.dutyKey)
+            } else {
+                defaults.removeObject(forKey: MirrorRoster.dutyKey)
+            }
+        }
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("zimage-removed-mirror-\(UUID().uuidString)", isDirectory: true)
+        let shelf = root.appendingPathComponent("Photos/_Removed", isDirectory: true)
+        try FileManager.default.createDirectory(at: shelf, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let parked = shelf.appendingPathComponent("a.jpg")
+        try Data("a".utf8).write(to: parked)
+        let fake = GridFakeListener()
+        let browser = LibraryBrowser(
+            client: HelperClient(credentials: HelperCredentials(host: "192.168.1.20", pin: Data([1]), token: "t")) { request in
+                try await fake.send(request)
+            },
+            libraryRoot: root,
+            openFile: { _, _ in }
+        )
+        browser.displayFolder = "Photos/_Removed"
+        XCTAssertTrue(browser.isMirror)
+        let scan = Data(#"{"prefix":"Photos/_Removed","runState":"completed","phase":"","done":1,"total":1,"added":0,"removed":1}"#.utf8)
+        let empty = Data(#"{"rows":[],"nextCursor":""}"#.utf8)
+        fake.enqueue(.success(HelperResponse(status: 200, body: scan)))
+        fake.enqueue(.success(HelperResponse(status: 200, body: scan)))
+        for _ in 0..<6 {
+            fake.enqueue(.success(HelperResponse(status: 200, body: empty)))
+        }
+        await browser.deleteAllRemoved()
+        XCTAssertTrue(FileManager.default.fileExists(atPath: shelf.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: parked.path))
+        for _ in 0..<40 where browser.rescanBusy || !fake.paths.contains("/v1/folders/rescan") {
+            try await Task.sleep(for: .milliseconds(25))
+        }
+        XCTAssertFalse(browser.rescanBusy)
+        XCTAssertTrue(fake.paths.contains("/v1/folders/rescan"))
     }
 
     func testRescanChecksTheOpenPageAndDoesNotWalkTheFolder() async throws {

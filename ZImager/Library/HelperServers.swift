@@ -2,7 +2,7 @@ import Foundation
 
 /// The helper build this copy of ZImager installs. It matches buildinfo.Version in the helper.
 enum HelperRelease {
-    static let version = "1.9.0"
+    nonisolated static let version = "1.9.1"
 
     /// A missing report is an older helper that does not say which build it is.
     static func needsUpdate(running: String?) -> Bool {
@@ -328,7 +328,7 @@ enum HelperPackage {
     static let scriptName = "zimage-helper"
     static let armName = "zimage-helper-aarch64"
     static let intelName = "zimage-helper-x86_64"
-    static let versionName = "VERSION"
+    nonisolated static let versionName = "VERSION"
 
     static func script() -> String {
         """
@@ -364,7 +364,7 @@ enum HelperPackage {
         """
     }
 
-    static func binDirectory(libraryRoot: URL) -> URL {
+    nonisolated static func binDirectory(libraryRoot: URL) -> URL {
         libraryRoot.appendingPathComponent(".zimage", isDirectory: true)
             .appendingPathComponent("bin", isDirectory: true)
     }
@@ -380,7 +380,7 @@ enum HelperPackage {
         return HelperRelease.needsUpdate(running: version)
     }
 
-    static func versionFile(at libraryRoot: URL) -> String? {
+    nonisolated static func versionFile(at libraryRoot: URL) -> String? {
         let url = binDirectory(libraryRoot: libraryRoot).appendingPathComponent(versionName)
         guard let text = try? String(contentsOf: url, encoding: .utf8) else { return nil }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)

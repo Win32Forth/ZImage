@@ -135,18 +135,27 @@ struct ZImagerApp: App {
                     .keyboardShortcut("0", modifiers: .command)
                 Button("Actual Size") { model.actualSize() }
                     .keyboardShortcut("1", modifiers: .command)
-                Button("Rotate Clockwise") { model.rotateClockwise() }
+                Button("Rotate Clockwise") { turnCommand(clockwise: true) }
                     .keyboardShortcut("r", modifiers: .command)
-                Button("Rotate Counterclockwise") { model.rotateCounterclockwise() }
+                    .disabled(!canAdjustSelection)
+                Button("Rotate Counterclockwise") { turnCommand(clockwise: false) }
                     .keyboardShortcut("r", modifiers: [.command, .option])
-                Button("Flip Left/Right") { model.flipLeftRight() }
-                Button("Flip Top/Bottom") { model.flipTopBottom() }
+                    .disabled(!canAdjustSelection)
+                Button("Flip Left/Right") { flipCommand(horizontal: true) }
+                    .disabled(!canAdjustSelection)
+                Button("Flip Top/Bottom") { flipCommand(horizontal: false) }
+                    .disabled(!canAdjustSelection)
                 Button("Eyedropper") { model.toggleCanvasTool(.eyedropper) }
                     .keyboardShortcut("e", modifiers: [])
+                    .disabled(mirrorImage)
                 Button("Remove Dust") { model.removeDust() }
+                    .disabled(mirrorImage)
                 Button("Remove Scratches") { model.removeScratches() }
+                    .disabled(mirrorImage)
                 Button("Red Eye") { model.toggleCanvasTool(.redEye) }
+                    .disabled(mirrorImage)
                 Button("Spot") { model.toggleCanvasTool(.dustSpot) }
+                    .disabled(mirrorImage)
             }
             CommandGroup(after: .pasteboard) {
                 Button("Copy settings") { copySettingsCommand() }
@@ -159,11 +168,64 @@ struct ZImagerApp: App {
             CommandGroup(replacing: .undoRedo) {
                 Button("Undo") { model.undo() }
                     .keyboardShortcut("z", modifiers: .command)
-                    .disabled(!model.log.canUndo)
+                    .disabled(!model.log.canUndo || mirrorImage)
                 Button("Redo") { model.redo() }
                     .keyboardShortcut("z", modifiers: [.command, .shift])
-                    .disabled(!model.log.canRedo)
+                    .disabled(!model.log.canRedo || mirrorImage)
             }
+        }
+    }
+
+    /// Mirror Image view shows the photo and does not change it.
+    private var mirrorImage: Bool {
+        sourceMode == "server" && !serverShowsFolder && MirrorRoster.locked()
+    }
+
+    /// Folder view turns the selected stills. Image view turns the open photo.
+    private var canAdjustSelection: Bool {
+        if showingFolder {
+            if sourceMode == "server" {
+                guard !MirrorRoster.locked(), !model.folderRotateBusy else { return false }
+                return !browser.rotatableStills(in: browser.sectionAssets()).isEmpty
+            }
+            return model.canRotateFolderSelection
+        }
+        return model.proxy != nil && !model.showsPDFPicker && !model.folderRotateBusy && !mirrorImage
+    }
+
+    private func turnCommand(clockwise: Bool) {
+        guard canAdjustSelection else { return }
+        if showingFolder {
+            if sourceMode == "server" {
+                let picked = browser.selectedStillCatalog()
+                model.rotate(files: picked.files, clockwise: clockwise, catalog: picked.catalog)
+            } else {
+                model.rotateFolderSelection(clockwise: clockwise)
+            }
+            return
+        }
+        if clockwise {
+            model.rotateClockwise()
+        } else {
+            model.rotateCounterclockwise()
+        }
+    }
+
+    private func flipCommand(horizontal: Bool) {
+        guard canAdjustSelection else { return }
+        if showingFolder {
+            if sourceMode == "server" {
+                let picked = browser.selectedStillCatalog()
+                model.flip(files: picked.files, horizontal: horizontal, catalog: picked.catalog)
+            } else {
+                model.flipFolderSelection(horizontal: horizontal)
+            }
+            return
+        }
+        if horizontal {
+            model.flipLeftRight()
+        } else {
+            model.flipTopBottom()
         }
     }
 

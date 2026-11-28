@@ -1,6 +1,6 @@
 # ZImage
 
-ZImager 1.9.0 is the app. It is one window. Disk is the editor. Server is the library. The separate ZImage editor and ZImage Library are no longer in this project.
+ZImager 1.9.1 is the app. It is one window. Disk is the editor. Server is the library. The separate ZImage editor and ZImage Library are no longer in this project.
 
 `DESIGN.md` is the plan. `STATUS.md` is the iteration log, newest first.
 
@@ -10,17 +10,27 @@ Reorganize, Review, and Duplicates do not work yet. Using them can lose photos. 
 
 Disk, and Server browsing of a folder, are the parts to use. Rotate, paste, export, print, and the image adjustments save the photo and rebuild its preview.
 
+## What 1.9.1 changes
+
+The app and the helper it installs are 1.9.1. A saved change on the main server is listed in the mirror catalog at that moment. A library scan already running pauses for that listing, then continues. Health reports `helperVersion`. ZImager writes `role: "mirror"` only when the share's VERSION file is 1.9.1. `.zimg` appVersion stays 1.0.0. The disk image is `Releases/ZImager-1.9.1-macOS.dmg`. Delete ALL on Photos/_Removed deletes every file in that folder on the server on screen, including the mirror. The other server's Photos/_Removed stays. Photos/_RemovedExtra is left alone.
+
 ## What 1.9.0 changes
 
 The Server menu can keep more than one server. Add Server copies the helper onto a mounted share. Update Helper and Uninstall Helper run after TCP port 8742 on that server refuses a connection. Uninstall removes the helper programs and VERSION. It leaves the catalog, the photos, the config, and the token. Forget Server removes that server from this Mac and removes its keychain item. The photos stay on the server.
 
-Mirror Setup names one main server and one mirror. Mirroring copies each file that is missing on the mirror, or whose size differs, into the same folder and file name. It also copies the edit file and the flattened TIFF beside that photo: `.zimg`, `.ztiff`, `.zflat`, and `.zjpg`. It copies one file at a time. A file that exists only on the mirror stays there and shows a red border. Recover photo copies it onto the main server beside the file of the same name. Discard photo moves it to `Photos/_Removed` on the mirror. Unlink leaves both libraries in place so the mirror can become the main server.
+Mirror Setup names one main server and one mirror. Mirroring copies each file that is missing on the mirror, or whose size differs, into the same folder and file name. It also copies the edit file and the flattened TIFF beside that photo: `.zimg`, `.ztiff`, `.zflat`, and `.zjpg`. It copies one file at a time. A file it copies is listed on the mirror. That listing does not walk the rest of Photos. The listing is written before the helper answers. A library scan already running pauses for that listing, then continues. A file that exists only on the mirror stays there and shows a red border. Recover photo copies it onto the main server under the same name. A name that is already in that folder gains `-2`, then `-3`. Discard photo moves it to `Photos/_Removed` on the mirror. Remove from Library on the main server also moves the matching mirror file into `Photos/_Removed`. A recovered beside-name moves the mirror original. Unlink leaves both libraries in place so the mirror can become the main server.
 
 On the mirror, date changes, move, merge, rename, save, and paste stay off. Build previews stays. Export and print stay.
 
 A rename on the main server is written onto the mirror. The mirror keeps that work in `.zimage/mirror-ops.json` and finishes one item at a time, in the order the renames happened. A folder rename moves the folder. A file rename moves the file and the edit files beside it. The next item waits until the mirror reaches it.
 
-The helper source is 1.9.0. Health reports `helperVersion`. A server whose config says `role: "mirror"` refuses edits after that helper is restarted. Discard, folder rescan, and pairing stay available. ZImager writes that role only when the share's VERSION file is 1.9.0. `POST /v1/reorg/discard` drops a Reorganize plan that has not started copying, and leaves the photo files where they are. This tree does not add a disk image. 1.8.6 behavior below is still in this app.
+Mirror Image view hides the editing panels. Spectrum stays, with its handles locked. History stays. Select, Crop, Undo, and Redo stay off. Edit in Library, under Spectrum, opens that photo on the main server. An orphan shows Recover and Edit photo, which copies it onto the main server under the same name and opens that copy. A name that is already in that folder gains `-2`. The name beside Disk/Server and the menu checkmark move to that server. A saved change on the main server is copied to the mirror then. The mirror catalog is updated at that moment, including while the mirror is scanning its library. Crop, Rotate, Flip, and Paste settings copy that photo's edit files. Flatten copies the flattened TIFF and an empty edit list, and switching to the mirror waits until that picture is there. Duplicate copies the new TIFF and the preview JPEG the folder grid uses. Merge copies the new photograph. Command-S and leaving Image view do the same.
+
+On the mirror folder grid, a selected orphan has a purple border and any other selected photo has a green border. Recover photo and Discard photo are available when the page on screen has an orphan. Discard all Orphans moves every orphan on that page to `Photos/_Removed`. The Date panel and its preview stay on the mirror. The buttons that set or change a date stay off.
+
+Mirroring remembers its place in `.zimage/mirror-progress.json` on the mirror. Quit and start again, and it continues from that place. The mount check, the saved place, the rename list, the folder reading, and the copying stay off the main thread, so the window can still be used. Unlink clears the saved place.
+
+The helper source is 1.9.1. Health reports `helperVersion`. A server whose config says `role: "mirror"` refuses edits after that helper is restarted. Discard, folder rescan, and pairing stay available. ZImager writes that role only when the share's VERSION file is 1.9.1. `POST /v1/reorg/discard` drops a Reorganize plan that has not started copying, and leaves the photo files where they are. The disk image is `Releases/ZImager-1.9.1-macOS.dmg`. 1.8.6 behavior below is still in this app.
 
 ## What 1.8.6 changes
 
@@ -170,7 +180,7 @@ Clean folder is in the Server three-bar menu. It removes catalog records in the 
 
 ## Install ZImager
 
-The published disk image is `Releases/ZImager-1.8.6-macOS.dmg`. It contains `ZImager.app` and `README.txt`. This tree is ZImager 1.9.0 and does not add a new disk image.
+The published disk image is `Releases/ZImager-1.9.1-macOS.dmg`, sha256 `7dc9f83453eefeb837b17cd8d86de0570672954496376d4c707371d0d990cb99`, 26626667 bytes. It contains `ZImager.app` and `README.txt`. The image stays out of git. The text in the image is `Releases/ZImager-1.9.1-README.txt`. It is signed with Developer ID Application: Thomas Zimmer (X5YCJL3LJ8) and notarized by Apple.
 
 1. Open the disk image.
 2. Drag **ZImager.app** into Applications.
@@ -182,7 +192,7 @@ This copy is signed with a Developer ID and notarized by Apple. A Mac set to all
 
 Skip this if you only use Disk.
 
-Server mode needs `zimage-helper` running on the NAS. The disk image does not include it. The Mac never opens `catalog.db`. The 1.8.0 helper source adds Rescan. The 1.8.4 helper source adds folder rename and the confidence update Organize uses. The 1.8.5 helper source adds `POST /v1/files/rename` and an X3F embedded preview. The 1.8.6 helper source adds `POST /v1/folders/rescan-page`. The 1.9.0 helper source adds `helperVersion` on health, `role: "mirror"`, and `POST /v1/reorg/discard`. It does not develop the Foveon sensor.
+Server mode needs `zimage-helper` running on the NAS. The disk image does not include it. The Mac never opens `catalog.db`. The 1.8.0 helper source adds Rescan. The 1.8.4 helper source adds folder rename and the confidence update Organize uses. The 1.8.5 helper source adds `POST /v1/files/rename` and an X3F embedded preview. The 1.8.6 helper source adds `POST /v1/folders/rescan-page`. The 1.9.0 helper source adds `helperVersion` on health, `role: "mirror"`, and `POST /v1/reorg/discard`. The 1.9.1 helper source pauses a folder scan so a page listing can be written first. It does not develop the Foveon sensor.
 
 Each ZImager build runs `Vendor/embed-helper.sh` and puts Linux arm64 and amd64 binaries in the app. Add Server and Update Helper copy those onto the share, with a launcher named `zimage-helper`. The launcher picks the CPU, sets `GOMEMLIMIT=160MiB`, turns copy-on-write off for the catalog directory, and writes `config.yaml` only when that file is missing. The DSM task runs `sh` on that launcher. Checking Enabled does not start the task.
 

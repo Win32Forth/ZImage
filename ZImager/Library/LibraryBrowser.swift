@@ -2,6 +2,7 @@ import AppKit
 import Darwin
 import Foundation
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// Photos lists stills and videos together. Review lists the park. Duplicates lists the store. The path stays `Photos/_Duplicates`.
 enum LibrarySidebar {
@@ -830,10 +831,32 @@ final class LibraryBrowser {
     var mirrorMissing: Set<String> = []
     /// True while the main library is being copied onto the mirror, or a photo is being recovered.
     var mirrorBusy = false
+    /// One automatic resume per launch. Start mirroring still runs when the button is clicked.
+    @ObservationIgnored var mirrorLaunchResumeDone = false
     /// Bumped to stop a mirror copy that is already running.
     var mirrorGeneration = 0
+    /// One new photograph at a time. An edit copy for another photo does not wait on this.
+    var mirrorFollowUp: Task<Void, Never>?
+    /// The newest edit copy requested for a Photos path. An older copy does not overwrite it.
+    @ObservationIgnored var mirrorEditEpoch: [String: Int] = [:]
+    /// The edit copy still running for that Photos path.
+    @ObservationIgnored var mirrorEditTask: [String: Task<Void, Never>] = [:]
+    /// The epoch whose copy has finished. A newer epoch stays pending.
+    @ObservationIgnored var mirrorEditDone: [String: Int] = [:]
+    /// The byte copy already replacing this path's edit files. A newer copy waits, then writes.
+    @ObservationIgnored var mirrorEditWrite: [String: Task<Void, Never>] = [:]
+    /// Mirror catalog id for a Photos path, so the next save does not ask the catalog again.
+    @ObservationIgnored var mirrorUIDByPath: [String: String] = [:]
+    /// Preview JPEG for a photograph just duplicated, keyed by its Photos path.
+    @ObservationIgnored var plantedPreview: [String: Data] = [:]
     /// Bumped so a late mark pass does not paint over a newer page.
     var mirrorMarkGeneration = 0
+    /// The switched-to server does not have the open photo, so Folder view should show.
+    var switchNeedsFolderView = false
+    /// Bumped when a switch selects a photo, so the grid can scroll that cell into view.
+    private(set) var switchScrollTick = 0
+    /// The photo a switch just selected.
+    private(set) var switchScrollUID: String?
     /// The line under Build. Nil until the button has been used.
     private(set) var folderPreviewBuildNote: String?
     /// The folder list that owns the build. A newer list leaves this pass.
@@ -866,6 +889,8 @@ final class LibraryBrowser {
     private var pageCursors: [String?] = []
     private var folderVideos: [LibraryAsset] = []
     private var folderListKey = ""
+    /// Bumped when a new folder read replaces one that is still counting.
+    private var folderListToken = 0
     /// The page a click asked for before it had been read. `Int.max` means the last page.
     private var requestedPage: Int?
     /// Photos, Review, or Duplicates. Previous and Next walk this list.
@@ -895,6 +920,8 @@ final class LibraryBrowser {
     var selectionAnchorUID: String?
     /// Edited folder JPEG, preferred over the helper thumbnail.
     var editedJPEG: [String: Data] = [:]
+    /// Byte size already read for a menu. Absent until the background read finishes.
+    private var listedFileBytes: [String: Int] = [:]
     var selectedEventUID: String?
     var openFile: (URL, String) -> Void
     /// Opens a catalog still with its asset id, so a flattened TIFF can be the edit base immediately.
@@ -902,6 +929,15 @@ final class LibraryBrowser {
     /// Double-click plays the movie here. The QuickTime menu item does not use this.
     var openVideo: ((URL) -> Void)?
     private var scopedRoot: URL?
+    /// Set after `connect` clears the grid, then applied as the new server's pages arrive.
+    private var switchRecall: SwitchRecall?
+
+    private struct SwitchRecall {
+        var paths: [String]
+        var primary: String?
+        var opening: Bool
+        var opened = false
+    }
     private var fetchedThumbs: Set<String> = []
     private var fetchedDuplicateThumbs: Set<String> = []
     private var checkpointed: Set<String> = []
@@ -945,6 +981,8 @@ final class LibraryBrowser {
         selectedUIDs = []
         selectionOrder = []
         selectionAnchorUID = nil
+        switchRecall = nil
+        switchScrollUID = nil
         editedJPEG = [:]
         selectedEventUID = nil
         notice = nil
@@ -1065,11 +1103,16 @@ final class LibraryBrowser {
 
     private func reloadFolderGrid(under folder: String?, name: String?) async {
         let key = "photo|\(folder ?? "")|\(name ?? "")"
+        // A server switch owns this folder until its photo is selected. A second read must not clear that selection.
+        if switchRecall != nil, folderPageCounting, folderListKey == key {
+            return
+        }
         let fresh = key != folderListKey
         if fresh {
             previewBuildKey = nil
             folderPreviewBuildBusy = false
             folderPreviewBuildNote = nil
+            folderListToken += 1
             folderListKey = key
             folderPage = 0
             requestedPage = nil
@@ -1097,6 +1140,7 @@ final class LibraryBrowser {
             dropped = outcome == .dropped
             // An empty cursor page cannot prove the earlier pages are gone. Read the folder again.
             if dropped, folderListKey.isEmpty, !Task.isCancelled {
+                folderListToken += 1
                 folderListKey = key
                 await walkFolderPhotos(under: folder, name: name, key: key)
             }
@@ -1104,16 +1148,12 @@ final class LibraryBrowser {
         guard folderListKey == key, !Task.isCancelled else { return }
         if name != nil { notice = nil }
         if fresh || dropped { trimSelectionToRows() }
+        await noteSwitchPage()
         await loadThumbnails()
     }
 
-    /// Reads every photo page. The first 200 are shown as soon as they arrive.
-    /// A newer folder load owns `folderListKey`. This walk stops without writing over it.
-    private func walkFolderPhotos(under folder: String?, name: String?, key: String) async {
-        stillPages = []
-        pageCursors = []
-        folderPhotoTotal = nil
-        folderPageCounting = true
+    /// One pass through the catalog pages of a folder.
+    private struct FolderCount {
         var cursor: String?
         var seenCursors: Set<String> = []
         var seenUIDs: Set<String> = []
@@ -1121,68 +1161,133 @@ final class LibraryBrowser {
         var tailCursor: String?
         var counted = 0
         var failed = false
-        while folderListKey == key && !Task.isCancelled {
+    }
+
+    private enum FolderRead {
+        case done
+        case handoff
+        case abandoned
+    }
+
+    /// Reads every photo page. The first 200 are shown as soon as they arrive.
+    /// A switch selects the page that holds the photo, then counts the remaining pages on a later task.
+    /// A newer folder load owns `folderListKey`. This walk stops without writing over it.
+    private func walkFolderPhotos(under folder: String?, name: String?, key: String) async {
+        let token = folderListToken
+        stillPages = []
+        pageCursors = []
+        folderPhotoTotal = nil
+        folderPageCounting = true
+        var count = FolderCount()
+        let outcome = await readPhotoPages(into: &count, folder: folder, name: name, key: key, token: token, stopWhenTargetFound: switchRecall != nil)
+        switch outcome {
+        case .abandoned:
+            return
+        case .handoff:
+            let snapshot = count
+            Task { @MainActor in
+                await self.finishFolderCount(snapshot, folder: folder, name: name, key: key, token: token)
+            }
+        case .done:
+            await completeFolderList(count, folder: folder, name: name, key: key, token: token)
+        }
+    }
+
+    /// Continues a switch count after the photo's page is on screen. The main thread is free while each page is read.
+    private func finishFolderCount(_ count: FolderCount, folder: String?, name: String?, key: String, token: Int) async {
+        var count = count
+        let outcome = await readPhotoPages(into: &count, folder: folder, name: name, key: key, token: token, stopWhenTargetFound: false)
+        guard outcome == .done else { return }
+        await completeFolderList(count, folder: folder, name: name, key: key, token: token)
+        guard folderListKey == key, folderListToken == token else { return }
+        await finishSwitchRecall()
+    }
+
+    private func readPhotoPages(
+        into count: inout FolderCount,
+        folder: String?,
+        name: String?,
+        key: String,
+        token: Int,
+        stopWhenTargetFound: Bool
+    ) async -> FolderRead {
+        while folderListKey == key && folderListToken == token && !Task.isCancelled {
             let page: LibraryPage
             do {
-                page = try await client.assets(media: "photo", under: folder, name: name, cursor: cursor)
+                page = try await client.assets(media: "photo", under: folder, name: name, cursor: count.cursor)
             } catch {
-                if folderListKey == key {
-                    failed = stillPages.isEmpty && buffer.isEmpty
+                if folderListKey == key && folderListToken == token {
+                    count.failed = stillPages.isEmpty && count.buffer.isEmpty
                 }
                 break
             }
-            if folderListKey != key || Task.isCancelled { break }
-            if stillPages.isEmpty && buffer.isEmpty {
-                session.markReachable()
+            if folderListKey != key || folderListToken != token || Task.isCancelled {
+                abandonFolderList(key: key, token: token, name: name)
+                return .abandoned
             }
-            let requestCursor = cursor
+            session.markReachable()
+            let requestCursor = count.cursor
+            var lost = false
             for row in page.rows {
-                guard !isVideo(row), seenUIDs.insert(row.uid).inserted else { continue }
+                guard !isVideo(row), count.seenUIDs.insert(row.uid).inserted else { continue }
                 if let name, !FolderNameFilter.matches(FolderNameFilter.fileName(in: row.relPath ?? ""), query: name) {
                     continue
                 }
-                if buffer.isEmpty { tailCursor = requestCursor }
-                buffer.append(row)
-                counted += 1
-                if buffer.count == FolderPage.limit {
-                    stillPages.append(buffer)
-                    pageCursors.append(tailCursor)
-                    buffer.removeAll()
-                    tailCursor = nil
+                if count.buffer.isEmpty { count.tailCursor = requestCursor }
+                count.buffer.append(row)
+                count.counted += 1
+                if count.buffer.count == FolderPage.limit {
+                    stillPages.append(count.buffer)
+                    pageCursors.append(count.tailCursor)
+                    count.buffer.removeAll()
+                    count.tailCursor = nil
                     await publishArrivedPage(key: key)
-                    if folderListKey != key || Task.isCancelled { break }
+                    if folderListKey != key || folderListToken != token || Task.isCancelled {
+                        lost = true
+                        break
+                    }
                 }
             }
-            if folderListKey != key || Task.isCancelled { break }
+            if lost || folderListKey != key || folderListToken != token || Task.isCancelled {
+                abandonFolderList(key: key, token: token, name: name)
+                return .abandoned
+            }
             let next = page.nextCursor
-            if next.isEmpty || page.rows.isEmpty || !seenCursors.insert(next).inserted { break }
-            cursor = next
+            if next.isEmpty || page.rows.isEmpty || !count.seenCursors.insert(next).inserted { break }
+            count.cursor = next
+            if stopWhenTargetFound, switchTargetIsLoaded() {
+                return .handoff
+            }
         }
-        if folderListKey != key || Task.isCancelled {
-            abandonFolderList(key: key, name: name)
-            return
+        if folderListKey != key || folderListToken != token || Task.isCancelled {
+            abandonFolderList(key: key, token: token, name: name)
+            return .abandoned
         }
-        if failed {
+        return .done
+    }
+
+    private func completeFolderList(_ count: FolderCount, folder: String?, name: String?, key: String, token: Int) async {
+        if count.failed {
             folderPageCounting = false
             await session.refresh(media: "photo", under: folder, name: name)
-            guard folderListKey == key, !Task.isCancelled else {
-                abandonFolderList(key: key, name: name)
+            guard folderListKey == key, folderListToken == token, !Task.isCancelled else {
+                abandonFolderList(key: key, token: token, name: name)
                 return
             }
             rows = Array(session.rows.filter { !isVideo($0) }.prefix(FolderPage.limit))
             return
         }
-        if !buffer.isEmpty {
-            stillPages.append(buffer)
-            pageCursors.append(tailCursor)
+        if !count.buffer.isEmpty {
+            stillPages.append(count.buffer)
+            pageCursors.append(count.tailCursor)
         }
         let videos = await loadFolderVideos(under: folder, name: name)
-        guard folderListKey == key, !Task.isCancelled else {
-            abandonFolderList(key: key, name: name)
+        guard folderListKey == key, folderListToken == token, !Task.isCancelled else {
+            abandonFolderList(key: key, token: token, name: name)
             return
         }
         folderVideos = videos
-        folderPhotoTotal = counted
+        folderPhotoTotal = count.counted
         folderPageCounting = false
         if let requestedPage {
             if requestedPage == .max {
@@ -1195,19 +1300,48 @@ final class LibraryBrowser {
             folderPage = max(0, stillPages.count - 1)
         }
         applyFolderRows()
+        await noteSwitchPage()
     }
 
     private func publishArrivedPage(key: String) async {
         guard folderListKey == key, !Task.isCancelled else { return }
         let arrived = stillPages.count - 1
-        let show = folderPage == arrived || (folderPage == 0 && arrived == 0) || requestedPage == arrived
+        let targetHere = switchTargetIsOnPage(arrived)
+        await noteSwitchPage()
+        let show = targetHere || folderPage == arrived || (folderPage == 0 && arrived == 0) || requestedPage == arrived
         guard show else { return }
         if requestedPage == arrived {
             folderPage = arrived
             requestedPage = nil
         }
         applyFolderRows()
+        // Other pages stay as catalog rows. Only the page that holds the switched photo is checked here.
+        if switchRecall != nil && !targetHere { return }
         await loadThumbnails()
+    }
+
+    /// True once the switched photo has been read into a full page.
+    private func switchTargetIsLoaded() -> Bool {
+        guard let recall = switchRecall else { return false }
+        if let primary = recall.primary {
+            return assetForSwitchPath(primary) != nil
+        }
+        return LibrarySwitch.choice(pages: stillPages, videos: folderVideos, paths: recall.paths, primary: nil) != nil
+    }
+
+    private func switchTargetIsOnPage(_ index: Int) -> Bool {
+        guard stillPages.indices.contains(index), let recall = switchRecall else { return false }
+        let page = stillPages[index]
+        if let primary = recall.primary {
+            return page.contains { asset in
+                asset.relPath?.caseInsensitiveCompare(primary) == .orderedSame
+            }
+        }
+        return page.contains { asset in
+            recall.paths.contains { path in
+                asset.relPath?.caseInsensitiveCompare(path) == .orderedSame
+            }
+        }
     }
 
     /// A failed fetch keeps the page. An empty page drops the cached list so the caller can read the folder again.
@@ -1234,6 +1368,7 @@ final class LibraryBrowser {
         }
         guard stillPages.indices.contains(pageIndex), folderListKey == key else { return .kept }
         if stills.isEmpty {
+            folderListToken += 1
             folderListKey = ""
             stillPages = []
             pageCursors = []
@@ -1315,14 +1450,16 @@ final class LibraryBrowser {
 
     /// Drops an unfinished count so the next open reads the folder again.
     /// A newer load owns the key and is left alone.
-    private func abandonFolderList(key: String, name: String?) {
-        guard folderListKey == key else { return }
+    private func abandonFolderList(key: String, token: Int, name: String?) {
+        guard folderListKey == key, folderListToken == token else { return }
+        folderListToken += 1
         folderListKey = ""
         folderPageCounting = false
         if name != nil { notice = nil }
     }
 
     private func resetFolderPages() {
+        folderListToken += 1
         folderPage = 0
         folderPhotoTotal = nil
         folderPageCounting = false
@@ -1331,6 +1468,160 @@ final class LibraryBrowser {
         folderVideos = []
         folderListKey = ""
         requestedPage = nil
+    }
+
+    /// Paths of the photos selected on the page now showing.
+    func selectedPlace() -> (paths: [String], primary: String?) {
+        func rel(for uid: String) -> String? {
+            if let path = rows.first(where: { $0.uid == uid })?.relPath { return path }
+            for page in stillPages {
+                if let path = page.first(where: { $0.uid == uid })?.relPath { return path }
+            }
+            return folderVideos.first(where: { $0.uid == uid })?.relPath
+        }
+        var paths: [String] = []
+        for uid in selectionOrder {
+            if let path = rel(for: uid), !paths.contains(path) {
+                paths.append(path)
+            }
+        }
+        for uid in selectedUIDs {
+            if let path = rel(for: uid), !paths.contains(path) {
+                paths.append(path)
+            }
+        }
+        let primary = selectedUID.flatMap { rel(for: $0) }
+        if let primary, !paths.contains(primary) {
+            paths.append(primary)
+        }
+        return (paths, primary)
+    }
+
+    /// `connect` has already moved onto the new server and cleared the folder.
+    /// The next folder read selects `paths` and, when `opening` is set, opens `primary`.
+    /// The page that holds `primary` is read before this returns. Later pages finish afterward.
+    func keepLibraryPlace(folder: String, paths: [String], primary: String?, opening: Bool) async {
+        guard let folder = LibrarySwitch.folderToKeep(folder) else { return }
+        displayFolder = folder
+        switchNeedsFolderView = false
+        switchRecall = SwitchRecall(paths: paths, primary: primary, opening: opening)
+        let key = "photo|\(folder)|"
+        folderListToken += 1
+        let token = folderListToken
+        previewBuildKey = nil
+        folderPreviewBuildBusy = false
+        folderPreviewBuildNote = nil
+        folderListKey = key
+        folderPage = 0
+        requestedPage = nil
+        stillPages = []
+        pageCursors = []
+        folderVideos = []
+        folderPhotoTotal = nil
+        folderPageCounting = true
+        rows = []
+        await showFocus()
+        guard folderListToken == token, folderListKey == key else { return }
+        await walkFolderPhotos(under: folder, name: nil, key: key)
+        guard folderListToken == token, folderListKey == key, !Task.isCancelled else { return }
+        if folderPageCounting { return }
+        await finishSwitchRecall()
+    }
+
+    /// Selects the kept photo on the page that holds it. Opens it once when Image view was showing and the file is here.
+    private func noteSwitchPage() async {
+        guard var recall = switchRecall else { return }
+        guard let choice = LibrarySwitch.choice(
+            pages: stillPages,
+            videos: folderVideos,
+            paths: recall.paths,
+            primary: recall.primary
+        ) else { return }
+        if recall.primary != nil, choice.primaryUID == nil, folderPageCounting { return }
+        if folderPage != choice.page {
+            folderPage = choice.page
+            applyFolderRows()
+        }
+        selectedUIDs = Set(choice.uids)
+        selectionOrder = choice.uids
+        selectedUID = choice.primaryUID ?? choice.uids.last
+        selectionAnchorUID = selectedUID
+        if let selectedUID {
+            switchScrollUID = selectedUID
+            switchScrollTick += 1
+        }
+        guard recall.opening, !recall.opened,
+              let uid = choice.primaryUID,
+              let asset = assetOnLoadedPages(uid),
+              let rel = asset.relPath,
+              rel.hasPrefix("Photos/"), !rel.contains("..") else {
+            switchRecall = recall
+            return
+        }
+        let root = libraryRoot
+        let exists = await Task.detached(priority: .utility) {
+            FileManager.default.fileExists(atPath: root.appending(path: rel).path)
+        }.value
+        guard var live = switchRecall, live.opening, !live.opened else { return }
+        guard exists else {
+            notice = "This photo is not on this server."
+            switchNeedsFolderView = true
+            live.opened = true
+            switchRecall = live
+            return
+        }
+        live.opened = true
+        switchRecall = live
+        openPrimary(asset)
+    }
+
+    private func assetOnLoadedPages(_ uid: String) -> LibraryAsset? {
+        for page in stillPages {
+            if let asset = page.first(where: { $0.uid == uid }) { return asset }
+        }
+        return folderVideos.first { $0.uid == uid } ?? rows.first { $0.uid == uid }
+    }
+
+    /// The catalog walk finished without the photo. A file on disk still opens. A missing file stays in the folder.
+    /// A count that is still running keeps the recall so a later page can still select the photo.
+    private func finishSwitchRecall() async {
+        guard switchRecall != nil, !folderPageCounting else { return }
+        guard let recall = switchRecall else { return }
+        switchRecall = nil
+        guard let primary = recall.primary, !recall.opened else { return }
+        guard primary.hasPrefix("Photos/"), !primary.contains("..") else { return }
+        let root = libraryRoot
+        let exists = await Task.detached(priority: .utility) {
+            FileManager.default.fileExists(atPath: root.appending(path: primary).path)
+        }.value
+        let listed = stillPages.contains { page in
+            page.contains { $0.relPath?.caseInsensitiveCompare(primary) == .orderedSame }
+        } || folderVideos.contains { $0.relPath?.caseInsensitiveCompare(primary) == .orderedSame }
+        guard exists else {
+            notice = "This photo is not on this server."
+            if recall.opening { switchNeedsFolderView = true }
+            return
+        }
+        if listed {
+            if recall.opening, let asset = assetForSwitchPath(primary) {
+                openPrimary(asset)
+            }
+            return
+        }
+        if recall.opening {
+            openFile(root.appending(path: primary), "")
+            return
+        }
+        notice = "This photo is on this server. The catalog has not listed it yet."
+    }
+
+    private func assetForSwitchPath(_ path: String) -> LibraryAsset? {
+        for page in stillPages {
+            if let asset = page.first(where: { $0.relPath?.caseInsensitiveCompare(path) == .orderedSame }) {
+                return asset
+            }
+        }
+        return folderVideos.first { $0.relPath?.caseInsensitiveCompare(path) == .orderedSame }
     }
 
     private func trimSelectionToRows() {
@@ -1359,7 +1650,14 @@ final class LibraryBrowser {
             ?? duplicateGroups.lazy.flatMap(\.members).first { $0.uid == uid }
         guard let asset else { return }
         if asset.thumbRel == nil {
-            if cells[uid] == nil {
+            if let data = await uncatalogedPreview(for: asset) {
+                cells[uid] = LibraryGridCell(
+                    imageData: data,
+                    thumbnailURL: nil,
+                    badge: cellBadge(for: asset),
+                    placeholder: false
+                )
+            } else if cells[uid] == nil {
                 cells[uid] = LibraryGridCell(
                     imageData: nil,
                     thumbnailURL: nil,
@@ -1938,9 +2236,8 @@ final class LibraryBrowser {
         }
     }
 
-    /// Deletes every file in Photos/_Removed, then asks the helper to drop those catalog rows.
+    /// Deletes every file in Photos/_Removed on the server on screen, then asks the helper to drop those catalog rows.
     func deleteAllRemoved() async {
-        guard !isMirror else { return }
         guard DisplayFolder.isRemovedShelf(displayFolder) else { return }
         guard !removalBusy, !rescanBusy, !dateBusy, !organizeBusy, !cleanBusy, !moveBusy, !mergeBusy else { return }
         removalBusy = true
@@ -2065,7 +2362,8 @@ final class LibraryBrowser {
             return false
         case .busy:
             if announce {
-                finishRescan(generation: generation, notice: "A folder rescan is already running.")
+                let line = await rescanAlreadyRunningNotice()
+                finishRescan(generation: generation, notice: line)
             }
             return false
         case .offline:
@@ -2073,9 +2371,43 @@ final class LibraryBrowser {
                 finishRescan(generation: generation, notice: "The folder was not rescanned.")
             }
             return false
-        case .status:
+        case .status(let status):
+            if status.applied {
+                return await completeAppliedRescan(status, generation: generation, folder: folder, announce: announce, reloadGrid: reloadGrid)
+            }
             return await followFolderRescan(generation: generation, folder: folder, announce: announce, reloadGrid: reloadGrid)
         }
+    }
+
+    /// The page is already in the catalog. The status query can still show a library scan.
+    private func completeAppliedRescan(_ status: FolderScanStatus, generation: Int, folder: String, announce: Bool, reloadGrid: Bool) async -> Bool {
+        guard generation == rescanGeneration else { return false }
+        if status.runState == "failed" {
+            let line = status.error == "prefix" ? "That folder cannot be rescanned." : "The folder was not rescanned."
+            if announce {
+                finishRescan(generation: generation, notice: line)
+            }
+            return false
+        }
+        if reloadGrid, displayFolder == folder {
+            await reload(media: "photo")
+        }
+        if announce {
+            finishRescan(generation: generation, notice: rescanFinishedNotice(added: status.added, removed: status.removed))
+        }
+        return true
+    }
+
+    /// The helper runs one folder scan at a time. The notice names that scan.
+    private func rescanAlreadyRunningNotice() async -> String {
+        guard case .status(let status) = await client.folderRescanStatus() else {
+            return "A folder rescan is already running."
+        }
+        let prefix = status.prefix.isEmpty ? "another folder" : status.prefix
+        if status.total > 0 {
+            return "A rescan of \(prefix) is already running. \(status.done) of \(status.total)."
+        }
+        return "A rescan of \(prefix) is already running."
     }
 
     private func followFolderRescan(generation: Int, folder: String, announce: Bool = true, reloadGrid: Bool = true) async -> Bool {
@@ -2626,6 +2958,8 @@ final class LibraryBrowser {
         defer { removalBusy = false }
         var moved = 0
         var stayed = 0
+        var mirrorParked = 0
+        var mirrorStayed = 0
         let total = assets.count
         for (index, asset) in assets.enumerated() {
             notice = "Moving \(index + 1) of \(total) to Photos/_Removed."
@@ -2636,16 +2970,32 @@ final class LibraryBrowser {
                     stayed += 1
                 } else {
                     moved += 1
+                    if !isMirror, let rel = asset.relPath {
+                        notice = "Moving the mirror copy to Photos/_Removed."
+                        switch await parkMirrorCopy(of: rel) {
+                        case .parked: mirrorParked += 1
+                        case .stayed: mirrorStayed += 1
+                        case .none: break
+                        }
+                    }
                 }
             } catch {
                 stayed += total - moved - stayed
                 break
             }
         }
-        if stayed == 0 {
-            notice = moved == 1 ? "Moved to Photos/_Removed." : "Moved \(moved) files to Photos/_Removed."
+        if stayed == 0 && mirrorStayed == 0 {
+            if mirrorParked > 0 {
+                notice = moved == 1
+                    ? "Moved to Photos/_Removed on the main server and the mirror."
+                    : "Moved \(moved) files to Photos/_Removed on the main server and the mirror."
+            } else {
+                notice = moved == 1 ? "Moved to Photos/_Removed." : "Moved \(moved) files to Photos/_Removed."
+            }
         } else if moved == 0 {
             notice = total == 1 ? "The file stayed in the library." : "The files stayed in the library."
+        } else if mirrorStayed > 0 && stayed == 0 {
+            notice = "Moved to Photos/_Removed. The mirror copy stayed."
         } else {
             notice = "\(moved) moved to Photos/_Removed. \(stayed) stayed in the library."
         }
@@ -3082,12 +3432,18 @@ final class LibraryBrowser {
     }
 
     /// A flattened TIFF is already beside its photograph. The catalog walk adds that file.
-    func catalogAddedFile(_ name: String, in folder: String) {
+    /// `previewJPEG` is the folder picture for that TIFF, on this server and on the mirror.
+    func catalogAddedFile(_ name: String, in folder: String, previewJPEG: Data = Data()) {
         let line = "Duplicated as \(name)."
         guard !folder.isEmpty else {
             notice = line
             return
         }
+        let relative = (folder as NSString).appendingPathComponent(name)
+        if !previewJPEG.isEmpty {
+            plantedPreview[relative] = previewJPEG
+        }
+        mirrorCopiedPhoto(relative: relative, previewJPEG: previewJPEG.isEmpty ? nil : previewJPEG)
         Task { await rescanMovedFolders([folder], notice: line) }
     }
 
@@ -3096,6 +3452,8 @@ final class LibraryBrowser {
         mergeBusy = false
         switch result {
         case .success(let name):
+            let relative = (folder as NSString).appendingPathComponent(name)
+            mirrorCopiedPhoto(relative: relative)
             await rescanMovedFolders([folder], notice: "Merged into \(name).")
         case .failure(let error):
             notice = error.message
@@ -3153,6 +3511,18 @@ final class LibraryBrowser {
             return isSettingsStill(clicked) ? [clicked] : []
         }
         return rotatableStills(in: sectionAssets())
+    }
+
+    /// Selected stills and the catalog ids a folder Rotate, Flip, or Paste saves.
+    func selectedStillCatalog() -> (files: [URL], catalog: [String: CatalogEditTarget]) {
+        var files: [URL] = []
+        var catalog: [String: CatalogEditTarget] = [:]
+        for asset in rotatableStills(in: sectionAssets()) {
+            guard let url = fileURL(for: asset), let relativePath = asset.relPath else { continue }
+            files.append(url)
+            catalog[FolderEntry.cacheKey(for: url)] = CatalogEditTarget(uid: asset.uid, relativePath: relativePath)
+        }
+        return (files, catalog)
     }
 
     func rotatableStills(in pool: [LibraryAsset]) -> [LibraryAsset] {
@@ -3531,15 +3901,43 @@ final class LibraryBrowser {
     }
 
     /// Applications that can open this file. ZImager is first for a still. QuickTime Player is first for a video.
+    /// The extension chooses the applications. Asking Launch Services about the file itself states the NAS once per photo while the grid is laying out.
     func openWithTargets(for asset: LibraryAsset) -> [LibraryOpenTarget] {
-        let others = fileURL(for: asset).map { NSWorkspace.shared.urlsForApplications(toOpen: $0) } ?? []
-        let zimage = NSWorkspace.shared.urlForApplication(withBundleIdentifier: EditorHandoff.editorBundleID)
-        let names = { (url: URL) in FileManager.default.displayName(atPath: url.path) }
+        let ext = (asset.ext ?? (asset.relPath as NSString?)?.pathExtension ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
         if isVideo(asset) {
-            let quickTime = NSWorkspace.shared.urlForApplication(withBundleIdentifier: LibraryItemMenu.quickTimeBundleID)
-            return LibraryItemMenu.videoApplications(quickTime: quickTime, others: others, editor: zimage, names: names)
+            if let cached = Self.videoTargetsByExtension[ext] { return cached }
+            let targets = LibraryItemMenu.videoApplications(
+                quickTime: NSWorkspace.shared.urlForApplication(withBundleIdentifier: LibraryItemMenu.quickTimeBundleID),
+                others: applications(forFilenameExtension: ext),
+                editor: NSWorkspace.shared.urlForApplication(withBundleIdentifier: EditorHandoff.editorBundleID),
+                names: Self.applicationName
+            )
+            Self.videoTargetsByExtension[ext] = targets
+            return targets
         }
-        return LibraryItemMenu.applications(zimage: zimage, others: others, names: names)
+        if let cached = Self.stillTargetsByExtension[ext] { return cached }
+        let targets = LibraryItemMenu.applications(
+            zimage: NSWorkspace.shared.urlForApplication(withBundleIdentifier: EditorHandoff.editorBundleID),
+            others: applications(forFilenameExtension: ext),
+            names: Self.applicationName
+        )
+        Self.stillTargetsByExtension[ext] = targets
+        return targets
+    }
+
+    private static var stillTargetsByExtension: [String: [LibraryOpenTarget]] = [:]
+    private static var videoTargetsByExtension: [String: [LibraryOpenTarget]] = [:]
+
+    private static func applicationName(_ url: URL) -> String {
+        FileManager.default.displayName(atPath: url.path)
+    }
+
+    /// Apps that claim this extension. The photograph is not opened or stated.
+    private func applications(forFilenameExtension ext: String) -> [URL] {
+        guard !ext.isEmpty, let type = UTType(filenameExtension: ext) else { return [] }
+        return NSWorkspace.shared.urlsForApplications(toOpen: type)
     }
 
     func open(_ asset: LibraryAsset, with application: URL) {
@@ -3558,6 +3956,37 @@ final class LibraryBrowser {
         guard let url = fileURL(for: asset) else { return LibraryItemMenu.sizeUnavailable }
         let bytes = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize
         return LibraryItemMenu.sizeLabel(bytes: bytes)
+    }
+
+    /// Menu size already read for this page. Layout must not state the share once per photo.
+    func listedSizeLabel(for asset: LibraryAsset) -> String {
+        LibraryItemMenu.sizeLabel(bytes: listedFileBytes[asset.uid])
+    }
+
+    /// File sizes for the open menu. One file at a time, off the main thread.
+    private func rememberListedFileSizes(for assets: [LibraryAsset]) {
+        let key = folderListKey
+        let token = folderListToken
+        var jobs: [(uid: String, path: String)] = []
+        for asset in assets {
+            guard listedFileBytes[asset.uid] == nil, let url = fileURL(for: asset) else { continue }
+            jobs.append((asset.uid, url.path))
+        }
+        guard !jobs.isEmpty else { return }
+        Task { @MainActor in
+            for job in jobs {
+                if self.folderListKey != key || self.folderListToken != token { return }
+                let uid = job.uid
+                let path = job.path
+                let bytes = await Task.detached(priority: .utility) { () -> Int? in
+                    (try? URL(fileURLWithPath: path).resourceValues(forKeys: [.fileSizeKey]))?.fileSize
+                }.value
+                if self.folderListKey != key || self.folderListToken != token { return }
+                if let bytes, self.listedFileBytes[uid] == nil {
+                    self.listedFileBytes[uid] = bytes
+                }
+            }
+        }
     }
 
     private func isZImageApplication(_ application: URL) -> Bool {
@@ -3657,19 +4086,47 @@ final class LibraryBrowser {
         guard editedJPEG[asset.uid] == nil, let url = fileURL(for: asset) else { return }
         if let data = FolderPreviewCache.readEditedJPEG(for: url) {
             editedJPEG[asset.uid] = data
-            return
         }
-        let working = libraryRoot
-            .appendingPathComponent(".zimage", isDirectory: true)
-            .appendingPathComponent("edits", isDirectory: true)
-            .appendingPathComponent(asset.uid + ".zjpg")
-        guard FileManager.default.isReadableFile(atPath: working.path),
-              let data = FolderPreviewCache.storeEditedJPEG(fromWorkingFile: working, for: url) else { return }
-        editedJPEG[asset.uid] = data
+    }
+
+    /// Reads saved edit JPEGs off the main thread. A folder page does not stat the share while it is drawing.
+    private func rememberEditedWorkingFiles(for assets: [LibraryAsset]) {
+        let key = folderListKey
+        let token = folderListToken
+        var jobs: [(uid: String, working: String, source: String)] = []
+        for asset in assets {
+            guard editedJPEG[asset.uid] == nil, let source = fileURL(for: asset) else { continue }
+            let working = libraryRoot
+                .appendingPathComponent(".zimage", isDirectory: true)
+                .appendingPathComponent("edits", isDirectory: true)
+                .appendingPathComponent(asset.uid + ".zjpg")
+            jobs.append((asset.uid, working.path, source.path))
+        }
+        guard !jobs.isEmpty else { return }
+        Task { @MainActor in
+            for job in jobs {
+                if self.folderListKey != key || self.folderListToken != token { return }
+                let uid = job.uid
+                let workingPath = job.working
+                let sourcePath = job.source
+                let data = await Task.detached(priority: .utility) { () -> Data? in
+                    guard FileManager.default.isReadableFile(atPath: workingPath) else { return nil }
+                    return FolderPreviewCache.storeEditedJPEG(
+                        fromWorkingFile: URL(fileURLWithPath: workingPath),
+                        for: URL(fileURLWithPath: sourcePath)
+                    )
+                }.value
+                if self.folderListKey != key || self.folderListToken != token { return }
+                if let data, self.editedJPEG[uid] == nil {
+                    self.editedJPEG[uid] = data
+                }
+            }
+        }
     }
 
     private func loadThumbnails() async {
-        for asset in rows {
+        let listed = rows
+        for asset in listed {
             rememberEditedFile(for: asset)
             if asset.thumbRel == nil {
                 cells[asset.uid] = LibraryGridCell(
@@ -3678,6 +4135,14 @@ final class LibraryBrowser {
                     badge: cellBadge(for: asset),
                     placeholder: true
                 )
+                if let data = await uncatalogedPreview(for: asset) {
+                    cells[asset.uid] = LibraryGridCell(
+                        imageData: data,
+                        thumbnailURL: nil,
+                        badge: cellBadge(for: asset),
+                        placeholder: false
+                    )
+                }
                 continue
             }
             if fetchedThumbs.contains(asset.uid) { continue }
@@ -3701,6 +4166,8 @@ final class LibraryBrowser {
                 )
             }
         }
+        rememberEditedWorkingFiles(for: listed)
+        rememberListedFileSizes(for: listed)
     }
 
     private func storePreview(for asset: LibraryAsset) async {
@@ -3735,6 +4202,14 @@ final class LibraryBrowser {
                     badge: cellBadge(for: asset),
                     placeholder: true
                 )
+                if let data = await uncatalogedPreview(for: asset) {
+                    cells[asset.uid] = LibraryGridCell(
+                        imageData: data,
+                        thumbnailURL: nil,
+                        badge: cellBadge(for: asset),
+                        placeholder: false
+                    )
+                }
                 continue
             }
             if fetchedDuplicateThumbs.contains(asset.uid) { continue }
@@ -3758,6 +4233,31 @@ final class LibraryBrowser {
                 )
             }
         }
+        rememberEditedWorkingFiles(for: duplicateGroups.flatMap(\.members))
+    }
+
+    /// A preview kept for a new TIFF before the catalog records a thumbnail.
+    private func uncatalogedPreview(for asset: LibraryAsset) async -> Data? {
+        guard let path = asset.relPath else { return nil }
+        if let planted = plantedPreview[path] {
+            return planted
+        }
+        if let planted = plantedPreview.first(where: { $0.key.caseInsensitiveCompare(path) == .orderedSame })?.value {
+            return planted
+        }
+        let ext = (path as NSString).pathExtension.lowercased()
+        guard ext == "tif" || ext == "tiff" else { return nil }
+        let uid = asset.uid
+        guard MirrorCopy.safeUID(uid) else { return nil }
+        let root = libraryRoot
+        let relative = MirrorCopy.thumbRelative(uid: uid)
+        guard !relative.isEmpty else { return nil }
+        return await Task.detached(priority: .utility) { () -> Data? in
+            let url = root.appendingPathComponent(relative)
+            guard FileManager.default.isReadableFile(atPath: url.path) else { return nil }
+            guard let data = try? Data(contentsOf: url), !data.isEmpty, data.count <= 2_000_000 else { return nil }
+            return data
+        }.value
     }
 
     private func thumbnailURL(uid: String) -> URL? {

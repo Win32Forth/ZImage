@@ -1,0 +1,95 @@
+ZImager 1.9.1
+
+ZImager is the photo editor and the library in one app.
+Disk opens folders on this Mac. Server talks to a helper on a Synology.
+
+This disk image contains ZImager.app and this README. It does not
+include the helper.
+
+What 1.9.1 changes
+------------------
+The Server menu can keep more than one server. Add Server copies the
+helper onto a mounted share. Update Helper and Uninstall Helper run
+after TCP port 8742 on that server refuses a connection. Uninstall
+removes the helper programs and VERSION. It leaves the catalog, the
+photos, the config, and the token. Forget Server removes that server
+from this Mac and removes its keychain item. The photos stay on the
+server.
+
+Mirror Setup names one main server and one mirror. Mirroring copies
+each file that is missing on the mirror, or whose size differs, into
+the same folder and file name. It also copies the edit file and the
+flattened TIFF beside that photo. It copies one file at a time. A
+file it copies is listed on the mirror. A library scan already
+running pauses for that listing, then continues. A file that exists
+only on the mirror stays there and shows a red border. Recover photo
+copies it onto the main server under the same name. A name that is
+already in that folder gains -2, then -3. Discard photo moves it to
+Photos/_Removed on the mirror. Remove from Library on the main server
+also moves the matching mirror file into Photos/_Removed. A recovered
+beside-name moves the mirror original. Unlink leaves both libraries
+in place so the mirror can become the main server.
+
+On the mirror, date changes, move, merge, rename, save, and paste
+stay off. Build previews stays. Export and print stay. Delete ALL on
+Photos/_Removed deletes every file in that folder on the server on
+screen. The other server's Photos/_Removed stays. Photos/_RemovedExtra
+is left alone.
+
+A rename on the main server is written onto the mirror. The mirror
+finishes one item at a time, in the order the renames happened.
+
+Mirror Image view hides the editing panels. Spectrum stays, with its
+handles locked. History stays. Select, Crop, Undo, and Redo stay off.
+Edit in Library opens that photo on the main server. An orphan shows
+Recover and Edit photo, which copies it onto the main server under
+the same name and opens that copy. The name beside Disk/Server moves
+to the server you pick. A saved change on the main server is copied
+to the mirror then. Flatten copies the flattened TIFF and an empty
+edit list, and switching to the mirror waits until that picture is
+there. Duplicate copies the new TIFF and the preview JPEG the folder
+grid uses. Merge copies the new photograph.
+
+On the mirror folder grid, an unselected orphan has a red border, a
+selected orphan has a purple border, and any other selected photo
+has a green border. Recover photo, Discard photo, and Discard all
+Orphans are available when the page on screen has an orphan. Discard
+all Orphans moves every orphan on that page to Photos/_Removed. The
+Date panel stays on the mirror. The buttons that set or change a
+date stay off.
+
+Mirroring remembers its place. Quit and start again, and it continues
+from that place. Unlink clears the saved place.
+
+The helper this app installs is 1.9.1. Health reports which helper
+build is running. A server whose config says it is the mirror refuses
+edits after that helper is restarted. Discard, folder rescan, and
+pairing stay available. Stop the DSM task before you replace the
+binary by hand. Update Helper waits until port 8742 refuses a
+connection.
+
+1.8.6 and the releases before it are still in this app.
+
+This build is Apple Silicon. It runs on macOS 26. It does not require
+macOS 27.
+
+Do not use Reorganize, Review, or Duplicates
+---------------------------------------------
+Those three do not work yet. Using them can lose photos.
+The Events and Reorganize buttons are hidden.
+Leave Reorganize, Review, and Duplicates alone.
+Do not press Start, Pause, Continue, Find duplicates, or Delete all duplicates.
+
+Install
+-------
+1. Open this disk image.
+2. Drag ZImager.app into Applications.
+3. The first time you open ZImager, macOS asks you to confirm that
+   you downloaded it from the internet. Click Open.
+
+Approval
+--------
+This copy is signed with a Developer ID and notarized by Apple.
+It does not stop running after a week.
+
+A Mac set to allow apps from the App Store only will still refuse it.

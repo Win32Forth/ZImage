@@ -86,6 +86,8 @@ type Server struct {
 	folderAdded   int
 	folderRemoved int
 	folderErr     string
+	// Page listings waiting for the folder walk to reach the next file.
+	folderQueue []*rushPage
 }
 
 // SetPass stores the startup task. The call does no catalog work.

@@ -11,6 +11,15 @@ nonisolated enum PreviewSize {
     static func clamped(_ points: Double) -> Double {
         min(max(points, minimumPoints), maximumPoints)
     }
+
+    /// How many previews of `cell` points fit across `width`, including the grid's outer inset.
+    static func columnCount(width: CGFloat, cell: CGFloat, spacing: CGFloat = 16, inset: CGFloat = 32) -> Int {
+        let step = cell + spacing
+        let usable = width - inset
+        guard cell > 1, step > 1, width.isFinite, usable.isFinite else { return 1 }
+        guard usable >= cell else { return 1 }
+        return max(1, Int((usable + spacing) / step))
+    }
 }
 
 struct PreviewSizeSlider: View {

@@ -336,6 +336,21 @@ func TestScanPageRejectsAPathOutsideTheFolder(t *testing.T) {
 	}
 }
 
+func TestScanFolderYieldsOnEveryFile(t *testing.T) {
+	root := t.TempDir()
+	writeJPEG(t, filepath.Join(root, "Photos", "Day", "a.jpg"))
+	writeJPEG(t, filepath.Join(root, "Photos", "Day", "b.jpg"))
+	catalog := openCatalog(t, root)
+	var yields int
+	summary, err := ScanFolder(root, "Photos/Day", catalog, FolderOptions{Yield: func() { yields++ }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.Added != 2 || yields < 4 {
+		t.Fatalf("yields %d summary %+v", yields, summary)
+	}
+}
+
 func relExists(t *testing.T, catalog *db.Catalog, rel string) bool {
 	t.Helper()
 	var id int64

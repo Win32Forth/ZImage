@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -133,7 +134,7 @@ func TestRescanPageChecksOnlyTheListedFiles(t *testing.T) {
 		"Photos/Day/fresh.jpg",
 	})
 	status = waitRescan(t, client, base, status)
-	if status.RunState != "completed" || status.Added != 1 || status.Removed != 1 || status.Total != 3 {
+	if status.RunState != "completed" || status.Added != 1 || status.Removed != 1 || status.Total != 3 || !status.Applied {
 		t.Fatalf("page %+v", status)
 	}
 	if !apiRelExists(t, catalog, "Photos/Day/keep.jpg") || !apiRelExists(t, catalog, "Photos/Day/fresh.jpg") {
@@ -207,6 +208,46 @@ func TestFullRescanIgnoresAPathList(t *testing.T) {
 	if !apiRelExists(t, catalog, "Photos/Day/a.jpg") || !apiRelExists(t, catalog, "Photos/Day/b.jpg") {
 		t.Fatal("path list did not keep the full walk")
 	}
+}
+
+func TestPageRescanAppliesWhileAFullScanRuns(t *testing.T) {
+	root := t.TempDir()
+	for i := 0; i < 40; i++ {
+		writeTinyJPEG(t, filepath.Join(root, "Photos", "Bulk", fmt.Sprintf("p%02d.jpg", i)))
+	}
+	writeTinyJPEG(t, filepath.Join(root, "Photos", "Other", "now.jpg"))
+	catalog := openAPICatalog(t, root)
+	client, base := reorgServer(t, root, catalog, nil)
+
+	started := postRescan(t, client, base, "Photos/Bulk")
+	if started.RunState != "running" {
+		t.Fatalf("start %+v", started)
+	}
+	began := time.Now()
+	page := postPageRescan(t, client, base, "Photos/Other", []string{"Photos/Other/now.jpg"})
+	elapsed := time.Since(began)
+	if !page.Applied || page.RunState != "completed" || page.Added != 1 || page.Prefix != "Photos/Other" {
+		t.Fatalf("page %+v after %s", page, elapsed)
+	}
+	if !apiRelExists(t, catalog, "Photos/Other/now.jpg") {
+		t.Fatal("page did not list the file")
+	}
+	if elapsed > 2*time.Second {
+		t.Fatalf("page waited %s", elapsed)
+	}
+	resp := authorizedGet(t, client, base+"/v1/folders/rescan")
+	body := readAll(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status %d %s", resp.StatusCode, body)
+	}
+	var live folderScanStatus
+	if err := json.Unmarshal([]byte(body), &live); err != nil {
+		t.Fatal(err)
+	}
+	if live.Prefix != "Photos/Bulk" || live.RunState != "running" || live.Applied {
+		t.Fatalf("background %+v", live)
+	}
+	_ = waitRescan(t, client, base, live)
 }
 
 func postPageRescan(t *testing.T, client *http.Client, base, prefix string, paths []string) folderScanStatus {

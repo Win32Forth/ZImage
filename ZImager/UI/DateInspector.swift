@@ -5,6 +5,7 @@ import SwiftUI
 /// A side panel. A typed date is confidence 1.0. It does not open a modal.
 struct DateInspector: View {
     @Bindable var browser: LibraryBrowser
+    var allowsDateEdits = true
     @State private var captureText = ""
     @State private var header = ReviewHeaderFacts(opened: false, lines: [])
     @State private var confirmsOrganize = false
@@ -69,25 +70,31 @@ struct DateInspector: View {
         }
     }
 
+    /// The slot stays one size so a new photo cannot change the scroll view's content size.
+    /// That change was leaving the vertical bars half outside their clip.
     @ViewBuilder
     private var preview: some View {
-        if let uid = browser.selectedUID, let data = browser.displayImageData(uid: uid), let image = NSImage(data: data) {
-            Image(nsImage: image)
-                .resizable()
-                .scaledToFit()
-                .frame(maxWidth: .infinity, maxHeight: 180)
-                .accessibilityIdentifier("Review preview")
-        } else if browser.selectedUID != nil {
-            RoundedRectangle(cornerRadius: 4)
-                .fill(ChromePalette.hairline)
-                .frame(height: 120)
+        if browser.selectedUID != nil {
+            Color.clear
+                .frame(maxWidth: .infinity)
+                .frame(height: 180)
                 .overlay {
-                    Text(previewCaption)
-                        .font(.system(size: 12))
-                        .foregroundStyle(ChromePalette.ink)
-                        .multilineTextAlignment(.center)
-                        .padding(8)
+                    if let uid = browser.selectedUID, let data = browser.displayImageData(uid: uid) {
+                        JPEGImage(data: data)
+                            .equatable()
+                    } else {
+                        RoundedRectangle(cornerRadius: 4)
+                            .fill(ChromePalette.hairline)
+                            .overlay {
+                                Text(previewCaption)
+                                    .font(.system(size: 12))
+                                    .foregroundStyle(ChromePalette.ink)
+                                    .multilineTextAlignment(.center)
+                                    .padding(8)
+                            }
+                    }
                 }
+                .clipped()
                 .accessibilityIdentifier("Review preview")
         }
     }
@@ -113,6 +120,7 @@ struct DateInspector: View {
                 .foregroundStyle(ChromePalette.ink)
                 .fixedSize(horizontal: false, vertical: true)
         }
+        if allowsDateEdits {
         TextField("YYYY-MM-DD or year", text: $captureText)
             .textFieldStyle(.roundedBorder)
         Button("Set date") {
@@ -144,6 +152,7 @@ struct DateInspector: View {
             Text("Confidence 1.0")
                 .font(.system(size: 13))
                 .foregroundStyle(ChromePalette.ink)
+        }
         }
     }
 

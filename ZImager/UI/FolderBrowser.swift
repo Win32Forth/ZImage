@@ -562,9 +562,9 @@ nonisolated enum FolderPreviewCache {
     }
 
     /// Stable per source path. The preview size is not part of the name.
+    /// Hashes the path string only. Resolving the URL states the file, and on a network volume that beachballs the window.
     static func fileName(for source: URL) -> String {
-        let path = source.standardizedFileURL.resolvingSymlinksInPath().path
-        let digest = SHA256.hash(data: Data(path.utf8))
+        let digest = SHA256.hash(data: Data(source.path.utf8))
         let hex = digest.map { String(format: "%02x", $0) }.joined()
         return hex + ".jpg"
     }

@@ -145,8 +145,12 @@ final class EditorModel {
     @ObservationIgnored
     var onEditedFolderPreview: ((URL, Data?) -> Void)?
     /// A flattened TIFF was written beside the open photo. The folder is the catalog path of its directory.
+    /// The data is the preview JPEG the folder grid shows for that TIFF.
     @ObservationIgnored
-    var onFlattenedDuplicate: ((String, String) -> Void)?
+    var onFlattenedDuplicate: ((String, String, Data) -> Void)?
+    /// The catalog edit file was just written. The uid and Photos path belong to the main server.
+    @ObservationIgnored
+    var onCatalogEditsSaved: ((String, String) -> Void)?
     /// Left and right arrows while Image is showing. Returns true when the key is consumed.
     @ObservationIgnored
     var imageStep: ((Int) -> Bool)?
@@ -161,6 +165,12 @@ final class EditorModel {
     /// The newest save requested for each photo. An older save does not overwrite it.
     @ObservationIgnored
     private var editSaveToken: [String: Int] = [:]
+    /// Catalog puts run in order. Flatten waits until an older save has finished, then writes the empty list.
+    @ObservationIgnored
+    private var catalogSaveChain: Task<Void, Never>?
+    /// Flatten cleared this photo. A save that started earlier is not put back on screen or on the mirror.
+    @ObservationIgnored
+    private var flattenCleared: Set<String> = []
     private var folderGeneration = 0
     private var folderScopeURL: URL?
     private var fileScopeURL: URL?
@@ -246,6 +256,8 @@ final class EditorModel {
     private(set) var proxyRenderCount = 0
     private(set) var tileRequestCount = 0
     private var catalogRelPath: String?
+    /// Photos-relative path of the open server photo. The mirror Image panel uses this to open the main copy.
+    var openCatalogPath: String? { catalogRelPath }
     private var editorHelper: HelperClient?
     private var catalogGeneration = 0
     /// Edits for photos already opened in this session, including a return to identity.
@@ -662,6 +674,7 @@ final class EditorModel {
         previewJPEGByPath = remapFolderPaths(previewJPEGByPath, from: old, to: dest)
         editedPreviewData = remapFolderPaths(editedPreviewData, from: old, to: dest)
         editSaveToken = remapFolderPaths(editSaveToken, from: old, to: dest)
+        flattenCleared = Set(flattenCleared.map { FolderRename.shiftedPath($0, from: old, to: dest) ?? $0 })
         videoGrades = remapFolderPaths(videoGrades, from: old, to: dest)
         var nextEdits: [String: PhotoEdits] = [:]
         for (key, edits) in editsBySource {
@@ -1330,6 +1343,66 @@ final class EditorModel {
         }
     }
 
+    /// Mirrors each selected still left/right or top/bottom, saves its settings, and rebuilds its preview.
+    func flipFolderSelection(horizontal: Bool) {
+        let files = folderEntries
+            .filter { selectedFolderKeys.contains($0.id) && !$0.isDirectory && !$0.isVideo }
+            .map(\.url)
+        flip(files: files, horizontal: horizontal, catalog: [:])
+    }
+
+    func flip(files: [URL], horizontal: Bool, catalog: [String: CatalogEditTarget]) {
+        guard !folderRotateBusy, !files.isEmpty else { return }
+        folderRotateBusy = true
+        folderRotateNote = nil
+        let total = files.count
+        Task {
+            var failed = 0
+            for (index, url) in files.enumerated() {
+                self.folderRotateNote = "Flipping \(index + 1) of \(total)."
+                let hint = catalog[FolderEntry.cacheKey(for: url)]
+                let saved = await self.flipOne(url, horizontal: horizontal, catalog: hint)
+                if !saved { failed += 1 }
+            }
+            self.folderRotateBusy = false
+            if failed == 0 {
+                self.folderRotateNote = nil
+            } else if failed == 1 {
+                self.folderRotateNote = "One photo could not be flipped."
+            } else {
+                self.folderRotateNote = "\(failed) photos could not be flipped."
+            }
+        }
+    }
+
+    /// The open photo flips on the canvas. Every other photo is saved without changing the canvas.
+    private func flipOne(_ url: URL, horizontal: Bool, catalog: CatalogEditTarget?) async -> Bool {
+        let key = sourceKey(url)
+        if let sourceFileURL, sourceKey(sourceFileURL) == key {
+            if catalogAssetUID == nil, let catalog {
+                catalogAssetUID = catalog.uid
+                catalogRelPath = catalog.relativePath
+            }
+            if horizontal {
+                flipLeftRight()
+            } else {
+                flipTopBottom()
+            }
+            return true
+        }
+        let session = editsBySource[key]?.log
+        let outcome = await Task.detached {
+            FolderTurnWorker.flip(file: url, horizontal: horizontal, session: session)
+        }.value
+        switch outcome {
+        case .failure:
+            return false
+        case .success(let turned):
+            await storeTurned(url, turned, catalog: catalog)
+            return true
+        }
+    }
+
     func pasteLibraryStills(_ assets: [LibraryAsset], fileURL: (LibraryAsset) -> URL?) {
         guard hasCopiedSettings else { return }
         var files: [URL] = []
@@ -1407,6 +1480,7 @@ final class EditorModel {
         syncDraftsFromLog()
         refreshPreview()
         publishOpenPreview()
+        flushOpenEditSave()
     }
 
     private func storeTurned(_ url: URL, _ turned: FolderTurnWorker.Outcome, catalog: CatalogEditTarget?) async {
@@ -1434,13 +1508,21 @@ final class EditorModel {
         }
     }
 
+    /// Saves the open photo, then drops it so the other server's picture does not stay on screen.
+    func releaseOpenPhoto() {
+        rememberCurrentEdits()
+        clearStillForVideo()
+        openedFileName = nil
+        canvasMessage = nil
+    }
+
     /// Writes the open photo's current render into the folder grid and saves those settings.
     func publishFolderPreviewFromImage() {
         commitOpenDrafts()
         publishOpenPreview()
     }
 
-    private func publishOpenPreview(folderJPEG: Data? = nil) {
+    private func publishOpenPreview(folderJPEG: Data? = nil, save: Bool = true) {
         guard let url = sourceFileURL, let preview else { return }
         let identity = log.state == .identity && log.commands.isEmpty
         // Flatten stores the pixels in the TIFF and clears the edit list. The folder cell
@@ -1452,6 +1534,7 @@ final class EditorModel {
             try? FolderPreviewCache.writeEditedJPEG(jpeg, for: url)
             onEditedFolderPreview?(url, jpeg)
         }
+        guard save else { return }
         guard !identity || documentURL != nil else { return }
         scheduleEditSave()
     }
@@ -1460,6 +1543,28 @@ final class EditorModel {
         let token = (editSaveToken[key] ?? 0) + 1
         editSaveToken[key] = token
         return token
+    }
+
+    /// Drops saves that already captured an older edit list.
+    private func invalidateEditSaves(for key: String) {
+        _ = nextEditToken(for: key)
+    }
+
+    /// Runs `body` after earlier catalog saves, and only when `token` is still the newest.
+    private func enqueueCatalogSave(key: String, token: Int, _ body: @escaping @MainActor () async -> Void) {
+        let previous = catalogSaveChain
+        let next = Task { @MainActor in
+            _ = await previous?.value
+            guard self.editSaveToken[key] == token else { return }
+            await body()
+        }
+        catalogSaveChain = next
+    }
+
+    /// A new edit after Flatten is kept. The cleared flatten no longer blocks that list.
+    private func noteEditsIfPresent(for key: String) {
+        guard !log.commands.isEmpty else { return }
+        flattenCleared.remove(key)
     }
 
     private func storeFolderPreview(_ url: URL, renderedJPEG: Data?, identity: Bool) {
@@ -1481,6 +1586,7 @@ final class EditorModel {
 
     private func scheduleEditSave() {
         guard let key = sourceFileURL.map(sourceKey) else { return }
+        noteEditsIfPresent(for: key)
         let token = nextEditToken(for: key)
         Task { @MainActor in
             try? await Task.sleep(nanoseconds: 500_000_000)
@@ -1495,10 +1601,17 @@ final class EditorModel {
         previewJPEG: Data,
         digest: String,
         count: Int,
-        uti: String
+        uti: String,
+        client explicit: HelperClient? = nil,
+        saveKey: String? = nil,
+        saveToken: Int? = nil,
+        syncMirror: Bool = true
     ) async {
-        guard let client = editorHelper ?? EditorHelper.client() else { return }
-        editorHelper = client
+        if let saveKey, let saveToken, editSaveToken[saveKey] != saveToken { return }
+        guard let client = explicit ?? editorHelper ?? EditorHelper.client() else { return }
+        if explicit == nil {
+            editorHelper = client
+        }
         let body: Data
         do {
             body = try SaveEdits.catalogBytes(
@@ -1517,6 +1630,10 @@ final class EditorModel {
             try await client.putEdits(uid: catalog.uid, body: body)
             helperUp = true
             dropLocalEditCopy(digest: digest)
+            if let saveKey, let saveToken, editSaveToken[saveKey] != saveToken { return }
+            if syncMirror {
+                onCatalogEditsSaved?(catalog.uid, catalog.relativePath)
+            }
         } catch {
             return
         }
@@ -1642,11 +1759,15 @@ final class EditorModel {
               let digest = sourceDigest,
               let count = sourceByteCount else { return }
         commitOpenDrafts()
+        let key = sourceKey(sourceFileURL)
+        noteEditsIfPresent(for: key)
+        let token = editSaveToken[key] ?? 0
         let logSnapshot = log
         let uti = sourceUTI ?? "public.data"
         let previewJPEG = preview.flatMap { ZImgRaw.jpegPreview(from: $0) } ?? Data([0xFF, 0xD8, 0xFF, 0xD9])
         let source = sourceFileURL
-        Task {
+        let client = editorHelper
+        enqueueCatalogSave(key: key, token: token) {
             let outcome: Result<Data, Error> = await Task.detached {
                 do {
                     let original = try Data(contentsOf: source)
@@ -1666,13 +1787,16 @@ final class EditorModel {
                     return .failure(error)
                 }
             }.value
+            guard self.editSaveToken[key] == token else { return }
             switch outcome {
             case .failure(let error):
                 self.presentAlert(error.localizedDescription)
             case .success(let bytes):
                 do {
-                    try await editorHelper.putEdits(uid: uid, body: bytes)
+                    try await client.putEdits(uid: uid, body: bytes)
+                    guard self.editSaveToken[key] == token else { return }
                     self.dropLocalEditCopy(digest: digest)
+                    self.onCatalogEditsSaved?(uid, rel)
                     self.previewBanner = "Edits saved."
                 } catch {
                     self.presentAlert("The edits were not saved.")
@@ -1704,6 +1828,11 @@ final class EditorModel {
         catalogAssetUID = asset.uid
         catalogRelPath = rel
         guard log.commands.isEmpty else {
+            if flattenCleared.contains(sourceKey(sourceFileURL)) {
+                cancelProvisionalEdits()
+                log = HistoryLog()
+                syncDraftsFromLog()
+            }
             adoptFlattenedBaseIfPresent()
             return
         }
@@ -1721,6 +1850,10 @@ final class EditorModel {
            sourceByteCount == nil || document.base.byteSize == sourceByteCount {
             if let hint = document.base.relativePathHint, !hint.isEmpty {
                 catalogRelPath = hint
+            }
+            if flattenCleared.contains(sourceKey(sourceFileURL)), !document.history.commands.isEmpty {
+                adoptFlattenedBaseIfPresent()
+                return
             }
             applyCatalogLog(document.history, previewJPEG: document.previewJPEG)
         }
@@ -1745,6 +1878,9 @@ final class EditorModel {
               sourceByteCount == nil || document.base.byteSize == sourceByteCount else { return false }
         if let hint = document.base.relativePathHint, !hint.isEmpty {
             catalogRelPath = hint
+        }
+        if let sourceFileURL, flattenCleared.contains(sourceKey(sourceFileURL)), !document.history.commands.isEmpty {
+            return false
         }
         applyCatalogLog(document.history, previewJPEG: document.previewJPEG)
         return true
@@ -2228,8 +2364,17 @@ final class EditorModel {
         Task {
             let outcome: Result<(ProxyImage, FlattenedMaster.Identity?), ProxyOpenError> = await Task.detached {
                 do {
-                    let proxy = try ProxyRenderer.open(url: url)
                     let flat = FlattenedMaster.find(file: url, hint: catalog)
+                    if let flat, let image = FlattenedMaster.workingImage(for: flat) {
+                        let proxy = ProxyImage(
+                            image: image,
+                            entryPoint: .imageIOThumbnail,
+                            appliedScaleFactor: nil,
+                            nativeLongEdge: nil
+                        )
+                        return .success((proxy, flat))
+                    }
+                    let proxy = try ProxyRenderer.open(url: url)
                     return .success((proxy, flat))
                 } catch let error as ProxyOpenError {
                     return .failure(error)
@@ -2299,6 +2444,12 @@ final class EditorModel {
         self.horizonClicks.removeAll()
         self.pendingFit = true
         self.invalidateTile()
+        if flat != nil {
+            self.preview = openedProxy.image
+            self.log = HistoryLog()
+            self.cropSelection = nil
+            self.syncDraftsFromLog()
+        }
         if let url {
             self.rememberSource(url)
         }
@@ -2323,6 +2474,11 @@ final class EditorModel {
             // A chosen PDF page does not. Those edits belong to whichever page was open last.
         } else {
             resetEditsForNewImage()
+        }
+        if let url, flattenCleared.contains(sourceKey(url)), !log.commands.isEmpty {
+            log = HistoryLog()
+            syncDraftsFromLog()
+            savedCanvas = editsBySource[sourceKey(url)]?.display
         }
         let loadedCatalogLog = log.commands.isEmpty && applyOnDiskCatalogLog()
         if hasFlattenedSidecar {
@@ -2715,7 +2871,7 @@ final class EditorModel {
         let previewJPEG = preview.flatMap { ZImgRaw.jpegPreview(from: $0) } ?? Data([0xFF, 0xD8, 0xFF, 0xD9])
         let source = sourceFileURL
         let savedKey = sourceKey(source)
-        Task {
+        let persist: @MainActor () async -> Void = {
             let outcome: Result<Data, Error> = await Task.detached {
                 do {
                     let original = try Data(contentsOf: source)
@@ -2781,7 +2937,9 @@ final class EditorModel {
                             previewJPEG: previewJPEG,
                             digest: digest,
                             count: expectedCount,
-                            uti: uti
+                            uti: uti,
+                            saveKey: saveKey,
+                            saveToken: saveToken
                         )
                     }
                 } catch {
@@ -2790,6 +2948,11 @@ final class EditorModel {
                     }
                 }
             }
+        }
+        if let saveKey, let saveToken {
+            enqueueCatalogSave(key: saveKey, token: saveToken, persist)
+        } else {
+            Task { await persist() }
         }
     }
 
@@ -3340,6 +3503,8 @@ final class EditorModel {
         cancelTouchupQueue()
         touchupReplayAgain = false
         let sourceKey = sourceKey(source)
+        invalidateEditSaves(for: sourceKey)
+        flattenCleared.remove(sourceKey)
         let uti = sourceUTI ?? "public.data"
         let relative = catalogRelPath ?? ""
         let catalog = CatalogEditTarget(uid: uid, relativePath: relative)
@@ -3404,7 +3569,6 @@ final class EditorModel {
         openGeneration: Int,
         zflat: URL
     ) {
-        editSaveToken[sourceKey] = (editSaveToken[sourceKey] ?? 0) + 1
         let stillOpen = self.openGeneration == openGeneration && !FileManager.default.isReadableFile(atPath: zflat.path)
         var shown: CGImage?
         if stillOpen {
@@ -3421,7 +3585,7 @@ final class EditorModel {
             refreshPreview()
             shown = preview
             previewBanner = "Reverted."
-            publishOpenPreview()
+            publishOpenPreview(save: false)
         }
         editsBySource[sourceKey] = PhotoEdits(
             log: HistoryLog(),
@@ -3430,14 +3594,17 @@ final class EditorModel {
             display: shown
         )
         dropLocalEditCopy(digest: digest)
-        Task {
+        let token = nextEditToken(for: sourceKey)
+        enqueueCatalogSave(key: sourceKey, token: token) {
             await self.putCatalogEdits(
                 catalog,
                 log: HistoryLog(),
                 previewJPEG: previewJPEG,
                 digest: digest,
                 count: count,
-                uti: uti
+                uti: uti,
+                saveKey: sourceKey,
+                saveToken: token
             )
         }
     }
@@ -3455,6 +3622,9 @@ final class EditorModel {
         }
         commitOpenDrafts()
         cancelTouchupQueue()
+        let key = sourceKey(source)
+        invalidateEditSaves(for: key)
+        let helper = editorHelper ?? EditorHelper.client()
         let state = log.state
         let zflat = folder.appendingPathComponent(uid + ".zflat")
         let zjpg = folder.appendingPathComponent(uid + ".zjpg")
@@ -3512,8 +3682,18 @@ final class EditorModel {
             case .failure(let error):
                 self.presentAlert(error.localizedDescription)
             case .success(let product):
-                guard self.openGeneration == openGen else { return }
-                self.finishFlatten(product, catalog: catalog, digest: digest, count: count, uti: uti)
+                self.finishFlatten(
+                    product,
+                    catalog: catalog,
+                    digest: digest,
+                    count: count,
+                    uti: uti,
+                    sourceKey: key,
+                    openGeneration: openGen,
+                    zimg: zimg,
+                    file: source,
+                    helper: helper
+                )
             }
         }
     }
@@ -3540,7 +3720,7 @@ final class EditorModel {
         flattenBusy = true
         touchupMeter = TouchupMeter(title: heading, done: 0, total: 0, fraction: nil)
         Task {
-            let outcome: Result<String, Error> = await Task.detached {
+            let outcome: Result<(name: String, previewJPEG: Data), Error> = await Task.detached {
                 do {
                     guard let name = FlattenDuplicate.fileName(sourceName: source.lastPathComponent, taken: { candidate in
                         FileManager.default.fileExists(atPath: directory.appendingPathComponent(candidate).path)
@@ -3548,7 +3728,7 @@ final class EditorModel {
                         throw FlattenError.cannotWrite(source.lastPathComponent)
                     }
                     let destination = directory.appendingPathComponent(name)
-                    _ = try FlattenWriter.produce(
+                    let product = try FlattenWriter.produce(
                         pixels: pixels,
                         depthFrom: source,
                         state: state,
@@ -3567,7 +3747,7 @@ final class EditorModel {
                             }
                         }
                     }
-                    return .success(name)
+                    return .success((name, product.previewJPEG))
                 } catch {
                     return .failure(error)
                 }
@@ -3578,11 +3758,11 @@ final class EditorModel {
             switch outcome {
             case .failure(let error):
                 self.presentAlert(error.localizedDescription)
-            case .success(let name):
+            case .success(let made):
                 if self.openGeneration == openGen {
-                    self.previewBanner = "Duplicated as \(name)."
+                    self.previewBanner = "Duplicated as \(made.name)."
                 }
-                self.onFlattenedDuplicate?(parent, name)
+                self.onFlattenedDuplicate?(parent, made.name, made.previewJPEG)
             }
         }
     }
@@ -3593,38 +3773,83 @@ final class EditorModel {
         catalog: CatalogEditTarget,
         digest: String,
         count: Int,
-        uti: String
+        uti: String,
+        sourceKey key: String,
+        openGeneration openGen: Int,
+        zimg: URL,
+        file: URL,
+        helper: HelperClient?
     ) {
-        cancelTouchupQueue()
-        log = HistoryLog()
-        cropSelection = nil
-        touchupPictures.removeAll()
-        Touchup.resetRasterCache()
-        clearTouchupHead()
-        syncDraftsFromLog()
-        if let image = image(fromPreviewJPEG: product.workingJPEG) {
-            baseCI = CIImage(cgImage: image)
-            proxy = ProxyImage(
-                image: image,
-                entryPoint: .imageIOThumbnail,
-                appliedScaleFactor: nil,
-                nativeLongEdge: nil
-            )
-            preview = image
+        let shown = image(fromPreviewJPEG: product.workingJPEG)
+        flattenCleared.insert(key)
+        editsBySource[key] = PhotoEdits(
+            log: HistoryLog(),
+            documentURL: nil,
+            documentBookmark: nil,
+            display: shown
+        )
+        if sourceFileURL.map(sourceKey) == key {
+            cancelTouchupQueue()
+            log = HistoryLog()
+            cropSelection = nil
+            touchupPictures.removeAll()
+            Touchup.resetRasterCache()
+            clearTouchupHead()
+            syncDraftsFromLog()
+            if let shown {
+                baseCI = CIImage(cgImage: shown)
+                proxy = ProxyImage(
+                    image: shown,
+                    entryPoint: .imageIOThumbnail,
+                    appliedScaleFactor: nil,
+                    nativeLongEdge: nil
+                )
+                preview = shown
+            }
+            refreshSpectrumHistogram()
+            if openGeneration == openGen {
+                previewBanner = "Flattened."
+            }
+            publishOpenPreview(save: false)
+        } else if let shown, let jpeg = ZImgRaw.jpegPreview(from: shown, maxLongEdge: FolderPreviewCache.maxLongEdge) {
+            editedPreviewData[key] = jpeg
+            try? FolderPreviewCache.writeEditedJPEG(jpeg, for: file)
+            onEditedFolderPreview?(file, jpeg)
         }
-        refreshSpectrumHistogram()
-        previewBanner = "Flattened."
-        publishOpenPreview()
-        Task {
+        // The flattened files are already on this Mac. The mirror copy starts now.
+        onCatalogEditsSaved?(catalog.uid, catalog.relativePath)
+        let previewJPEG = product.previewJPEG
+        let token = nextEditToken(for: key)
+        enqueueCatalogSave(key: key, token: token) {
+            await Task.detached {
+                do {
+                    let document = try SaveEdits.catalogBytes(
+                        log: HistoryLog(),
+                        blake3: digest,
+                        byteSize: count,
+                        uti: uti,
+                        assetUID: catalog.uid,
+                        relativePathHint: catalog.relativePath,
+                        previewJPEG: previewJPEG
+                    )
+                    try document.write(to: zimg, options: .atomic)
+                } catch {
+                    return
+                }
+            }.value
+            guard self.editSaveToken[key] == token else { return }
             await self.putCatalogEdits(
                 catalog,
                 log: HistoryLog(),
-                previewJPEG: product.previewJPEG,
+                previewJPEG: previewJPEG,
                 digest: digest,
                 count: count,
-                uti: uti
+                uti: uti,
+                client: helper,
+                saveKey: key,
+                saveToken: token,
+                syncMirror: false
             )
-            self.dropLocalEditCopy(digest: digest)
         }
     }
 
@@ -3901,6 +4126,7 @@ final class EditorModel {
         replaceGeometry("Rotate clockwise") { geometry in
             geometry = GeometryPipeline.turned(geometry, by: 1)
         }
+        flushOpenEditSave()
     }
 
     func rotateCounterclockwise() {
@@ -3908,6 +4134,7 @@ final class EditorModel {
         replaceGeometry("Rotate counterclockwise") { geometry in
             geometry = GeometryPipeline.turned(geometry, by: -1)
         }
+        flushOpenEditSave()
     }
 
     /// Mirrors the left and right edges of the photograph on screen. The same command puts them back.
@@ -3916,6 +4143,7 @@ final class EditorModel {
         replaceGeometry("Flip left/right") { geometry in
             geometry.flipHorizontal.toggle()
         }
+        flushOpenEditSave()
     }
 
     /// Mirrors the top and bottom edges of the photograph on screen. The same command puts them back.
@@ -3924,6 +4152,7 @@ final class EditorModel {
         replaceGeometry("Flip top/bottom") { geometry in
             geometry.flipVertical.toggle()
         }
+        flushOpenEditSave()
     }
 
     func chooseLensProfile(_ id: String) {
@@ -4566,6 +4795,7 @@ final class EditorModel {
         selectCanvasTool(.zoom)
         refreshPreview()
         publishOpenPreview()
+        flushOpenEditSave()
     }
 
     private func sourceKey(_ url: URL) -> String {
@@ -4589,7 +4819,9 @@ final class EditorModel {
     private func rememberCurrentEdits(save: Bool = true) {
         guard let sourceFileURL else { return }
         commitOpenDrafts()
-        editsBySource[sourceKey(sourceFileURL)] = PhotoEdits(
+        let key = sourceKey(sourceFileURL)
+        noteEditsIfPresent(for: key)
+        editsBySource[key] = PhotoEdits(
             log: log,
             documentURL: documentURL,
             documentBookmark: documentBookmark,
@@ -5336,6 +5568,10 @@ struct Chrome: View {
     @State private var sectionChangesSelectFolder = false
     @State private var helperSetup: HelperSetupSession?
     @State private var showsMirrorSetup = false
+    /// Sentence under Edit in Library. Folder notices stay on `browser.notice`.
+    @State private var mirrorEditNote = ""
+    /// Recover and Edit is already copying this orphan.
+    @State private var mirrorRecoverEditBusy = false
     @State private var servers: [HelperServerRecord] = []
     @State private var activeServerID: String?
     @State private var helperUpdateAvailable = false
@@ -5366,17 +5602,21 @@ struct Chrome: View {
                 }
                 HStack(spacing: 0) {
                     folderColumn(width: column, available: geo.size.width)
+                        .layoutPriority(1)
                     center
                     if showsImage {
                         inspector
+                            .layoutPriority(1)
                     } else if !diskMode && (showsEvents || showsReorg) {
                         if showsEvents {
                             EventRename(browser: browser)
                                 .frame(width: 280)
+                                .layoutPriority(1)
                         }
                         if showsReorg {
                             ReorgPanel(browser: browser)
                                 .frame(width: 280)
+                                .layoutPriority(1)
                         }
                     } else if diskMode {
                         ScrollView(.vertical) {
@@ -5421,8 +5661,10 @@ struct Chrome: View {
                             }
                             .frame(width: 280)
                         }
+                        .contentMargins(.trailing, ScrollBarFit.indicatorInset, for: .scrollIndicators)
                         .frame(width: 280)
                         .frame(maxHeight: .infinity, alignment: .top)
+                        .layoutPriority(1)
                     } else {
                         ScrollView(.vertical) {
                             VStack(spacing: 0) {
@@ -5442,7 +5684,9 @@ struct Chrome: View {
                                     .frame(height: 1)
                             }
                             if browser.isMirror {
+                                DateInspector(browser: browser, allowsDateEdits: false)
                                 if showsServerMovePanel {
+                                    folderColumnRule
                                     MirrorPanel(browser: browser)
                                     folderColumnRule
                                     BuildPreviewsPanel(
@@ -5513,8 +5757,11 @@ struct Chrome: View {
                             }
                             .frame(width: 280)
                         }
+                        // A new preview was leaving this bar half outside the panel edge.
+                        .contentMargins(.trailing, ScrollBarFit.indicatorInset, for: .scrollIndicators)
                         .frame(width: 280)
                         .frame(maxHeight: .infinity, alignment: .top)
+                        .layoutPriority(1)
                     }
                 }
             }
@@ -5546,8 +5793,11 @@ struct Chrome: View {
             model.onEditedFolderPreview = { url, jpeg in
                 browser.installEditedPreview(file: url, jpeg: jpeg)
             }
-            model.onFlattenedDuplicate = { folder, name in
-                browser.catalogAddedFile(name, in: folder)
+            model.onFlattenedDuplicate = { folder, name, previewJPEG in
+                browser.catalogAddedFile(name, in: folder, previewJPEG: previewJPEG)
+            }
+            model.onCatalogEditsSaved = { uid, relative in
+                browser.mirrorSavedEdits(uid: uid, relative: relative)
             }
             FolderPreviewCache.loadStoredCap()
             model.restoreLastFolder()
@@ -5615,7 +5865,19 @@ struct Chrome: View {
                 model.releaseAdjustmentTools()
             } else {
                 model.cancelServerMergePreview()
+                if browser.isMirror {
+                    model.releaseAdjustmentTools()
+                }
             }
+        }
+        .onChange(of: browser.switchNeedsFolderView) { _, needed in
+            guard needed else { return }
+            model.releaseOpenPhoto()
+            serverShowsFolder = true
+            browser.switchNeedsFolderView = false
+        }
+        .onChange(of: model.openedFileURL) { _, _ in
+            mirrorEditNote = ""
         }
         .onChange(of: browser.displayFolder) { _, folder in
             model.cancelMergePreviewIfServerFolderChanged(folder)
@@ -5657,6 +5919,7 @@ struct Chrome: View {
                 await browser.clearFocus()
                 return
             }
+            browser.resumeLinkedMirror()
             await browser.refreshHelperPass()
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(10))
@@ -5683,14 +5946,13 @@ struct Chrome: View {
     }
 
     private func rotateServerSelection(clockwise: Bool) {
-        var files: [URL] = []
-        var catalog: [String: CatalogEditTarget] = [:]
-        for asset in browser.rotatableStills(in: serverRotatePool) {
-            guard let url = browser.fileURL(for: asset), let relativePath = asset.relPath else { continue }
-            files.append(url)
-            catalog[FolderEntry.cacheKey(for: url)] = CatalogEditTarget(uid: asset.uid, relativePath: relativePath)
-        }
-        model.rotate(files: files, clockwise: clockwise, catalog: catalog)
+        let picked = browser.selectedStillCatalog()
+        model.rotate(files: picked.files, clockwise: clockwise, catalog: picked.catalog)
+    }
+
+    private func flipServerSelection(horizontal: Bool) {
+        let picked = browser.selectedStillCatalog()
+        model.flip(files: picked.files, horizontal: horizontal, catalog: picked.catalog)
     }
 
     private func exportServerSelection() {
@@ -5722,7 +5984,8 @@ struct Chrome: View {
         perform: @escaping (Bool) -> Void,
         paste: @escaping () -> Void,
         export: @escaping () -> Void,
-        printPhotos: @escaping () -> Void
+        printPhotos: @escaping () -> Void,
+        flip: @escaping (Bool) -> Void
     ) -> some View {
         let leftHelp = showPaste
             ? "Turns the selected photos a quarter turn to the left, saves their settings, and rebuilds their previews."
@@ -5742,6 +6005,16 @@ struct Chrome: View {
                 .accessibilityIdentifier("Rotate right")
                 .help(rightHelp)
             if showPaste {
+                Button("Flip left/right") { flip(true) }
+                    .buttonStyle(LibraryPushButtonStyle())
+                    .disabled(!enabled)
+                    .accessibilityIdentifier("Flip left/right")
+                    .help("Mirrors the left and right edges of the selected photos, saves their settings, and rebuilds their previews.")
+                Button("Flip top/bottom") { flip(false) }
+                    .buttonStyle(LibraryPushButtonStyle())
+                    .disabled(!enabled)
+                    .accessibilityIdentifier("Flip top/bottom")
+                    .help("Mirrors the top and bottom edges of the selected photos, saves their settings, and rebuilds their previews.")
                 Button("Paste settings") { paste() }
                     .buttonStyle(LibraryPushButtonStyle())
                     .disabled(!model.hasCopiedSettings || !enabled)
@@ -5838,14 +6111,8 @@ struct Chrome: View {
             .padding(.leading, 20)
             .layoutPriority(1)
             if !diskMode, let row = servers.first(where: { $0.id == activeServerID }) {
-                Text(MirrorRoster.menuTitle(row, active: false))
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(ChromePalette.ink)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .fixedSize()
+                serverTitle(row)
                     .padding(.leading, 16)
-                    .accessibilityIdentifier("Active server")
             }
             if !diskMode, let line = DuplicateCopy.passLine(browser.helperPass) {
                 Text(line)
@@ -5862,9 +6129,9 @@ struct Chrome: View {
                 // Events and Reorganize stay out of the toolbar until those tools are ready.
                 if diskMode || showsImage {
                     Button("Undo") { model.undo() }
-                        .disabled(!model.log.canUndo)
+                        .disabled(!model.log.canUndo || mirrorImage)
                     Button("Redo") { model.redo() }
-                        .disabled(!model.log.canRedo)
+                        .disabled(!model.log.canRedo || mirrorImage)
                     Button("Copy settings") { model.copySettings() }
                         .disabled(model.proxy == nil)
                         .accessibilityIdentifier("Copy settings")
@@ -5904,11 +6171,7 @@ struct Chrome: View {
         Menu {
             ForEach(servers) { server in
                 Button {
-                    activeServerID = server.id
-                    Task {
-                        await LibraryHost.activate(server, browser: browser)
-                        refreshServers()
-                    }
+                    chooseServer(server)
                 } label: {
                     Text(MirrorRoster.menuTitle(server, active: server.id == activeServerID))
                 }
@@ -5960,6 +6223,91 @@ struct Chrome: View {
         .fixedSize()
         .id(activeServerID ?? "")
         .accessibilityIdentifier("Library menu")
+    }
+
+    /// The name beside Disk and Server. A paired main and mirror open as the two choices.
+    @ViewBuilder
+    private func serverTitle(_ row: HelperServerRecord) -> some View {
+        let title = Text(MirrorRoster.menuTitle(row, active: false))
+            .font(.system(size: 13, weight: .medium))
+            .foregroundStyle(ChromePalette.ink)
+            .lineLimit(1)
+            .truncationMode(.middle)
+        if let main = MirrorRoster.mainRow(in: servers), let mirror = MirrorRoster.mirrorRow(in: servers) {
+            Menu {
+                ForEach([main, mirror]) { server in
+                    Button {
+                        chooseServer(server)
+                    } label: {
+                        Text(MirrorRoster.menuTitle(server, active: server.id == activeServerID))
+                    }
+                    .accessibilityIdentifier(server.duty == MirrorRoster.main ? "Switch to Main" : "Switch to Mirror")
+                }
+            } label: {
+                title
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .accessibilityIdentifier("Active server")
+            .help("Shows the main library or the mirror, and stays on this folder and photo.")
+        } else {
+            title
+                .fixedSize()
+                .accessibilityIdentifier("Active server")
+        }
+    }
+
+    /// The open folder, the selected photos, and the photo in Image view.
+    private func libraryPlaceForSwitch() -> (folder: String, paths: [String], primary: String?, opening: Bool) {
+        let selected = browser.selectedPlace()
+        let opening = !serverShowsFolder
+        let image = opening ? model.openCatalogPath : nil
+        var folder = browser.displayFolder
+        if let image {
+            let parent = (image as NSString).deletingLastPathComponent
+            if LibrarySwitch.folderToKeep(parent) != nil {
+                folder = parent
+            }
+        }
+        var paths = selected.paths
+        if let image, !paths.contains(image) {
+            paths.append(image)
+        }
+        return (folder, paths, image ?? selected.primary, opening)
+    }
+
+    /// Moves to that server and keeps the folder and photo that are on screen.
+    private func chooseServer(_ server: HelperServerRecord) {
+        guard server.id != activeServerID else { return }
+        let place = libraryPlaceForSwitch()
+        activeServerID = server.id
+        model.cancelServerMergePreview()
+        let waitForMirror = server.duty == MirrorRoster.mirror
+        Task {
+            if waitForMirror, let primary = place.primary {
+                if browser.mirrorEditPending(relative: primary) {
+                    model.previewBanner = "Copying this photo to the mirror."
+                }
+                await browser.mirrorEditsReady(relative: primary)
+                if model.previewBanner == "Copying this photo to the mirror." {
+                    model.previewBanner = nil
+                }
+            }
+            await LibraryHost.activate(
+                server,
+                browser: browser,
+                keeping: place.folder,
+                paths: place.paths,
+                primary: place.primary,
+                opening: place.opening
+            )
+            if browser.switchNeedsFolderView {
+                model.releaseOpenPhoto()
+                serverShowsFolder = true
+                browser.switchNeedsFolderView = false
+            }
+            refreshServers()
+        }
     }
 
     private var helperUpdateBanner: some View {
@@ -6045,24 +6393,67 @@ struct Chrome: View {
         }
     }
 
+    /// Server Image view of the mirror. Editing panels stay off. Spectrum and History stay.
+    private var mirrorImage: Bool { !diskMode && showsImage && browser.isMirror }
+
     private var inspector: some View {
         ScrollView(.vertical) {
             VStack(spacing: 0) {
-                InspectorSpectrum(model: model, collapsed: $spectrumCollapsed)
+                InspectorSpectrum(model: model, collapsed: $spectrumCollapsed, allowsEdits: !mirrorImage)
                 inspectorRule
-                InspectorTone(model: model, collapsed: $toneCollapsed)
-                inspectorRule
-                InspectorCurve(model: model, collapsed: $curveCollapsed)
-                inspectorRule
-                InspectorEyedropper(model: model, collapsed: $colorCollapsed)
-                inspectorRule
-                InspectorGeometry(model: model, collapsed: $geometryCollapsed)
-                inspectorRule
-                InspectorTouchup(model: model, collapsed: $touchupCollapsed)
-                inspectorRule
-                InspectorVignette(model: model, collapsed: $vignetteCollapsed)
-                inspectorRule
-                HistoryList(log: model.log, collapsed: $historyCollapsed) { index in
+                if mirrorImage {
+                    MirrorImagePanel(
+                        notice: mirrorEditNote,
+                        orphan: browser.mirrorMissing.contains(model.openCatalogPath ?? ""),
+                        busy: mirrorRecoverEditBusy
+                    ) {
+                        let path = model.openCatalogPath
+                        let uid = model.catalogAssetUID
+                        let orphan = browser.mirrorMissing.contains(path ?? "")
+                        Task {
+                            if orphan {
+                                mirrorRecoverEditBusy = true
+                                mirrorEditNote = "Recovering this photo."
+                            }
+                            defer { mirrorRecoverEditBusy = false }
+                            let opened: MirrorLibraryOpen
+                            if orphan {
+                                opened = await browser.recoverAndEditOpen(relative: path, sourceUID: uid) { id in
+                                    activeServerID = id
+                                    refreshServers()
+                                }
+                            } else {
+                                opened = await browser.editOpenPhotoOnMain(relative: path) { id in
+                                    activeServerID = id
+                                    refreshServers()
+                                }
+                            }
+                            if opened.serverID != nil {
+                                activeServerID = opened.serverID
+                                refreshServers()
+                                mirrorEditNote = opened.message ?? ""
+                                return
+                            }
+                            guard model.openCatalogPath == path else { return }
+                            mirrorEditNote = opened.message ?? ""
+                        }
+                    }
+                    inspectorRule
+                } else {
+                    InspectorTone(model: model, collapsed: $toneCollapsed)
+                    inspectorRule
+                    InspectorCurve(model: model, collapsed: $curveCollapsed)
+                    inspectorRule
+                    InspectorEyedropper(model: model, collapsed: $colorCollapsed)
+                    inspectorRule
+                    InspectorGeometry(model: model, collapsed: $geometryCollapsed)
+                    inspectorRule
+                    InspectorTouchup(model: model, collapsed: $touchupCollapsed)
+                    inspectorRule
+                    InspectorVignette(model: model, collapsed: $vignetteCollapsed)
+                    inspectorRule
+                }
+                HistoryList(log: model.log, collapsed: $historyCollapsed, allowsSelection: !mirrorImage) { index in
                     model.selectCommand(at: index)
                 }
             }
@@ -6087,22 +6478,80 @@ struct Chrome: View {
     }
 
     /// Both sources stay mounted. Hiding one keeps its preview-grid scroll offset.
+    /// The reader takes only the width left beside the folder tree and the side panels.
+    /// The preview grid then drops a column instead of covering those panels.
     private var center: some View {
-        ZStack {
-            diskCenter
-                .opacity(diskMode ? 1 : 0)
-                .allowsHitTesting(diskMode)
-                .accessibilityHidden(!diskMode)
-            serverCenter
-                .opacity(diskMode ? 0 : 1)
-                .allowsHitTesting(!diskMode)
-                .accessibilityHidden(diskMode)
+        GeometryReader { proxy in
+            ZStack(alignment: .topLeading) {
+                diskCenter
+                    .opacity(diskMode ? 1 : 0)
+                    .allowsHitTesting(diskMode)
+                    .accessibilityHidden(!diskMode)
+                serverCenter
+                    .opacity(diskMode ? 0 : 1)
+                    .allowsHitTesting(!diskMode)
+                    .accessibilityHidden(diskMode)
+            }
+            .frame(width: proxy.size.width, height: proxy.size.height, alignment: .topLeading)
         }
+        .frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity)
+        .clipped()
+    }
+
+    /// The controls keep their own width and scroll when the center is narrow.
+    /// The row's height is the controls' height, so the scroller cannot swallow the grid.
+    private struct ControlRowHeightKey: PreferenceKey {
+        static var defaultValue: CGFloat = 0
+        static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+            value = max(value, nextValue())
+        }
+    }
+
+    private struct ControlRow<Controls: View, Trailing: View>: View {
+        var controls: Controls
+        var trailing: Trailing
+        @State private var height: CGFloat = 28
+
+        var body: some View {
+            HStack(spacing: 8) {
+                ScrollView(.horizontal) {
+                    HStack(spacing: 8) {
+                        controls
+                    }
+                    .fixedSize(horizontal: true, vertical: true)
+                    .background {
+                        GeometryReader { geo in
+                            Color.clear.preference(key: ControlRowHeightKey.self, value: geo.size.height)
+                        }
+                    }
+                }
+                .scrollBounceBehavior(.basedOnSize, axes: .horizontal)
+                .frame(height: height)
+                .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+                trailing
+                    .fixedSize(horizontal: true, vertical: false)
+                    .layoutPriority(1)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 8)
+            .onPreferenceChange(ControlRowHeightKey.self) { measured in
+                let next = measured.rounded(.up)
+                guard next > 1, abs(next - height) > 0.5 else { return }
+                height = next
+            }
+        }
+    }
+
+    private func controlRow<Controls: View, Trailing: View>(
+        @ViewBuilder controls: () -> Controls,
+        @ViewBuilder trailing: () -> Trailing
+    ) -> some View {
+        ControlRow(controls: controls(), trailing: trailing())
     }
 
     private var serverCenter: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 8) {
+            controlRow {
                 Picker("View", selection: $serverShowsFolder) {
                     Text("Folder").tag(true)
                     Text("Image").tag(false)
@@ -6129,6 +6578,8 @@ struct Chrome: View {
                     exportServerSelection()
                 } printPhotos: {
                     printServerSelection()
+                } flip: { horizontal in
+                    flipServerSelection(horizontal: horizontal)
                 }
                 if serverShowsFolder, let note = browser.notice, !note.isEmpty {
                     Text(note)
@@ -6138,13 +6589,19 @@ struct Chrome: View {
                         .truncationMode(.tail)
                         .accessibilityIdentifier("Library notice")
                 }
-                Spacer(minLength: 8)
+                if !serverShowsFolder, !mirrorEditNote.isEmpty {
+                    Text(mirrorEditNote)
+                        .font(.system(size: 13))
+                        .foregroundStyle(ChromePalette.ink)
+                        .lineLimit(2)
+                        .truncationMode(.tail)
+                        .accessibilityIdentifier("Library notice")
+                }
+            } trailing: {
                 if showsImage {
                     imageActions
                 }
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 8)
             ZStack {
                 libraryPage
                     .opacity(serverShowsFolder && !model.showsServerMergePreview ? 1 : 0)
@@ -6169,7 +6626,7 @@ struct Chrome: View {
                 }
             }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
     private var libraryPage: some View {
@@ -6196,12 +6653,12 @@ struct Chrome: View {
                 )
                 .accessibilityIdentifier("Select")
                 .help("Selects the whole image. Drag a corner or the middle of a side to change it. Click Select again to leave.")
-                .disabled(model.preview == nil || model.showsPDFPicker)
+                .disabled(model.preview == nil || model.showsPDFPicker || (!diskMode && browser.isMirror))
             Button("Crop") { model.applyCrop() }
                 .buttonStyle(LibraryPushButtonStyle())
                 .accessibilityIdentifier("Crop")
                 .help("Crops the image to the rectangle.")
-                .disabled(!model.canCrop)
+                .disabled(!model.canCrop || (!diskMode && browser.isMirror))
             Button("Export") { model.showExportPanel() }
                 .fixedSize(horizontal: true, vertical: false)
                 .disabled(model.videoExportBusy || (model.showsVideo && model.videoPlayback == nil))
@@ -6218,7 +6675,7 @@ struct Chrome: View {
 
     private var diskCenter: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 8) {
+            controlRow {
                 Text("Sub-folder")
                     .font(.system(size: 13))
                     .foregroundStyle(ChromePalette.ink)
@@ -6258,15 +6715,15 @@ struct Chrome: View {
                     model.beginFolderExport(files: model.exportableFolderFiles())
                 } printPhotos: {
                     model.printFolderFiles(model.exportableFolderFiles())
+                } flip: { horizontal in
+                    model.flipFolderSelection(horizontal: horizontal)
                 }
                 .padding(.leading, 18)
-                Spacer(minLength: 8)
+            } trailing: {
                 if !model.showsFolderGrid {
                     imageActions
                 }
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 8)
             ZStack {
                 FolderBrowser(model: model, onScreen: diskMode)
                     .opacity(model.showsFolderGrid && !model.showsDiskMergePreview ? 1 : 0)
@@ -6291,7 +6748,7 @@ struct Chrome: View {
                 }
             }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
     @ViewBuilder

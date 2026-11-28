@@ -155,15 +155,27 @@ enum LibraryHost {
         HelperServerList.upsert(row, defaults: defaults)
     }
 
-    static func activate(_ row: HelperServerRecord, browser: LibraryBrowser) async {
+    static func activate(
+        _ row: HelperServerRecord,
+        browser: LibraryBrowser,
+        keeping folder: String? = nil,
+        paths: [String] = [],
+        primary: String? = nil,
+        opening: Bool = false
+    ) async {
         guard HelperServerList.select(row.id, defaults: .standard) != nil,
               let url = LibraryFolderBookmark.resolve(defaults: .standard) else {
             browser.notice = "ZImager could not open this server's folder."
             return
         }
+        browser.switchNeedsFolderView = false
         browser.adoptLibraryRoot(url)
         browser.connect(client())
-        await browser.reload()
+        if let folder, LibrarySwitch.folderToKeep(folder) != nil {
+            await browser.keepLibraryPlace(folder: folder, paths: paths, primary: primary, opening: opening)
+        } else {
+            await browser.reload()
+        }
     }
 
     /// Drops the server from this Mac. The helper, photos, and catalog stay on the share.

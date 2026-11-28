@@ -47,7 +47,7 @@ enum FolderRename {
     }
 
     /// Replaces `oldPrefix` with `newPrefix` when `path` is that folder or a file inside it.
-    static func shiftedRelative(_ path: String, from oldPrefix: String, to newPrefix: String) -> String? {
+    nonisolated static func shiftedRelative(_ path: String, from oldPrefix: String, to newPrefix: String) -> String? {
         if path == oldPrefix { return newPrefix }
         guard path.hasPrefix(oldPrefix + "/") else { return nil }
         return newPrefix + path.dropFirst(oldPrefix.count)
